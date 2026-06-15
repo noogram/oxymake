@@ -1,0 +1,12 @@
+#!/bin/bash
+# Docker SLURM shim: sinfo
+#
+# Proxies sinfo queries to the Docker SLURM cluster.
+#
+# Environment:
+#   SLURM_DOCKER_CONTAINER  Container name (default: slurmctld)
+
+set -euo pipefail
+
+CONTAINER="${SLURM_DOCKER_CONTAINER:-slurmctld}"
+exec docker exec "$CONTAINER" sinfo "$@"

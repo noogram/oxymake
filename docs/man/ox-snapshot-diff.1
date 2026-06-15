@@ -1,0 +1,22 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH ox-snapshot-diff 1  "ox-snapshot-diff " 
+.SH NAME
+ox\-snapshot\-diff \- Diff two snapshots, or a snapshot against current state
+.SH SYNOPSIS
+\fBox\-snapshot\-diff\fR [\fB\-\-json\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fILEFT\fR> [\fIRIGHT\fR] 
+.SH DESCRIPTION
+Diff two snapshots, or a snapshot against current state
+.SH OPTIONS
+.TP
+\fB\-\-json\fR
+Output NDJSON (one JSON object per line)
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help
+.TP
+<\fILEFT\fR>
+First snapshot name
+.TP
+[\fIRIGHT\fR]
+Second snapshot name (omit to diff against current state)

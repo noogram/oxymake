@@ -1,0 +1,28 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH ox-plan 1  "ox-plan " 
+.SH NAME
+ox\-plan \- Show the execution plan without running
+.SH SYNOPSIS
+\fBox\-plan\fR [\fB\-\-level\fR] [\fB\-\-no\-optimize\fR] [\fB\-\-json\fR] [\fB\-f\fR|\fB\-\-file\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fITARGETS\fR] 
+.SH DESCRIPTION
+Show the execution plan without running
+.SH OPTIONS
+.TP
+\fB\-\-level\fR \fI<LEVEL>\fR [default: optimized]
+Plan detail level: rules, jobs, or optimized (default)
+.TP
+\fB\-\-no\-optimize\fR
+Skip optimization passes
+.TP
+\fB\-\-json\fR
+Output NDJSON
+.TP
+\fB\-f\fR, \fB\-\-file\fR \fI<FILE>\fR [default: Oxymakefile.toml]
+Oxymakefile path
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help
+.TP
+[\fITARGETS\fR]
+Target files or patterns to build

@@ -1,0 +1,96 @@
+# SLURM Docker cluster recipes
+# Migrated from oxymake root justfile
+#
+# Usage: just -f infra/setup/slurm-docker/justfile <recipe>
+# Or from repo root: just -f infra/setup/slurm-docker/justfile slurm-up
+
+oxymake_root := justfile_directory() / "../../.."
+
+# Default: show available recipes
+default:
+    @just -f {{justfile()}} --list
+
+# --- Cluster lifecycle -------------------------------------------------------
+
+# Start the containerized SLURM cluster (controller + 2 compute nodes)
+[group('cluster')]
+slurm-up:
+    docker compose -f {{oxymake_root}}/tests/slurm-docker/docker-compose.yml up -d
+    @echo "Waiting for SLURM cluster to become ready..."
+    @for i in $(seq 1 30); do \
+        if docker exec slurmctld sinfo -N -h 2>/dev/null | grep -q "idle"; then \
+            echo "SLURM cluster is up ($(docker exec slurmctld sinfo -N -h | wc -l | tr -d ' ') nodes idle)."; \
+            exit 0; \
+        fi; \
+        sleep 2; \
+        printf "."; \
+    done; \
+    echo ""; \
+    echo "ERROR: SLURM cluster did not become ready within 60s"; \
+    docker compose -f {{oxymake_root}}/tests/slurm-docker/docker-compose.yml logs --tail=20; \
+    exit 1
+
+# Stop the containerized SLURM cluster and remove volumes
+[group('cluster')]
+slurm-down:
+    docker compose -f {{oxymake_root}}/tests/slurm-docker/docker-compose.yml down -v
+    @echo "SLURM cluster stopped."
+
+# Show SLURM cluster status (nodes, partitions, queue)
+[group('cluster')]
+slurm-status:
+    @docker exec slurmctld sinfo 2>/dev/null || echo "SLURM cluster is not running. Start with: just slurm-up"
+    @echo ""
+    @docker exec slurmctld squeue 2>/dev/null || true
+
+# --- Build -------------------------------------------------------------------
+
+# Build a Linux binary for use inside Docker containers (cross-compile via Docker)
+[group('build')]
+build-linux:
+    docker run --rm -v "{{oxymake_root}}:/src:ro" \
+        -v "{{oxymake_root}}/target-linux:/target" \
+        -w /src -e CARGO_TARGET_DIR=/target \
+        rust:1.90-bookworm cargo build --bin ox --release -j 4
+
+# --- Run ---------------------------------------------------------------------
+
+# Run OxyMake pipeline on the containerized SLURM cluster
+[group('run')]
+ox-run-slurm *args: build-linux
+    docker cp {{oxymake_root}}/tests/slurm-docker/Oxymakefile.toml slurmctld:/work/Oxymakefile.toml
+    docker cp {{oxymake_root}}/target-linux/release/ox slurmctld:/usr/local/bin/ox
+    docker exec -w /work slurmctld ox run --executor slurm --follow {{args}}
+
+# --- Demo --------------------------------------------------------------------
+
+# Run the SLURM lifecycle demo (Docker or mock SLURM)
+[group('demo')]
+demo-slurm:
+    cd {{oxymake_root}} && cargo build --bin ox
+    OX="{{oxymake_root}}/target/debug/ox" bash {{oxymake_root}}/tests/slurm-docker/run-demo.sh
+
+# Run the SLURM demo non-interactively with mock SLURM (for CI)
+[group('demo')]
+demo-slurm-ci:
+    cd {{oxymake_root}} && cargo build --bin ox
+    MOCK=1 OX="{{oxymake_root}}/target/debug/ox" bash {{oxymake_root}}/tests/slurm-docker/run-demo.sh < /dev/null
+
+# --- Test --------------------------------------------------------------------
+
+# Run SLURM end-to-end integration tests (mock SLURM, automated assertions)
+[group('test')]
+test-slurm-e2e:
+    cd {{oxymake_root}} && cargo build --bin ox
+    OX="{{oxymake_root}}/target/debug/ox" bash {{oxymake_root}}/tests/slurm-docker/test-e2e.sh
+
+# Run SLURM end-to-end tests on a real Docker SLURM cluster (requires `just slurm-up` first)
+[group('test')]
+test-slurm-docker: build-linux
+    bash {{oxymake_root}}/tests/slurm-docker/test-docker-e2e.sh
+
+# Run SLURM Docker shim E2E test (host ox + Docker shims, no cross-compile needed)
+[group('test')]
+test-slurm-shim:
+    cd {{oxymake_root}} && cargo build --bin ox
+    OX="{{oxymake_root}}/target/debug/ox" bash {{oxymake_root}}/tests/slurm-docker/test-shim-e2e.sh

@@ -1,0 +1,38 @@
+{
+  "sloc": {
+    "value": 58966,
+    "unit": "lines",
+    "source": "tokei crates/ -t rust",
+    "measured_at": "2026-05-27"
+  },
+  "tests": {
+    "value": 1756,
+    "unit": "count",
+    "source": "cargo test --workspace",
+    "measured_at": "2026-05-27"
+  },
+  "crates": {
+    "value": 24,
+    "unit": "count",
+    "source": "ls crates/",
+    "measured_at": "2026-05-27"
+  },
+  "commits": {
+    "value": 609,
+    "unit": "count",
+    "source": "git log --oneline",
+    "measured_at": "2026-05-27"
+  },
+  "dev_days": {
+    "value": 19,
+    "unit": "days",
+    "source": "git log unique dates",
+    "measured_at": "2026-05-27"
+  },
+  "doc_files": {
+    "value": 152,
+    "unit": "count",
+    "source": "find docs -name *.md",
+    "measured_at": "2026-05-27"
+  }
+}

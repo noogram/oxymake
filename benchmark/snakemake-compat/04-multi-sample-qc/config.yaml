@@ -1,0 +1,11 @@
+samples:
+  - patient_01
+  - patient_02
+  - patient_03
+  - healthy_01
+  - healthy_02
+
+thresholds:
+  min_reads: 100
+  min_quality: 30
+  max_duplication: 0.5

@@ -1,0 +1,33 @@
+[book]
+title = "OxyMake"
+description = "Next-generation workflow orchestration in Rust — the uv of computational workflows."
+authors = ["Emmanuel Sérié"]
+language = "en"
+src = "src"
+
+# Output goes to docs/book/book/ (mdBook default, relative to this file).
+# This is the directory Cloudflare Pages publishes — see wrangler.toml
+# (pages_build_output_dir) and .github/workflows/docs-deploy.yml.
+build-dir = "book"
+
+[output.html]
+default-theme = "navy"
+preferred-dark-theme = "navy"
+git-repository-url = "https://github.com/noogram/oxymake"
+edit-url-template = "https://github.com/noogram/oxymake/edit/main/docs/book/{path}"
+no-section-label = false
+additional-js = ["mermaid.min.js", "mermaid-init.js"]
+
+[output.html.fold]
+enable = true
+level = 1
+
+[output.html.search]
+enable = true
+limit-results = 30
+use-boolean-and = true
+
+[preprocessor]
+
+[preprocessor.mermaid]
+command = "mdbook-mermaid"

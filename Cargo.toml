@@ -1,0 +1,94 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/ox-core",
+    "crates/ox-format",
+    "crates/ox-state",
+    "crates/ox-cache",
+    "crates/ox-cache-remote",
+    "crates/ox-plan",
+    "crates/ox-api",
+    "crates/ox-exec-local",
+    "crates/ox-storage-local",
+    "crates/ox-env-system",
+    "crates/ox-env-uv",
+    "crates/ox-codec-core",
+    "crates/ox-report-term",
+    "crates/ox-report-json",
+    "crates/ox-cli",
+    "crates/ox-monitor-tui",
+    "crates/ox-dashboard",
+    "crates/ox-translate",
+    "crates/ox-lock",
+    "crates/ox-exec-slurm",
+    "crates/ox-exec-ray",
+    "crates/ox-mcp",
+    "crates/ox-render",
+    "crates/oxymake",
+]
+# ox-metrics excluded: prometheus 0.14 is stalled upstream (no updates since
+# 2023) and its global-registry pattern causes test interference. Build
+# explicitly with: cargo check --manifest-path crates/ox-metrics/Cargo.toml
+exclude = ["crates/ox-metrics"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/noogram/oxymake"
+description = "Next-generation workflow orchestration in Rust"
+keywords = ["workflow", "build-system", "orchestration", "make", "pipeline"]
+categories = ["development-tools::build-utils"]
+publish = false
+
+[workspace.dependencies]
+# Core
+petgraph = "0.8"
+blake3 = "1.8"
+serde = { version = "1", features = ["derive", "rc"] }
+serde_json = "1"
+toml = "0.8"
+serde_yaml_ng = "0.10"
+regex = "1"
+thiserror = "2"
+anyhow = "1"
+
+# Async
+tokio = { version = "1" }
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+clap_mangen = "0.2"
+
+# State
+rusqlite = { version = "0.32", features = ["bundled"] }
+
+# Reporting
+miette = { version = "7", features = ["fancy"] }
+indicatif = "0.17"
+console = "0.16"
+
+# Platform
+libc = "0.2"
+open = "5"
+
+# Float safety
+ordered-float = { version = "4", features = ["serde"] }
+
+# Identity
+uuid = { version = "1", features = ["v4"] }
+
+# Concurrency
+parking_lot = "0.12"
+
+# Observability
+tracing = "0.1"
+
+# Testing
+serial_test = "3"
+proptest = "1"
+insta = { version = "1", features = ["toml"] }
+assert_cmd = "2"
+tempfile = "3"
+criterion = { version = "0.5", features = ["html_reports"] }

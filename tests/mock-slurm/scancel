@@ -1,0 +1,33 @@
+#!/bin/bash
+# Mock scancel — cancels a job by updating its state file.
+#
+# Usage: scancel <jobid>
+# Reads/writes state in $SLURM_MOCK_DIR (default: /tmp/slurm-mock).
+
+set -euo pipefail
+
+MOCK_DIR="${SLURM_MOCK_DIR:-/tmp/slurm-mock}"
+JOB_ID="${1:-}"
+
+if [ -z "$JOB_ID" ]; then
+    echo "scancel: error: No job ID specified" >&2
+    exit 1
+fi
+
+STATE_FILE="$MOCK_DIR/job_$JOB_ID"
+
+if [ ! -f "$STATE_FILE" ]; then
+    echo "scancel: error: Invalid job id specified" >&2
+    exit 1
+fi
+
+STATE=$(cat "$STATE_FILE")
+case "$STATE" in
+    PENDING|RUNNING)
+        echo "CANCELLED" > "$STATE_FILE"
+        echo "0" > "$MOCK_DIR/exit_$JOB_ID"
+        ;;
+    *)
+        # Already in terminal state — no-op (like real scancel)
+        ;;
+esac

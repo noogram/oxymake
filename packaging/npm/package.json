@@ -1,0 +1,30 @@
+{
+  "name": "oxymake",
+  "version": "0.0.0",
+  "description": "Next-generation workflow orchestration in Rust",
+  "keywords": [
+    "workflow",
+    "pipeline",
+    "build-system",
+    "orchestration",
+    "make"
+  ],
+  "homepage": "https://noogram.org/oxymake",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/noogram/oxymake.git"
+  },
+  "bugs": {
+    "url": "https://github.com/noogram/oxymake/issues"
+  },
+  "license": "MIT OR Apache-2.0",
+  "author": "Emmanuel Sérié <emmanuel@serie.dev>",
+  "files": [
+    "README.md"
+  ],
+  "os": [
+    "darwin",
+    "linux"
+  ],
+  "private": false
+}

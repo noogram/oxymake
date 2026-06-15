@@ -1,0 +1,42 @@
+# Benchmark workflow: word frequency analysis
+# Equivalent to the Snakemake benchmark/Snakefile
+ox_version = "0.1"
+
+[config]
+samples = ["alpha", "beta", "gamma"]
+
+[rule.all]
+input = ["results/merged_counts.txt"]
+
+[rule.generate]
+output = ["data/{sample}.txt"]
+wildcard_constraints = { sample = "alpha|beta|gamma" }
+shell = """
+echo "the quick brown fox jumps over the lazy dog" > {output}
+echo "the {sample} sample has unique words" >> {output}
+echo "fox and dog are repeated in the {sample} text" >> {output}
+"""
+
+[rule.count]
+input = { txt = "data/{sample}.txt" }
+output = { counts = "results/{sample}_counts.txt" }
+wildcard_constraints = { sample = "alpha|beta|gamma" }
+shell = """
+echo "Counting words in {input.txt}" > logs/{sample}_count.log
+cat {input.txt} | tr ' ' '\n' | sort | uniq -c | sort -rn > {output.counts}
+echo "Done: $(wc -l < {output.counts}) unique words" >> logs/{sample}_count.log
+"""
+
+[rule.merge]
+input = ["results/{sample}_counts.txt"]
+output = ["results/merged_counts.txt"]
+expand = "product"
+shell = """
+echo "# Merged word counts" > {output}
+for f in {input}; do
+    sample=$(basename "$f" _counts.txt)
+    echo "## $sample" >> {output}
+    cat "$f" >> {output}
+    echo "" >> {output}
+done
+"""

@@ -1,0 +1,36 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "oxymake"
+version = "0.1.0"
+description = "Content-addressable workflow engine — git checkout no longer rebuilds everything"
+readme = "README.md"
+requires-python = ">=3.8"
+license = { text = "MIT OR Apache-2.0" }
+authors = [{ name = "Emmanuel Sérié", email = "emmanuel@serie.dev" }]
+keywords = ["workflow", "pipeline", "snakemake", "build", "cache"]
+
+[project.urls]
+Homepage = "https://oxymake.dev"
+Repository = "https://github.com/noogram/oxymake"
+Releases = "https://github.com/noogram/oxymake/releases"
+
+# This is a thin launcher: it fetches the prebuilt `ox` binary that matches the
+# host platform from the GitHub release on first run, caches it, and execs it.
+# It deliberately has no Rust build dependency so that `uv tool install oxymake`
+# and `pipx install oxymake` work in a pure conda/pip environment.
+
+[project.scripts]
+ox = "oxymake_launcher:main"
+oxymake = "oxymake_launcher:main"
+
+# The distribution name (`oxymake`) does not match the single launcher module
+# (`oxymake_launcher.py`), so hatchling cannot auto-detect what to ship in the
+# wheel — it must be told explicitly, or `python -m build` fails the wheel step.
+[tool.hatch.build.targets.wheel]
+only-include = ["oxymake_launcher.py"]
+
+[tool.hatch.build.targets.sdist]
+include = ["oxymake_launcher.py", "README.md", "pyproject.toml"]

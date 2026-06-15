@@ -1,0 +1,134 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-Dwarnings"
+
+jobs:
+  check:
+    name: Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo check --workspace
+
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --workspace
+
+  clippy:
+    name: Clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --workspace -- -D warnings
+
+  fmt:
+    name: Format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all -- --check
+
+  doc:
+    name: Documentation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo doc --workspace --no-deps
+        env:
+          RUSTDOCFLAGS: "-Dwarnings"
+
+  doctest:
+    name: Doc Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --doc --workspace
+
+  adr-lint:
+    name: ADR meta-linter (advisory)
+    runs-on: ubuntu-latest
+    # Advisory — never fail the build. Output is a radar for reviewers,
+    # not a gate. See docs/adr/README.md (#adr-meta-linter).
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Run adr-lint
+        run: python3 scripts/adr-lint.py
+      - name: ADR-lint JSON summary
+        if: always()
+        run: python3 scripts/adr-lint.py --json > adr-lint-report.json || true
+      - name: Upload ADR-lint report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: adr-lint-report
+          path: adr-lint-report.json
+          if-no-files-found: ignore
+
+  adr-state:
+    name: ADR STATE.md in sync (gate)
+    runs-on: ubuntu-latest
+    # NOT advisory — STATE.md is a machine-generated projection of docs/adr/.
+    # If a committed ADR edit forgot to regenerate it, the build fails so the
+    # index trinity (disk / README / STATE.md) cannot silently drift.
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Regenerate STATE.md
+        run: python3 scripts/adr-lint.py --emit-state docs/adr/STATE.md
+      - name: Fail if STATE.md drifted
+        run: |
+          if ! git diff --quiet -- docs/adr/STATE.md; then
+            echo "::error::docs/adr/STATE.md is stale. Run: scripts/adr-lint.py --emit-state docs/adr/STATE.md"
+            git diff -- docs/adr/STATE.md
+            exit 1
+          fi
+          echo "STATE.md is in sync."
+
+  forbid-pyo3:
+    name: Forbid pyo3 dependency (ADR-003 / OX-4 doctrine)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Forbid pyo3 in workspace dependency graph
+        run: |
+          if cargo metadata --format-version 1 --locked \
+              | jq -e '.packages[] | select(.name=="pyo3")' > /dev/null; then
+            echo "ERROR: pyo3 found in workspace — violates ADR-003 / OX-4 doctrine"
+            echo "Re-introducing pyo3 requires a fresh ADR superseding ADR-003."
+            exit 1
+          fi
+          echo "OK: no pyo3 in workspace dependency graph."

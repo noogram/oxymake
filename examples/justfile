@@ -1,0 +1,58 @@
+# OxyMake examples
+#
+# Run any example with: just <recipe>
+# All recipes use `ox` from PATH by default.
+# Override with: OX=/path/to/ox just <recipe>
+
+# Default: list available examples
+default:
+    @just --list
+
+# Run the interactive demo (word-frequency pipeline walkthrough)
+demo:
+    bash demo/run-demo.sh
+
+# Run the demo non-interactively (for CI)
+demo-ci:
+    bash demo/run-demo.sh < /dev/null
+
+# Run the guided tour (annotated terminal walkthrough)
+guided-tour:
+    bash guided-tour.sh
+
+# Run the guided tour non-interactively (for CI)
+guided-tour-ci:
+    bash guided-tour.sh < /dev/null
+
+# Run the dashboard demo (pipeline + web dashboard + browser)
+demo-dashboard:
+    bash demo/run-dashboard-demo.sh
+
+# Run the intermediate-deletion benchmark (ox vs snakemake)
+intermediate-deletion:
+    cd intermediate-deletion && just compare
+
+# Run just the ox part of the intermediate-deletion test
+intermediate-deletion-ox:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cd intermediate-deletion
+    rm -rf output .oxymake
+    ox init 2>/dev/null || true
+    echo ">>> Full run"
+    ox run
+    echo ">>> Deleting intermediate (step_b.txt)"
+    rm -f output/step_b.txt
+    echo ">>> Re-run — should rebuild step_b → step_c → step_d"
+    ox run
+    echo ">>> Verify all outputs restored:"
+    ls -1 output/
+    rm -rf output .oxymake
+
+# Run all examples non-interactively (CI validation)
+all: demo-ci guided-tour-ci intermediate-deletion-ox
+
+# Clean generated files from all examples
+clean:
+    rm -rf demo/data demo/results demo/report demo/.oxymake
+    rm -rf intermediate-deletion/output intermediate-deletion/.oxymake intermediate-deletion/.snakemake

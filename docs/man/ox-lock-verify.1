@@ -1,0 +1,22 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH ox-lock-verify 1  "ox-lock-verify " 
+.SH NAME
+ox\-lock\-verify \- Verify the current state against an existing ox.lock
+.SH SYNOPSIS
+\fBox\-lock\-verify\fR [\fB\-f\fR|\fB\-\-file\fR] [\fB\-l\fR|\fB\-\-lockfile\fR] [\fB\-\-json\fR] [\fB\-h\fR|\fB\-\-help\fR] 
+.SH DESCRIPTION
+Verify the current state against an existing ox.lock
+.SH OPTIONS
+.TP
+\fB\-f\fR, \fB\-\-file\fR \fI<FILE>\fR [default: Oxymakefile.toml]
+Oxymakefile path
+.TP
+\fB\-l\fR, \fB\-\-lockfile\fR \fI<LOCKFILE>\fR
+Lockfile path (default: ox.lock next to the Oxymakefile)
+.TP
+\fB\-\-json\fR
+Output structured JSON instead of human\-readable text
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help

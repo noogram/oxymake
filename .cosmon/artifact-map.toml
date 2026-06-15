@@ -1,0 +1,85 @@
+# Oxymake artifact map — declares what each tracked file is and who it is for.
+#
+# THE MECHANISM (genre → audience → residence)
+# --------------------------------------------
+# Each `[genre]` table below names a set of path globs (`location`) and an
+# `audience`. A file's genre is decided by matching its path against these
+# globs; its genre fixes its audience; its audience fixes where it is allowed
+# to live (its "residence"). For this repository two audiences are in use:
+#   public → a fresh clone sees these (the default for this repo)
+#   solo   → regenerable / local-only state, excluded from push
+# The audit gate (scripts/artifact-map-audit.py) turns the build red if any
+# tracked file classifies as a non-public audience — that would be a
+# confidential file leaking onto the public surface. The residence topology
+# this enforces is documented in docs/adr/017-artifact-residence-topology.md.
+#
+# ORDERING CONTRACT (invariant I2 — deterministic classification): tables are
+# ordered longest-match-first — descending by number of fixed (non-wildcard)
+# leading path components. On a multi-match the more specific glob wins; ties
+# resolve in declaration order. The `code` catch-all `**/*` is LAST so that
+# every tracked path classifies (invariant I1 — totality).
+
+# =====================================================================
+# Tier 1 — docs/paper/** the pre-print itself (2 fixed components)
+# =====================================================================
+
+# The manuscript: LaTeX, generated metrics, figures (.dot/.pdf), bib, the
+# compiled PDF + its OpenTimestamps proof, regen scripts. Public by decision.
+[paper]
+location = ["docs/paper/**/*"]
+audience = "public"
+
+# =====================================================================
+# Tier 2 — docs/<topic>/** (1 fixed component beyond docs/)
+# =====================================================================
+
+[book]
+location = ["docs/book/**/*"]
+audience = "public"
+
+[adr]
+location = ["docs/adr/**/*.md"]
+audience = "public"
+
+[format-doc]
+location = ["docs/format/**/*"]
+audience = "public"
+
+[architecture-doc]
+location = ["docs/architecture/**/*"]
+audience = "public"
+
+# =====================================================================
+# Tier 3 — top-of-tree source, tests, benches, locks (1 fixed component)
+# =====================================================================
+
+[manifest]
+location = ["Cargo.toml", "Cargo.lock", "crates/**/Cargo.toml", "rust-toolchain.toml"]
+audience = "public"
+
+[crate-source]
+location = ["crates/**/src/**/*", "crates/**/tests/**/*", "crates/**/benches/**/*"]
+audience = "public"
+
+# Reproducible benchmark harnesses (generated data is gitignored already).
+[benchmark-harness]
+location = ["bench/**/*", "benchmark/**/*", "baselines/**/*"]
+audience = "public"
+
+# =====================================================================
+# Tier 4 — regenerable / local-only state (excluded from push)
+# =====================================================================
+
+[cosmon-state]
+location = [".cosmon/state/**/*.jsonl", ".cosmon/state/**/*"]
+audience = "solo"
+
+# =====================================================================
+# Catch-all — MUST stay last (invariant I1 — totality)
+# =====================================================================
+
+# Everything else: README, CONTRIBUTING, CHANGELOG, AGENTS.md, .github/**,
+# LICENSE, top-level CLAUDE.md, docs not carved out above. Public by default.
+[code]
+location = ["**/*"]
+audience = "public"

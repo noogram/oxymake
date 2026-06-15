@@ -1,0 +1,7 @@
+# Generated pipeline outputs (created by running the demo)
+data/
+results/
+report/
+.oxymake/
+dag.png
+ox.lock

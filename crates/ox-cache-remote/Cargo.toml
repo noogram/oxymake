@@ -1,0 +1,19 @@
+[package]
+name = "ox-cache-remote"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Remote cache backends (S3, GCS, local directory) for sharing build artifacts across machines"
+
+[dependencies]
+ox-core = { path = "../ox-core" }
+blake3.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["fs", "io-util"] }
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio = { workspace = true, features = ["rt", "macros", "fs", "io-util"] }

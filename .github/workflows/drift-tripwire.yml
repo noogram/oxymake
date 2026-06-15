@@ -1,0 +1,122 @@
+# Drift Tripwire — exogenous referee #1
+#
+# WHY THIS EXISTS
+# ---------------
+# Pre-mortem #3 (GLOBAL, horizon 1 year) named a hidden assumption that the
+# project's whole falsifiability apparatus rests on: *self-refereed discipline*.
+# OxyMake's ADRs and its TLA+ spec suite (ADR-015) are promises the project
+# makes to itself. A promise a project polices for itself is, by construction,
+# waivable in silence: the operator notices a slipping ratio, intends to fix it
+# "next week", and the intention quietly becomes the norm. Carnot's
+# earliest-detector argument (pre-mortem #3 / D3) is that the cheapest place to
+# catch discipline drift is *before* it compounds — a tripwire that fires on
+# the first crossing, not an audit that discovers a year of erosion at once.
+#
+# This workflow is that tripwire, and it is deliberately EXOGENOUS: it lives in
+# CI, not in the operator's head. A red build on GitHub is a public, dated,
+# un-ignorable signal that says "discipline drift". Crucially, there is NO
+# self-waiver: no `OXYMAKE_SKIP_DRIFT_CHECK` env var, no `continue-on-error`,
+# no branch exception. To silence this referee you must change THIS FILE in a
+# commit — and that commit is itself the visible, reviewable record that the
+# discipline was relaxed on purpose. The referee cannot be bribed quietly; it
+# can only be fired in writing. That is the entire point: it converts a silent
+# drift into a loud, attributable decision.
+#
+# WHAT IT CHECKS
+#   1. TLA+/Rust line ratio floor — tla_lines / rust_sloc must stay >= 0.44 %
+#      (ADR-015 ships at 0.79 %; 0.44 % is the floor below which the formal
+#      spec is no longer tracking the growth of the concurrent kernel).
+#
+# WHAT IT NO LONGER CHECKS (operator decision 2026-06-10, premortem PM#5)
+#   All temporal gates were removed: the 60-day substantive-commit staleness
+#   timer and the 2026-09-01 TRACES.md liveness deadline. Nothing calendar-
+#   based may redden the badge. This referee now measures CONTENT drift only —
+#   spec-vs-code divergence at each push — and therefore can only change
+#   verdict when the code changes, never because time passed. Spec liveness is
+#   reviewed at release checkpoints (see spec/tla/README.md), not by a clock.
+#
+# Self-applied falsifier — cross-referenced in STATUS.md.
+
+name: Drift Tripwire
+
+on:
+  push:
+    branches: [main]
+  # Manual trigger so the referee can be run on demand (gh workflow run).
+  # This is NOT a waiver: it can only make the build run, never make it pass.
+  workflow_dispatch:
+
+# Tripwire floor — single source of truth for the ADR-015 ratio threshold.
+env:
+  DRIFT_RATIO_FLOOR_PCT: "0.44"
+
+jobs:
+  drift-tripwire:
+    name: Discipline drift referee
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Install tokei (canonical Rust SLOC counter, per ADR-016)
+        uses: taiki-e/install-action@fd2f5e3d644b484055ebf4268f474c565f148f25 # v2
+        with:
+          tool: tokei
+
+      - name: Run drift tripwire
+        shell: bash
+        run: |
+          set -uo pipefail
+          FAILURES=0
+          fail() { echo "::error::$*"; FAILURES=$((FAILURES + 1)); }
+
+          echo "=============================================="
+          echo " OxyMake Drift Tripwire — exogenous referee #1"
+          echo "=============================================="
+
+          # ----------------------------------------------------------------
+          # Check 1 — TLA+/Rust ratio floor (ADR-015)
+          # ----------------------------------------------------------------
+          echo ""
+          echo "--- Check 1: TLA+/Rust line ratio (floor ${DRIFT_RATIO_FLOOR_PCT}%) ---"
+
+          # Rust SLOC: tokei "code" column for crates/ — the canonical metric
+          # per ADR-016 (blanks and comments excluded). Matches metrics.json.
+          RUST_SLOC=$(tokei crates/ -t rust -o json | jq -r '.Rust.code')
+
+          # TLA+ lines: raw line count of the committed spec modules. This is
+          # the exact measure ADR-015 uses ("468 L of .tla for 58,966 SLOC").
+          TLA_LINES=$(find spec/tla -maxdepth 1 -name '*.tla' -print0 \
+            | xargs -0 cat 2>/dev/null | wc -l | tr -d ' ')
+
+          if [ -z "${RUST_SLOC}" ] || [ "${RUST_SLOC}" -eq 0 ] 2>/dev/null; then
+            fail "Could not measure Rust SLOC (tokei returned '${RUST_SLOC}')."
+          elif [ "${TLA_LINES}" -eq 0 ] 2>/dev/null; then
+            fail "No TLA+ lines found in spec/tla/ — the formal spec suite has vanished."
+          else
+            RATIO=$(awk -v t="${TLA_LINES}" -v r="${RUST_SLOC}" \
+              'BEGIN { printf "%.4f", (t / r) * 100 }')
+            echo "  tla_lines = ${TLA_LINES}"
+            echo "  rust_sloc = ${RUST_SLOC}"
+            echo "  ratio     = ${RATIO}%  (floor ${DRIFT_RATIO_FLOOR_PCT}%)"
+            if awk -v ratio="${RATIO}" -v floor="${DRIFT_RATIO_FLOOR_PCT}" \
+                'BEGIN { exit !(ratio < floor) }'; then
+              fail "TLA+/Rust ratio ${RATIO}% has dropped below the ADR-015 floor of ${DRIFT_RATIO_FLOOR_PCT}%. The formal spec is no longer tracking the growth of the concurrent kernel."
+            else
+              echo "  OK: ratio above floor."
+            fi
+          fi
+
+          # ----------------------------------------------------------------
+          # Verdict
+          # ----------------------------------------------------------------
+          echo ""
+          echo "=============================================="
+          if [ "${FAILURES}" -gt 0 ]; then
+            echo " DRIFT TRIPWIRE: ${FAILURES} signal(s) RED — discipline drift detected."
+            echo " This referee is exogenous and non-waivable: silencing it requires"
+            echo " editing .github/workflows/drift-tripwire.yml in a visible commit."
+            echo "=============================================="
+            exit 1
+          fi
+          echo " DRIFT TRIPWIRE: all signals green — discipline holds."
+          echo "=============================================="

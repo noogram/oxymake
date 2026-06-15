@@ -1,0 +1,32 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH ox-export 1  "ox-export " 
+.SH NAME
+ox\-export \- Export an Oxymakefile to another format (Snakemake or WDL)
+.SH SYNOPSIS
+\fBox\-export\fR [\fB\-f\fR|\fB\-\-file\fR] [\fB\-o\fR|\fB\-\-output\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fIFORMAT\fR> 
+.SH DESCRIPTION
+Export an Oxymakefile to another format (Snakemake or WDL)
+.SH OPTIONS
+.TP
+\fB\-f\fR, \fB\-\-file\fR \fI<FILE>\fR [default: Oxymakefile.toml]
+Path to the Oxymakefile to export (default: Oxymakefile.toml)
+.TP
+\fB\-o\fR, \fB\-\-output\fR \fI<OUTPUT>\fR
+Write output to a file instead of stdout
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)
+.TP
+<\fIFORMAT\fR>
+Target format to export to
+.br
+
+.br
+\fIPossible values:\fR
+.RS 14
+.IP \(bu 2
+snakemake: Export to Snakemake format
+.IP \(bu 2
+wdl: Export to WDL (Workflow Description Language) format
+.RE

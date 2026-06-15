@@ -1,0 +1,121 @@
+# Advanced benchmark: multi-step data analysis pipeline
+# Exercises: configfile, params, log, threads, named I/O, expand(), wildcard_constraints
+#
+# Pipeline:
+#   1. generate_data: Create synthetic CSV datasets
+#   2. normalize:     Normalize numeric columns (optional via config)
+#   3. summarize:     Compute per-column statistics
+#   4. report:        Merge all summaries into a final report
+
+configfile: "config.yaml"
+
+rule all:
+    input:
+        "results/final_report.txt"
+
+rule generate_data:
+    output:
+        csv="data/{sample}.csv"
+    wildcard_constraints:
+        sample="[^.]+"
+    params:
+        n_rows=100,
+        seed=config.get("seed", 42)
+    log:
+        "logs/generate_{sample}.log"
+    shell:
+        """
+        echo "Generating {wildcards.sample} dataset (rows={params.n_rows}, seed={params.seed})" > {log}
+        echo "id,value_a,value_b,category" > {output.csv}
+        awk -v seed={params.seed} -v n={params.n_rows} -v sample={wildcards.sample} '
+        BEGIN {{
+            srand(seed);
+            cats[0]="low"; cats[1]="mid"; cats[2]="high";
+            for (i=1; i<=n; i++) {{
+                a = int(rand()*1000)/10;
+                b = int(rand()*500)/10;
+                c = cats[int(rand()*3)];
+                printf "%s_%04d,%.1f,%.1f,%s\\n", sample, i, a, b, c
+            }}
+        }}' >> {output.csv}
+        echo "Generated $(wc -l < {output.csv}) lines" >> {log}
+        """
+
+rule normalize:
+    input:
+        csv="data/{sample}.csv"
+    output:
+        csv="data/{sample}.normalized.csv"
+    params:
+        do_normalize=config.get("normalize", True)
+    log:
+        "logs/normalize_{sample}.log"
+    threads: 2
+    shell:
+        """
+        echo "Normalizing {wildcards.sample} (normalize={params.do_normalize})" > {log}
+        if [ "{params.do_normalize}" = "True" ]; then
+            head -1 {input.csv} > {output.csv}
+            tail -n +2 {input.csv} | awk -F',' '
+            NR==1 {{ for(i=1;i<=NF;i++) sum_a=0; sum_b=0; n=0 }}
+            {{ sum_a+=$2; sum_b+=$3; n++; lines[NR]=$0 }}
+            END {{
+                mean_a=sum_a/n; mean_b=sum_b/n;
+                for(i=2;i<=NR;i++) {{
+                    split(lines[i],f,",");
+                    printf "%s,%.4f,%.4f,%s\\n", f[1], f[2]/mean_a, f[3]/mean_b, f[4]
+                }}
+            }}' >> {output.csv}
+        else
+            cp {input.csv} {output.csv}
+        fi
+        echo "Output: $(wc -l < {output.csv}) lines" >> {log}
+        """
+
+rule summarize:
+    input:
+        csv="data/{sample}.normalized.csv"
+    output:
+        stats="results/{sample}_stats.txt"
+    params:
+        n_components=config.get("n_components", 2)
+    log:
+        "logs/summarize_{sample}.log"
+    shell:
+        """
+        echo "Summarizing {wildcards.sample} (components={params.n_components})" > {log}
+        echo "# Statistics for {wildcards.sample}" > {output.stats}
+        echo "## Row count" >> {output.stats}
+        echo "  n = $(tail -n +2 {input.csv} | wc -l | tr -d ' ')" >> {output.stats}
+        echo "" >> {output.stats}
+        echo "## Column means" >> {output.stats}
+        tail -n +2 {input.csv} | awk -F',' '
+        {{ sum_a+=$2; sum_b+=$3; n++ }}
+        END {{ printf "  value_a: %.4f\\n  value_b: %.4f\\n", sum_a/n, sum_b/n }}
+        ' >> {output.stats}
+        echo "" >> {output.stats}
+        echo "## Category distribution" >> {output.stats}
+        tail -n +2 {input.csv} | awk -F',' '{{ cats[$4]++ }} END {{ for(c in cats) printf "  %s: %d\\n", c, cats[c] }}' | sort >> {output.stats}
+        echo "Done: $(wc -l < {output.stats}) lines in summary" >> {log}
+        """
+
+rule report:
+    input:
+        stats=expand("results/{sample}_stats.txt", sample=config["samples"])
+    output:
+        "results/final_report.txt"
+    log:
+        "logs/report.log"
+    shell:
+        """
+        echo "Building report from {input}" > {log}
+        echo "=============================" > {output}
+        echo " Data Analysis Report" >> {output}
+        echo "=============================" >> {output}
+        echo "" >> {output}
+        for f in {input}; do
+            cat "$f" >> {output}
+            echo "" >> {output}
+        done
+        echo "Report complete: $(wc -l < {output}) lines" >> {log}
+        """

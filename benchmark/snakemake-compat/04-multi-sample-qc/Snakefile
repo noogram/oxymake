@@ -1,0 +1,117 @@
+# Multi-sample quality control pipeline
+# Exercises: configfile, resources, wildcard_constraints, threads, log, params
+#
+# Pipeline:
+#   1. Generate mock sequencing data
+#   2. Run FastQC-like quality check
+#   3. Check for duplicates
+#   4. Aggregate QC into multi-sample report
+
+configfile: "config.yaml"
+
+wildcard_constraints:
+    sample="[a-z]+_[0-9]+"
+
+rule all:
+    input:
+        "reports/multiqc_report.txt"
+
+rule generate_data:
+    output:
+        fastq="data/{sample}.fastq",
+        md5="data/{sample}.fastq.md5"
+    params:
+        n_reads=10
+    shell:
+        """
+        for i in $(seq 1 {params.n_reads}); do
+            echo "@{wildcards.sample}_read_$i" >> {output.fastq}
+            python3 -c "import random; random.seed($i); print(''.join(random.choices('ACGT', k=150)))" >> {output.fastq}
+            echo "+" >> {output.fastq}
+            python3 -c "import random; random.seed($i); print(''.join(random.choices('EFGHIJ', k=150)))" >> {output.fastq}
+        done
+        md5sum {output.fastq} > {output.md5} || md5 -r {output.fastq} > {output.md5}
+        """
+
+rule quality_check:
+    input:
+        fastq="data/{sample}.fastq"
+    output:
+        qc="qc/{sample}_quality.txt"
+    log:
+        "logs/qc/{sample}.log"
+    threads: 2
+    resources:
+        mem_mb=2000
+    shell:
+        """
+        echo "Running QC on {wildcards.sample}" > {log}
+        n_reads=$(grep -c '^@' {input.fastq})
+        avg_len=$(awk 'NR%4==2 {{ total+=length($0); n++ }} END {{ printf "%.0f", total/n }}' {input.fastq})
+        gc_pct=$(awk 'NR%4==2 {{ for(i=1;i<=length($0);i++) {{ c=substr($0,i,1); if(c=="G"||c=="C") gc++ }} total+=length($0) }} END {{ printf "%.1f", 100*gc/total }}' {input.fastq})
+
+        echo "sample\t{wildcards.sample}" > {output.qc}
+        echo "total_reads\t$n_reads" >> {output.qc}
+        echo "avg_read_length\t$avg_len" >> {output.qc}
+        echo "gc_content\t$gc_pct" >> {output.qc}
+        echo "QC complete: $n_reads reads, avg_len=$avg_len, GC=$gc_pct%" >> {log}
+        """
+
+rule duplication_check:
+    input:
+        fastq="data/{sample}.fastq"
+    output:
+        dup="qc/{sample}_duplicates.txt"
+    log:
+        "logs/dup/{sample}.log"
+    shell:
+        """
+        echo "Checking duplicates in {wildcards.sample}" > {log}
+        total=$(awk 'NR%4==2' {input.fastq} | wc -l | tr -d ' ')
+        unique=$(awk 'NR%4==2' {input.fastq} | sort -u | wc -l | tr -d ' ')
+        dup_rate=$(awk -v t=$total -v u=$unique 'BEGIN {{ printf "%.3f", 1 - u/t }}')
+
+        echo "sample\t{wildcards.sample}" > {output.dup}
+        echo "total_reads\t$total" >> {output.dup}
+        echo "unique_reads\t$unique" >> {output.dup}
+        echo "duplication_rate\t$dup_rate" >> {output.dup}
+        echo "Dup rate: $dup_rate" >> {log}
+        """
+
+rule multiqc_report:
+    input:
+        qc=expand("qc/{sample}_quality.txt", sample=config["samples"]),
+        dup=expand("qc/{sample}_duplicates.txt", sample=config["samples"])
+    output:
+        report="reports/multiqc_report.txt"
+    log:
+        "logs/multiqc.log"
+    shell:
+        """
+        echo "Generating multi-sample QC report" > {log}
+        echo "=====================================" > {output.report}
+        echo "  Multi-Sample QC Report" >> {output.report}
+        echo "=====================================" >> {output.report}
+        echo "" >> {output.report}
+
+        echo "--- Quality Metrics ---" >> {output.report}
+        echo "sample\treads\tavg_len\tgc_pct" >> {output.report}
+        for f in {input.qc}; do
+            sample=$(grep 'sample' "$f" | cut -f2)
+            reads=$(grep 'total_reads' "$f" | cut -f2)
+            avg_len=$(grep 'avg_read' "$f" | cut -f2)
+            gc=$(grep 'gc_content' "$f" | cut -f2)
+            echo "$sample\t$reads\t$avg_len\t$gc" >> {output.report}
+        done
+        echo "" >> {output.report}
+
+        echo "--- Duplication Metrics ---" >> {output.report}
+        echo "sample\tdup_rate" >> {output.report}
+        for f in {input.dup}; do
+            sample=$(grep 'sample' "$f" | cut -f2)
+            dup=$(grep 'duplication_rate' "$f" | cut -f2)
+            echo "$sample\t$dup" >> {output.report}
+        done
+
+        echo "Report generated" >> {log}
+        """

@@ -1,0 +1,22 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH ox-lock-generate 1  "ox-lock-generate " 
+.SH NAME
+ox\-lock\-generate \- Generate an ox.lock file from the current workflow state
+.SH SYNOPSIS
+\fBox\-lock\-generate\fR [\fB\-f\fR|\fB\-\-file\fR] [\fB\-o\fR|\fB\-\-output\fR] [\fB\-\-json\fR] [\fB\-h\fR|\fB\-\-help\fR] 
+.SH DESCRIPTION
+Generate an ox.lock file from the current workflow state
+.SH OPTIONS
+.TP
+\fB\-f\fR, \fB\-\-file\fR \fI<FILE>\fR [default: Oxymakefile.toml]
+Oxymakefile path
+.TP
+\fB\-o\fR, \fB\-\-output\fR \fI<OUTPUT>\fR
+Output lockfile path (default: ox.lock next to the Oxymakefile)
+.TP
+\fB\-\-json\fR
+Output structured JSON instead of human\-readable text
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help

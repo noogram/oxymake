@@ -1,0 +1,31 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH ox-logs 1  "ox-logs " 
+.SH NAME
+ox\-logs \- View job logs
+.SH SYNOPSIS
+\fBox\-logs\fR [\fB\-\-rule\fR] [\fB\-\-failed\fR] [\fB\-f\fR|\fB\-\-follow\fR] [\fB\-\-json\fR] [\fB\-\-db\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fIJOB_ID\fR] 
+.SH DESCRIPTION
+View job logs
+.SH OPTIONS
+.TP
+\fB\-\-rule\fR \fI<RULE>\fR
+Filter by rule name (show logs for all matching jobs)
+.TP
+\fB\-\-failed\fR
+Show only failed jobs
+.TP
+\fB\-f\fR, \fB\-\-follow\fR
+Follow (tail \-f) the log for an active job
+.TP
+\fB\-\-json\fR
+Output structured JSON
+.TP
+\fB\-\-db\fR \fI<DB>\fR [default: .oxymake/state.db]
+Path to state.db
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help
+.TP
+[\fIJOB_ID\fR]
+Job ID to show logs for

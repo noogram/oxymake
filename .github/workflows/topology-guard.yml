@@ -1,0 +1,83 @@
+# Topology Guard — exogenous monitor for "main stays public" (Q-REL-4, gate iv)
+#
+# WHY THIS EXISTS
+# ---------------
+# The topology decision (`main` is public+team — see
+# docs/adr/017-artifact-residence-topology.md) is enforced at flip-time by a
+# one-shot operator act. Reverting the repo to private is reversible by the
+# operator with NO second party. This cron is the exogenous monitor: a clock
+# that is not the operator, reading only `gh api repos/<owner>/<repo> --jq
+# .private`, and raising a tracked GitHub issue if the answer is `true` after
+# the repo is expected public.
+#
+# HONEST SCOPE LIMIT (recorded — not hidden)
+# ------------------------------------------
+# A cron living in THIS repo is bypassable by the same operator who could flip
+# the repo back to private (he can also disable the workflow). It is therefore a
+# MONITOR that produces an attributable corpse (an open issue), NOT a hard lock.
+# True exogeneity for "main stays public" requires an ORG-LEVEL rule or a SECOND
+# org-admin so flip-back is not unilateral. That structural upgrade
+# is recorded as the explicitly-labeled-advisory item #15 in
+# docs/RELEASE-CHECKLIST.md (second independent referee). This workflow does the
+# most an in-repo artifact honestly can: it leaves a corpse.
+#
+# NO `continue-on-error`, NO skip-env.
+
+name: Topology Guard
+
+on:
+  schedule:
+    - cron: "0 7 * * *" # 07:00 UTC daily — checks the public/private bit every day.
+  workflow_dispatch: {} # manual fire for testing; still reads only exogenous state.
+
+permissions:
+  contents: read
+  issues: write # to raise/locate the tracked corpse issue.
+
+jobs:
+  topology-guard:
+    name: Guard main-stays-public (Topology B)
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      MARKER: "topology-guard: repository is PRIVATE"
+    steps:
+      - name: Read the public/private bit and raise a corpse if private
+        shell: bash
+        run: |
+          set -euo pipefail
+          repo="${GITHUB_REPOSITORY}"
+          private=$(gh api "repos/${repo}" --jq .private)
+          echo "repos/${repo} .private = ${private}"
+
+          if [ "$private" != "true" ]; then
+            echo "OK: ${repo} is public — Topology B intact."
+            # If a prior corpse issue is open, close it (the breach is healed).
+            existing=$(gh issue list --repo "$repo" --state open \
+              --search "in:title \"$MARKER\"" --json number --jq '.[0].number // empty')
+            if [ -n "$existing" ]; then
+              gh issue close "$existing" --repo "$repo" \
+                --comment "Resolved: \`.private\` is now \`false\` again. Topology B restored."
+            fi
+            exit 0
+          fi
+
+          # private == true. Raise (or refresh) a single tracked issue, then fail.
+          echo "::error::${repo} is PRIVATE — Topology B ('main stays public') is breached."
+          existing=$(gh issue list --repo "$repo" --state open \
+            --search "in:title \"$MARKER\"" --json number --jq '.[0].number // empty')
+          body=$(printf '%s\n' \
+            "**Topology Guard breach** — \`gh api repos/${repo} --jq .private\` returned \`true\`." \
+            "" \
+            "Per the artifact residence topology (docs/adr/017), \`main\` must stay" \
+            "public. The repository has been set private. This is an exogenous monitor;" \
+            "it cannot block the revert — it records it. Re-flip public, or document the" \
+            "decision and supersede the topology ADR." \
+            "" \
+            "_Raised by .github/workflows/topology-guard.yml on $(date -u +%Y-%m-%dT%H:%MZ)._")
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --repo "$repo" --body "$body"
+          else
+            gh issue create --repo "$repo" --title "$MARKER" --body "$body" || true
+          fi
+          exit 1

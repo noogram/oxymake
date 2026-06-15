@@ -1,0 +1,20 @@
+[package]
+name = "ox-report-term"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Terminal reporter — rich human-readable build output with progress bars"
+
+[dependencies]
+ox-core = { path = "../ox-core" }
+ox-render = { path = "../ox-render" }
+miette.workspace = true
+indicatif.workspace = true
+console.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt"] }

@@ -1,0 +1,19 @@
+[package]
+name = "ox-plan"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Optimization passes on JobGraph — pruning, merging, scheduling hints"
+
+[dependencies]
+ox-core = { path = "../ox-core" }
+petgraph.workspace = true
+thiserror.workspace = true
+serde.workspace = true
+toml.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true

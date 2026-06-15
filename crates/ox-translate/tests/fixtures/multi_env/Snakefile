@@ -1,0 +1,19 @@
+rule docker_step:
+    input:
+        "data/{sample}.txt"
+    output:
+        "out/{sample}.processed"
+    container:
+        "docker://python:3.12-slim"
+    shell:
+        "python process.py {input} {output}"
+
+rule singularity_step:
+    input:
+        "out/{sample}.processed"
+    output:
+        "final/{sample}.result"
+    singularity:
+        "images/analysis.sif"
+    shell:
+        "analyze {input} > {output}"

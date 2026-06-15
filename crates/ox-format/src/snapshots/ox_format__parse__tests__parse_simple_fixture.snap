@@ -1,0 +1,123 @@
+---
+source: crates/ox-format/src/parse.rs
+assertion_line: 1324
+expression: wf
+---
+Workflow {
+    ox_version: Some(
+        "0.1",
+    ),
+    format_version: "1",
+    config: {
+        "samples": List(
+            [
+                "A",
+                "B",
+                "C",
+            ],
+        ),
+    },
+    rules: [
+        Rule {
+            name: RuleName(
+                "all",
+            ),
+            priority: None,
+            inputs: [
+                InputPattern {
+                    pattern: TargetPattern(
+                        "results/{sample}.txt",
+                    ),
+                    name: None,
+                    format: None,
+                },
+            ],
+            outputs: [],
+            execution: Shell {
+                command: "",
+            },
+            resources: {},
+            environment: None,
+            tags: {},
+            meta: RuleMeta {
+                description: None,
+            },
+            wildcard_constraints: {},
+            when: None,
+            expand_mode: Product,
+            error_strategy: Terminate,
+            timeout: None,
+            executor: None,
+            log: LogConfig {
+                stdout: None,
+                stderr: None,
+            },
+            benchmark: None,
+            retries: None,
+            params: {},
+            param_files: [],
+            shell_executable: None,
+            reproducibility: Deterministic,
+            source_line: None,
+        },
+        Rule {
+            name: RuleName(
+                "process",
+            ),
+            priority: None,
+            inputs: [
+                InputPattern {
+                    pattern: TargetPattern(
+                        "data/{sample}.csv",
+                    ),
+                    name: None,
+                    format: None,
+                },
+            ],
+            outputs: [
+                OutputPattern {
+                    pattern: TargetPattern(
+                        "results/{sample}.txt",
+                    ),
+                    name: None,
+                    format: None,
+                    lifecycle: Permanent,
+                    materialize: Always,
+                },
+            ],
+            execution: Shell {
+                command: "cat {input} | sort > {output}",
+            },
+            resources: {},
+            environment: None,
+            tags: {},
+            meta: RuleMeta {
+                description: None,
+            },
+            wildcard_constraints: {},
+            when: None,
+            expand_mode: Product,
+            error_strategy: Terminate,
+            timeout: None,
+            executor: None,
+            log: LogConfig {
+                stdout: None,
+                stderr: None,
+            },
+            benchmark: None,
+            retries: None,
+            params: {},
+            param_files: [],
+            shell_executable: None,
+            reproducibility: Deterministic,
+            source_line: None,
+        },
+    ],
+    gates: [],
+    includes: [],
+    global_environment: None,
+    profiles: {},
+    executor_config: ExecutorConfig {
+        slurm: None,
+    },
+}

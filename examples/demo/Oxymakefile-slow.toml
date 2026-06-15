@@ -1,0 +1,183 @@
+# OxyMake Slow Demo — Simulated Build Pipeline
+#
+# A 5-stage pipeline with 24 jobs and randomized sleep durations (2-5s each).
+# Fan-out/fan-in pattern designed for -j 4 parallel execution.
+# Total runtime: ~30-60s so a human can watch the dashboard live.
+#
+# Stages:
+#   1. fetch    — download source artifacts (4 jobs, parallel)
+#   2. compile  — compile each module (8 jobs, parallel, fan-out)
+#   3. link     — link pairs of compiled modules (4 jobs, parallel)
+#   4. test     — run tests per linked artifact (4 jobs, parallel)
+#   5. package  — merge everything into a release bundle (1 job)
+#   6. publish  — final deploy step (1 job)
+#   + report    — aggregate target (1 job)
+#   + lint      — independent lint check (1 job)
+
+ox_version = "0.1"
+
+[config]
+modules = ["core", "net", "io", "ui"]
+subs = ["parser", "lexer"]
+plats = ["linux", "darwin"]
+
+# Default target: build the final report.
+[rule.all]
+input = ["dist/report.txt", "dist/lint.txt"]
+
+# Stage 1: Fetch source artifacts (4 parallel jobs).
+[rule.fetch]
+output = ["src/{module}.tar.gz"]
+wildcard_constraints = { module = "core|net|io|ui" }
+shell = """
+mkdir -p src
+DELAY=$((RANDOM % 4 + 2))
+echo "[fetch:{module}] downloading source (${DELAY}s)..."
+sleep $DELAY
+echo "fetched {module} at $(date -u +%H:%M:%S)" > {output}
+echo "[fetch:{module}] done"
+"""
+
+# Stage 2a: Compile main modules (4 jobs, depends on fetch).
+[rule.compile]
+input = ["src/{module}.tar.gz"]
+output = ["build/{module}.o"]
+wildcard_constraints = { module = "core|net|io|ui" }
+shell = """
+mkdir -p build
+DELAY=$((RANDOM % 4 + 2))
+echo "[compile:{module}] compiling (${DELAY}s)..."
+sleep $DELAY
+echo "compiled {module} at $(date -u +%H:%M:%S)" > {output}
+echo "[compile:{module}] done"
+"""
+
+# Stage 2b: Compile submodules for core (2 jobs, depends on core fetch).
+[rule.compile_sub]
+input = ["src/core.tar.gz"]
+output = ["build/core_{sub}.o"]
+wildcard_constraints = { sub = "parser|lexer" }
+shell = """
+mkdir -p build
+DELAY=$((RANDOM % 4 + 2))
+echo "[compile_sub:core_{sub}] compiling (${DELAY}s)..."
+sleep $DELAY
+echo "compiled core_{sub} at $(date -u +%H:%M:%S)" > {output}
+echo "[compile_sub:core_{sub}] done"
+"""
+
+# Stage 2c: Compile platform variants for net (2 jobs, depends on net fetch).
+[rule.compile_platform]
+input = ["src/net.tar.gz"]
+output = ["build/net_{plat}.o"]
+wildcard_constraints = { plat = "linux|darwin" }
+shell = """
+mkdir -p build
+DELAY=$((RANDOM % 4 + 2))
+echo "[compile_platform:net_{plat}] compiling (${DELAY}s)..."
+sleep $DELAY
+echo "compiled net_{plat} at $(date -u +%H:%M:%S)" > {output}
+echo "[compile_platform:net_{plat}] done"
+"""
+
+# Stage 3: Link pairs of modules (4 jobs, fan-in from compile).
+[rule.link]
+input = ["build/{module}.o"]
+output = ["lib/lib{module}.so"]
+wildcard_constraints = { module = "core|net|io|ui" }
+shell = """
+mkdir -p lib
+DELAY=$((RANDOM % 3 + 2))
+echo "[link:{module}] linking (${DELAY}s)..."
+sleep $DELAY
+echo "linked lib{module}.so at $(date -u +%H:%M:%S)" > {output}
+echo "[link:{module}] done"
+"""
+
+# Stage 4: Test each linked library (4 jobs, depends on link).
+[rule.test]
+input = ["lib/lib{module}.so"]
+output = ["test/{module}_results.xml"]
+wildcard_constraints = { module = "core|net|io|ui" }
+shell = """
+mkdir -p test
+DELAY=$((RANDOM % 3 + 3))
+echo "[test:{module}] running tests (${DELAY}s)..."
+sleep $DELAY
+echo "<test module=\"{module}\" passed=\"42\" failed=\"0\"/>" > {output}
+echo "[test:{module}] passed"
+"""
+
+# Stage 5: Package all libraries into a release bundle (1 job, fan-in).
+[rule.package]
+input = ["lib/lib{module}.so"]
+output = ["dist/release.tar.gz"]
+expand = "product"
+shell = """
+mkdir -p dist
+DELAY=$((RANDOM % 3 + 3))
+echo "[package] bundling release (${DELAY}s)..."
+sleep $DELAY
+echo "release bundle at $(date -u +%H:%M:%S)" > {output}
+for f in {input}; do
+    echo "  included: $f" >> {output}
+done
+echo "[package] done"
+"""
+
+# Stage 6: Publish (1 job, depends on package + all tests).
+[rule.publish]
+input = ["dist/release.tar.gz", "test/{module}_results.xml"]
+output = ["dist/published.txt"]
+expand = "product"
+shell = """
+DELAY=$((RANDOM % 2 + 2))
+echo "[publish] deploying release (${DELAY}s)..."
+sleep $DELAY
+echo "published at $(date -u +%H:%M:%S)" > {output}
+echo "[publish] done"
+"""
+
+# Lint: Independent lint check (1 job, depends only on fetch).
+[rule.lint]
+input = ["src/{module}.tar.gz"]
+output = ["dist/lint.txt"]
+expand = "product"
+shell = """
+mkdir -p dist
+DELAY=$((RANDOM % 3 + 2))
+echo "[lint] checking code style (${DELAY}s)..."
+sleep $DELAY
+echo "=== Lint Report ===" > {output}
+for f in {input}; do
+    echo "  checked: $f — OK" >> {output}
+done
+echo "lint passed at $(date -u +%H:%M:%S)" >> {output}
+echo "[lint] passed"
+"""
+
+# Stage 7: Generate report (depends on publish + submodule builds).
+[rule.report]
+input = ["dist/published.txt", "build/core_{sub}.o", "build/net_{plat}.o"]
+output = ["dist/report.txt"]
+expand = "product"
+shell = """
+DELAY=$((RANDOM % 2 + 2))
+echo "[report] generating build report (${DELAY}s)..."
+sleep $DELAY
+echo "=== OxyMake Build Report ===" > {output}
+echo "Published: $(cat dist/published.txt | head -1)" >> {output}
+echo "" >> {output}
+echo "Submodules compiled:" >> {output}
+for f in build/core_*.o; do
+    echo "  $(basename $f): $(cat $f)" >> {output}
+done
+echo "" >> {output}
+echo "Platform variants:" >> {output}
+for f in build/net_*.o; do
+    echo "  $(basename $f): $(cat $f)" >> {output}
+done
+echo "" >> {output}
+echo "Report generated: $(date -u +%Y-%m-%dT%H:%M:%SZ)" >> {output}
+echo "[report] done"
+"""

@@ -1,0 +1,22 @@
+[package]
+name = "ox-monitor-tui"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Terminal dashboard (ox top) for monitoring OxyMake execution"
+
+[dependencies]
+ox-state = { path = "../ox-state" }
+ox-core = { path = "../ox-core" }
+ratatui = "0.30"
+crossterm = "0.28"
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread"] }
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

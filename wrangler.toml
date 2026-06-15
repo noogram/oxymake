@@ -1,0 +1,20 @@
+# Cloudflare Pages configuration for the OxyMake documentation site (oxymake.dev).
+#
+# This is a STATIC SITE deploy (Cloudflare Pages), not a Worker. The site is
+# built by mdBook from docs/book/ into docs/book/book/, then published with:
+#
+#     wrangler pages deploy docs/book/book --project-name=oxymake-docs
+#
+# Because `pages_build_output_dir` is set below, a bare `wrangler pages deploy`
+# run from the repo root also picks up the right directory automatically.
+#
+# Deploy is wired to GitHub Actions on push to main — see
+# .github/workflows/docs-deploy.yml. Full runbook: docs/WEBDOCS.md.
+#
+# NOTE: the real deployment is intentionally deferred to phase 2 (post repo
+# recreation), since the Pages project must point at the final repo and needs
+# the Cloudflare account credentials. This file is the in-repo config only.
+
+name = "oxymake-docs"
+pages_build_output_dir = "docs/book/book"
+compatibility_date = "2026-06-15"

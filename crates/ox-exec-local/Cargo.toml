@@ -1,0 +1,24 @@
+[package]
+name = "ox-exec-local"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Local process executor — runs jobs as child processes on the host"
+
+[dependencies]
+ox-core = { path = "../ox-core" }
+ox-codec-core = { path = "../ox-codec-core" }
+tokio = { workspace = true, features = ["fs", "process", "io-util", "rt", "macros", "time"] }
+thiserror.workspace = true
+libc.workspace = true
+serde_json.workspace = true
+parking_lot.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio = { workspace = true, features = ["test-util"] }
+serial_test.workspace = true

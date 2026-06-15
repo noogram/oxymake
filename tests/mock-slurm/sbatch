@@ -1,0 +1,157 @@
+#!/bin/bash
+# Mock sbatch — assigns incrementing job IDs and tracks state.
+#
+# Usage: sbatch [flags] script.sh
+# Output: "Submitted batch job <ID>" (or just "<ID>" with --parsable)
+#
+# State is stored in $SLURM_MOCK_DIR (default: /tmp/slurm-mock).
+# Each job gets a state file: $SLURM_MOCK_DIR/job_<ID> containing the
+# current SLURM state (PENDING, RUNNING, COMPLETED, FAILED, CANCELLED).
+#
+# A background "scheduler" transitions jobs after configurable delays:
+#   SLURM_MOCK_PENDING_SECS  — time in PENDING (default: 1)
+#   SLURM_MOCK_RUNNING_SECS  — time in RUNNING (default: 2)
+#   SLURM_MOCK_FAIL_JOBS     — comma-separated job IDs that should FAIL
+#   SLURM_MOCK_EXEC=1        — actually execute the job script (for e2e tests)
+
+set -euo pipefail
+
+MOCK_DIR="${SLURM_MOCK_DIR:-/tmp/slurm-mock}"
+mkdir -p "$MOCK_DIR"
+
+# Parse flags
+PARSABLE=false
+SCRIPT=""
+JOB_NAME="mock_job"
+DEPENDENCY=""
+for arg in "$@"; do
+    case "$arg" in
+        --parsable) PARSABLE=true ;;
+        --job-name=*) JOB_NAME="${arg#--job-name=}" ;;
+        --dependency=*) DEPENDENCY="${arg#--dependency=}" ;;
+        -J) ;; # next arg is job name, handled below
+        -*) ;; # ignore other flags
+        *) SCRIPT="$arg" ;;
+    esac
+done
+
+# Handle -J <name> (two-arg form)
+prev=""
+for arg in "$@"; do
+    if [ "$prev" = "-J" ]; then
+        JOB_NAME="$arg"
+    fi
+    prev="$arg"
+done
+
+# Assign job ID (atomic increment, portable — no flock needed)
+# Uses mkdir as an atomic lock primitive (works on macOS + Linux)
+LOCK_DIR="$MOCK_DIR/lock.d"
+while ! mkdir "$LOCK_DIR" 2>/dev/null; do
+    sleep 0.01
+done
+trap 'rmdir "$LOCK_DIR" 2>/dev/null' EXIT
+
+NEXT_ID=$(cat "$MOCK_DIR/next_id" 2>/dev/null || echo 1000)
+JOB_ID=$NEXT_ID
+echo $((NEXT_ID + 1)) > "$MOCK_DIR/next_id"
+
+rmdir "$LOCK_DIR" 2>/dev/null
+trap - EXIT
+
+# Write initial state
+echo "PENDING" > "$MOCK_DIR/job_$JOB_ID"
+echo "$JOB_NAME" > "$MOCK_DIR/jobname_$JOB_ID"
+echo "$(date +%s)" > "$MOCK_DIR/submit_$JOB_ID"
+if [ -n "$DEPENDENCY" ]; then
+    echo "$DEPENDENCY" > "$MOCK_DIR/dep_$JOB_ID"
+fi
+if [ -n "$SCRIPT" ]; then
+    cp "$SCRIPT" "$MOCK_DIR/script_$JOB_ID" 2>/dev/null || true
+fi
+
+# Background state machine: PENDING → RUNNING → COMPLETED/FAILED
+PENDING_SECS="${SLURM_MOCK_PENDING_SECS:-1}"
+RUNNING_SECS="${SLURM_MOCK_RUNNING_SECS:-2}"
+FAIL_JOBS="${SLURM_MOCK_FAIL_JOBS:-}"
+MOCK_EXEC="${SLURM_MOCK_EXEC:-0}"
+
+(
+    # Wait for dependencies to complete (if any)
+    if [ -f "$MOCK_DIR/dep_$JOB_ID" ]; then
+        DEP_SPEC=$(cat "$MOCK_DIR/dep_$JOB_ID")
+        # Parse dependency type and job IDs (e.g., "afterok:1000:1001" or "afterok:1000")
+        DEP_TYPE="${DEP_SPEC%%:*}"
+        DEP_IDS_STR="${DEP_SPEC#*:}"
+        IFS=':' read -ra DEP_IDS <<< "$DEP_IDS_STR"
+
+        for dep_id in "${DEP_IDS[@]}"; do
+            # Wait up to 30s for each dependency
+            for _attempt in $(seq 1 60); do
+                if [ ! -f "$MOCK_DIR/job_$dep_id" ]; then
+                    break
+                fi
+                dep_state=$(cat "$MOCK_DIR/job_$dep_id" 2>/dev/null || echo "UNKNOWN")
+                case "$dep_state" in
+                    COMPLETED)
+                        break
+                        ;;
+                    FAILED|CANCELLED|TIMEOUT)
+                        if [ "$DEP_TYPE" = "afterok" ]; then
+                            echo "CANCELLED" > "$MOCK_DIR/job_$JOB_ID"
+                            echo "0" > "$MOCK_DIR/exit_$JOB_ID"
+                            exit 0
+                        fi
+                        break
+                        ;;
+                    *)
+                        sleep 0.5
+                        ;;
+                esac
+            done
+        done
+    fi
+
+    sleep "$PENDING_SECS"
+    if [ -f "$MOCK_DIR/job_$JOB_ID" ] && [ "$(cat "$MOCK_DIR/job_$JOB_ID")" = "PENDING" ]; then
+        echo "RUNNING" > "$MOCK_DIR/job_$JOB_ID"
+    fi
+
+    # Check if this job should fail (before execution)
+    SHOULD_FAIL=false
+    if [ -n "$FAIL_JOBS" ]; then
+        IFS=',' read -ra FAIL_IDS <<< "$FAIL_JOBS"
+        for fid in "${FAIL_IDS[@]}"; do
+            if [ "$fid" = "$JOB_ID" ]; then
+                SHOULD_FAIL=true
+                break
+            fi
+        done
+    fi
+
+    # Optionally execute the script (for e2e tests producing real output files)
+    EXEC_EXIT=0
+    if [ "$MOCK_EXEC" = "1" ] && [ -f "$MOCK_DIR/script_$JOB_ID" ] && [ "$SHOULD_FAIL" = false ]; then
+        # Extract the shell body from the sbatch script (skip #SBATCH lines)
+        bash "$MOCK_DIR/script_$JOB_ID" > "$MOCK_DIR/stdout_$JOB_ID" 2>"$MOCK_DIR/stderr_$JOB_ID" || EXEC_EXIT=$?
+    elif [ "$MOCK_EXEC" != "1" ]; then
+        sleep "$RUNNING_SECS"
+    fi
+
+    if [ -f "$MOCK_DIR/job_$JOB_ID" ] && [ "$(cat "$MOCK_DIR/job_$JOB_ID")" = "RUNNING" ]; then
+        if [ "$SHOULD_FAIL" = true ] || [ "$EXEC_EXIT" -ne 0 ]; then
+            echo "FAILED" > "$MOCK_DIR/job_$JOB_ID"
+            echo "${EXEC_EXIT:-1}" > "$MOCK_DIR/exit_$JOB_ID"
+        else
+            echo "COMPLETED" > "$MOCK_DIR/job_$JOB_ID"
+            echo "0" > "$MOCK_DIR/exit_$JOB_ID"
+        fi
+    fi
+) &
+
+# Output
+if [ "$PARSABLE" = true ]; then
+    echo "$JOB_ID"
+else
+    echo "Submitted batch job $JOB_ID"
+fi

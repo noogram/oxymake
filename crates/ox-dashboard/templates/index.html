@@ -1,0 +1,2841 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OxyMake Dashboard</title>
+    <script src="https://unpkg.com/htmx.org@2.0.4"></script>
+    <script src="https://unpkg.com/cytoscape@3.30.4/dist/cytoscape.min.js"></script>
+    <script src="https://unpkg.com/dagre@0.8.5/dist/dagre.min.js"></script>
+    <script src="https://unpkg.com/cytoscape-dagre@2.5.0/cytoscape-dagre.js"></script>
+    <script src="https://unpkg.com/cytoscape-svg@0.4.0/cytoscape-svg.js"></script>
+    <style>
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+        :root {
+            --bg: #0f1117;
+            --surface: #1a1d2e;
+            --surface-alt: #222640;
+            --border: #2a2e45;
+            --text: #e2e4ed;
+            --text-dim: #8b8fa3;
+            --accent: #6c72cb;
+            --green: #34d399;
+            --blue: #60a5fa;
+            --red: #f87171;
+            --amber: #fbbf24;
+            --gray: #6b7280;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            line-height: 1.5;
+            min-height: 100vh;
+        }
+
+        header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 1rem 1.5rem;
+            border-bottom: 1px solid var(--border);
+            background: var(--surface);
+        }
+
+        header h1 {
+            font-size: 1.25rem;
+            font-weight: 600;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        header h1 span { color: var(--accent); }
+
+        .header-right {
+            display: flex;
+            align-items: center;
+            gap: 1.5rem;
+        }
+
+        .connection-status {
+            display: flex;
+            align-items: center;
+            gap: 0.4rem;
+            font-size: 0.75rem;
+            color: var(--text-dim);
+        }
+
+        .connection-dot {
+            width: 8px; height: 8px;
+            border-radius: 50%;
+            background: var(--gray);
+        }
+
+        .connection-dot.live { background: var(--green); }
+
+        main {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 1.5rem;
+            display: grid;
+            gap: 1rem;
+        }
+
+        /* ── Overall Progress Bar ── */
+        .overall-progress {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 0.75rem 1.25rem;
+        }
+
+        .overall-progress-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 0.5rem;
+        }
+
+        .overall-progress-header .title {
+            font-size: 0.85rem;
+            font-weight: 600;
+        }
+
+        .overall-progress-header .meta {
+            font-size: 0.75rem;
+            color: var(--text-dim);
+            display: flex;
+            gap: 1rem;
+        }
+
+        .overall-progress-header .meta .eta {
+            color: var(--amber);
+            font-weight: 500;
+        }
+
+        .overall-track {
+            height: 10px;
+            background: var(--bg);
+            border-radius: 5px;
+            overflow: hidden;
+            display: flex;
+        }
+
+        .overall-fill-completed {
+            background: var(--green);
+            transition: width 0.5s ease;
+        }
+
+        .overall-fill-running {
+            background: var(--blue);
+            transition: width 0.5s ease;
+        }
+
+        .overall-fill-failed {
+            background: var(--red);
+            transition: width 0.5s ease;
+        }
+
+        /* ── Status Cards ── */
+        .status-cards {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+            gap: 0.75rem;
+        }
+
+        .card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 1rem 1.25rem;
+            text-align: center;
+        }
+
+        .card .value {
+            font-size: 2rem;
+            font-weight: 700;
+            line-height: 1.2;
+        }
+
+        .card .label {
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: var(--text-dim);
+            margin-top: 0.25rem;
+        }
+
+        .card.pending .value  { color: var(--amber); }
+        .card.running .value  { color: var(--blue); }
+        .card.completed .value { color: var(--green); }
+        .card.failed .value   { color: var(--red); }
+        .card.skipped .value  { color: var(--gray); }
+        .card.total .value    { color: var(--text); }
+
+        /* ── Panels ── */
+        .panel {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            overflow: hidden;
+        }
+
+        .panel-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0.75rem 1rem;
+            border-bottom: 1px solid var(--border);
+            background: var(--surface-alt);
+        }
+
+        .panel-header h2 {
+            font-size: 0.85rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+        }
+
+        .panel-body { padding: 1rem; }
+
+        /* ── Two-column layout for DAG + Jobs ── */
+        .grid-2col {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 1rem;
+        }
+
+        @media (max-width: 900px) {
+            .grid-2col { grid-template-columns: 1fr; }
+        }
+
+        /* ── DAG View Toggle ── */
+        .dag-toggle {
+            display: flex;
+            gap: 2px;
+            background: var(--bg);
+            border-radius: 4px;
+            padding: 2px;
+        }
+
+        .dag-toggle-btn {
+            background: transparent;
+            border: none;
+            color: var(--text-dim);
+            padding: 0.25rem 0.6rem;
+            border-radius: 3px;
+            font-size: 0.75rem;
+            cursor: pointer;
+            transition: all 0.15s;
+        }
+
+        .dag-toggle-btn.active {
+            background: var(--accent);
+            color: #fff;
+        }
+
+        /* ── DAG ── */
+        #cy {
+            width: 100%;
+            height: 500px;
+            background: var(--bg);
+            border-radius: 4px;
+        }
+
+        /* Running node pulse animation */
+        @keyframes pulse-node {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+
+        /* ── DAG Tooltip ── */
+        .cy-tooltip {
+            position: absolute;
+            z-index: 100;
+            background: var(--surface-alt);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            padding: 0.5rem 0.75rem;
+            font-size: 0.75rem;
+            pointer-events: none;
+            white-space: nowrap;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+        }
+
+        .cy-tooltip .tt-rule { font-weight: 600; margin-bottom: 0.2rem; }
+        .cy-tooltip .tt-status { margin-bottom: 0.1rem; }
+        .cy-tooltip .tt-wildcards { color: var(--amber); font-size: 0.7rem; margin-bottom: 0.1rem; }
+        .cy-tooltip .tt-duration { color: var(--green); font-size: 0.7rem; margin-bottom: 0.1rem; }
+        .cy-tooltip .tt-count { color: var(--blue); font-size: 0.7rem; margin-bottom: 0.1rem; }
+        .cy-tooltip .tt-id { color: var(--text-dim); font-size: 0.7rem; }
+
+        /* ── Tables ── */
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.85rem;
+        }
+
+        thead th {
+            text-align: left;
+            padding: 0.5rem 0.75rem;
+            font-weight: 600;
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+            color: var(--text-dim);
+            border-bottom: 1px solid var(--border);
+            cursor: pointer;
+            user-select: none;
+            white-space: nowrap;
+        }
+
+        thead th:hover { color: var(--text); }
+        thead th.sorted-asc::after  { content: ' \25b2'; font-size: 0.65rem; }
+        thead th.sorted-desc::after { content: ' \25bc'; font-size: 0.65rem; }
+
+        tbody td {
+            padding: 0.5rem 0.75rem;
+            border-bottom: 1px solid var(--border);
+            white-space: nowrap;
+        }
+
+        tbody tr:hover { background: var(--surface-alt); }
+
+        .badge {
+            display: inline-block;
+            padding: 0.15rem 0.5rem;
+            border-radius: 9999px;
+            font-size: 0.7rem;
+            font-weight: 600;
+            text-transform: uppercase;
+        }
+
+        .badge.pending   { background: rgba(251,191,36,0.15); color: var(--amber); }
+        .badge.running   { background: rgba(96,165,250,0.15); color: var(--blue); }
+        .badge.completed { background: rgba(52,211,153,0.15); color: var(--green); }
+        .badge.failed    { background: rgba(248,113,113,0.15); color: var(--red); }
+        .badge.skipped   { background: rgba(107,114,128,0.15); color: var(--gray); }
+
+        /* ── Filter bar ── */
+        .filter-bar {
+            display: flex;
+            gap: 0.4rem;
+            flex-wrap: wrap;
+        }
+
+        .filter-btn {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            color: var(--text-dim);
+            padding: 0.25rem 0.6rem;
+            border-radius: 4px;
+            font-size: 0.75rem;
+            cursor: pointer;
+            transition: all 0.15s;
+        }
+
+        .filter-btn:hover, .filter-btn.active {
+            background: var(--accent);
+            color: #fff;
+            border-color: var(--accent);
+        }
+
+        /* ── Progress bars ── */
+        .rule-progress { margin-bottom: 0.75rem; }
+
+        .rule-progress .rule-label {
+            display: flex;
+            justify-content: space-between;
+            font-size: 0.8rem;
+            margin-bottom: 0.25rem;
+        }
+
+        .rule-progress .rule-label .name { font-weight: 500; }
+        .rule-progress .rule-label .count { color: var(--text-dim); }
+        .rule-progress .rule-label .rule-eta { color: var(--amber); font-size: 0.7rem; margin-left: 0.5rem; }
+
+        .progress-track {
+            height: 6px;
+            background: var(--bg);
+            border-radius: 3px;
+            overflow: hidden;
+            display: flex;
+        }
+
+        .progress-fill-completed {
+            background: var(--green);
+            transition: width 0.3s ease;
+        }
+
+        .progress-fill-running {
+            background: var(--blue);
+            transition: width 0.3s ease;
+        }
+
+        /* ── Gantt / Execution Timeline ── */
+        .gantt-container {
+            position: relative;
+            overflow-x: auto;
+            overflow-y: auto;
+            max-height: 350px;
+        }
+
+        .gantt-container::-webkit-scrollbar { width: 6px; height: 6px; }
+        .gantt-container::-webkit-scrollbar-track { background: var(--bg); }
+        .gantt-container::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+        .gantt-canvas {
+            position: relative;
+            min-width: 100%;
+        }
+
+        .gantt-row {
+            display: flex;
+            align-items: center;
+            height: 28px;
+            border-bottom: 1px solid rgba(42,46,69,0.5);
+        }
+
+        .gantt-label {
+            width: 120px;
+            min-width: 120px;
+            padding: 0 0.5rem;
+            font-size: 0.7rem;
+            color: var(--text-dim);
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .gantt-track {
+            flex: 1;
+            position: relative;
+            height: 100%;
+        }
+
+        .gantt-bar {
+            position: absolute;
+            height: 16px;
+            top: 6px;
+            border-radius: 3px;
+            min-width: 3px;
+            cursor: pointer;
+            transition: opacity 0.15s;
+        }
+
+        .gantt-bar:hover { opacity: 0.8; }
+
+        .gantt-bar.completed { background: var(--green); }
+        .gantt-bar.running   { background: var(--blue); animation: pulse-bar 1.5s ease-in-out infinite; }
+        .gantt-bar.failed    { background: var(--red); }
+        .gantt-bar.skipped   { background: var(--gray); }
+        .gantt-bar.pending   { background: rgba(251,191,36,0.3); border: 1px dashed var(--amber); }
+
+        @keyframes pulse-bar {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+
+        /* Rule-colored Gantt bars (overrides status colors when in rule-color mode) */
+        .gantt-bar.rule-colored { opacity: 0.9; }
+        .gantt-bar.rule-colored.running { animation: pulse-bar 1.5s ease-in-out infinite; }
+        .gantt-bar.rule-colored.failed { background: var(--red); opacity: 1; }
+
+        /* Gantt color mode toggle */
+        .gantt-color-toggle {
+            display: flex;
+            gap: 2px;
+            background: var(--bg);
+            border-radius: 4px;
+            padding: 2px;
+            margin-left: 0.5rem;
+        }
+
+        .gantt-color-btn {
+            background: transparent;
+            border: none;
+            color: var(--text-dim);
+            padding: 0.2rem 0.5rem;
+            border-radius: 3px;
+            font-size: 0.7rem;
+            cursor: pointer;
+            transition: all 0.15s;
+        }
+
+        .gantt-color-btn.active {
+            background: var(--accent);
+            color: #fff;
+        }
+
+        /* Gantt legend */
+        .gantt-legend {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.5rem;
+            padding: 0.4rem 0.5rem;
+            font-size: 0.65rem;
+            border-top: 1px solid var(--border);
+        }
+
+        .gantt-legend-item {
+            display: flex;
+            align-items: center;
+            gap: 0.25rem;
+        }
+
+        .gantt-legend-swatch {
+            width: 10px;
+            height: 10px;
+            border-radius: 2px;
+        }
+
+        .gantt-bar-label {
+            position: absolute;
+            left: 4px;
+            top: 1px;
+            font-size: 0.6rem;
+            color: rgba(0,0,0,0.7);
+            pointer-events: none;
+            white-space: nowrap;
+            overflow: hidden;
+        }
+
+        .gantt-time-axis {
+            display: flex;
+            align-items: center;
+            height: 20px;
+            border-bottom: 1px solid var(--border);
+            margin-bottom: 2px;
+        }
+
+        .gantt-time-axis .gantt-label { color: var(--text-dim); font-weight: 600; font-size: 0.7rem; }
+
+        .gantt-time-axis .gantt-track {
+            display: flex;
+            justify-content: space-between;
+            padding: 0 4px;
+            font-size: 0.6rem;
+            color: var(--text-dim);
+        }
+
+        .gantt-tooltip {
+            position: fixed;
+            z-index: 200;
+            background: var(--surface-alt);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            padding: 0.5rem 0.75rem;
+            font-size: 0.75rem;
+            pointer-events: none;
+            white-space: nowrap;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+            display: none;
+        }
+
+        .gantt-select {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            color: var(--text);
+            padding: 0.2rem 0.4rem;
+            border-radius: 4px;
+            font-size: 0.75rem;
+        }
+
+        /* ── Gates ── */
+        .gate-actions { display: flex; gap: 0.4rem; }
+
+        .btn {
+            padding: 0.25rem 0.6rem;
+            border: none;
+            border-radius: 4px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: opacity 0.15s;
+        }
+
+        .btn:hover { opacity: 0.85; }
+        .btn.approve { background: var(--green); color: #000; }
+        .btn.reject  { background: var(--red); color: #fff; }
+
+        /* ── Grid View (Airflow-style) ── */
+        .grid-view-container {
+            overflow-x: auto;
+            overflow-y: auto;
+            max-height: 500px;
+        }
+
+        .grid-view-container::-webkit-scrollbar { width: 6px; height: 6px; }
+        .grid-view-container::-webkit-scrollbar-track { background: var(--bg); }
+        .grid-view-container::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+        .grid-view-table {
+            border-collapse: separate;
+            border-spacing: 2px;
+            width: auto;
+            min-width: 100%;
+        }
+
+        .grid-view-table th {
+            background: var(--surface-alt);
+            padding: 0.4rem 0.5rem;
+            font-size: 0.7rem;
+            font-weight: 600;
+            white-space: nowrap;
+            position: sticky;
+            top: 0;
+            z-index: 2;
+            border-bottom: 2px solid var(--border);
+        }
+
+        .grid-view-table th.grid-rule-header {
+            position: sticky;
+            left: 0;
+            z-index: 3;
+            text-align: left;
+            min-width: 140px;
+        }
+
+        .grid-view-table th.grid-run-header {
+            writing-mode: horizontal-tb;
+            text-align: center;
+            min-width: 32px;
+            max-width: 44px;
+            cursor: pointer;
+        }
+
+        .grid-view-table th.grid-run-header:hover {
+            background: var(--accent);
+            color: #fff;
+        }
+
+        .grid-view-table td.grid-rule-cell {
+            position: sticky;
+            left: 0;
+            z-index: 1;
+            background: var(--surface);
+            padding: 0.3rem 0.5rem;
+            font-size: 0.75rem;
+            font-weight: 500;
+            white-space: nowrap;
+            border-right: 2px solid var(--border);
+        }
+
+        .grid-cell {
+            width: 28px;
+            height: 28px;
+            border-radius: 4px;
+            cursor: pointer;
+            transition: transform 0.1s, box-shadow 0.1s;
+            margin: auto;
+        }
+
+        .grid-cell:hover {
+            transform: scale(1.3);
+            box-shadow: 0 0 6px rgba(255,255,255,0.2);
+            z-index: 5;
+        }
+
+        .grid-cell.completed { background: var(--green); }
+        .grid-cell.failed    { background: var(--red); }
+        .grid-cell.skipped   { background: var(--gray); }
+        .grid-cell.running   { background: var(--blue); animation: grid-pulse 1.5s infinite; }
+        .grid-cell.pending   { background: var(--amber); opacity: 0.5; }
+        .grid-cell.empty     { background: var(--surface-alt); opacity: 0.3; border: 1px dashed var(--border); }
+
+        @keyframes grid-pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+
+        .grid-view-table td {
+            padding: 3px;
+            text-align: center;
+            vertical-align: middle;
+        }
+
+        .grid-tooltip {
+            position: fixed;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            padding: 0.5rem 0.75rem;
+            font-size: 0.75rem;
+            pointer-events: none;
+            z-index: 1000;
+            display: none;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+            max-width: 280px;
+        }
+
+        .grid-tooltip .tip-rule { color: var(--accent); font-weight: 600; }
+        .grid-tooltip .tip-run { color: var(--text-dim); font-size: 0.7rem; }
+        .grid-tooltip .tip-status { font-weight: 600; margin-top: 0.25rem; }
+        .grid-tooltip .tip-duration { color: var(--text-dim); }
+
+        .grid-flaky-indicator {
+            display: inline-block;
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: var(--red);
+            margin-left: 0.4rem;
+            vertical-align: middle;
+            opacity: 0.7;
+            animation: grid-pulse 2s infinite;
+        }
+
+        /* ── Empty state ── */
+        .empty {
+            text-align: center;
+            padding: 2rem;
+            color: var(--text-dim);
+            font-size: 0.85rem;
+        }
+
+        /* ── Scrollable table wrapper ── */
+        .table-scroll {
+            max-height: 400px;
+            overflow-y: auto;
+        }
+
+        .table-scroll::-webkit-scrollbar { width: 6px; }
+        .table-scroll::-webkit-scrollbar-track { background: var(--bg); }
+        .table-scroll::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+        /* ── DAG highlight animation ── */
+        @keyframes pulse-edge {
+            0%, 100% { opacity: 0.4; }
+            50% { opacity: 1; }
+        }
+
+        /* ── Flowing edge animation for running edges ── */
+        @keyframes dash-flow {
+            to { stroke-dashoffset: -20; }
+        }
+
+        /* ── Node Detail Panel ── */
+        .node-detail {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 1rem;
+            display: none;
+        }
+
+        .node-detail.visible { display: block; }
+
+        .node-detail-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 0.75rem;
+        }
+
+        .node-detail-header h3 {
+            font-size: 0.95rem;
+            font-weight: 600;
+        }
+
+        .node-detail-close {
+            background: transparent;
+            border: none;
+            color: var(--text-dim);
+            font-size: 1.2rem;
+            cursor: pointer;
+            padding: 0.2rem 0.4rem;
+            border-radius: 4px;
+        }
+
+        .node-detail-close:hover { background: var(--surface-alt); color: var(--text); }
+
+        .node-detail-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 0.5rem 1.5rem;
+            font-size: 0.8rem;
+            margin-bottom: 0.75rem;
+        }
+
+        .node-detail-grid dt { color: var(--text-dim); }
+        .node-detail-grid dd { font-weight: 500; }
+
+        .node-detail-deps {
+            display: flex;
+            gap: 1rem;
+            font-size: 0.8rem;
+        }
+
+        .node-detail-deps .dep-section { flex: 1; }
+        .node-detail-deps .dep-section h4 {
+            color: var(--text-dim);
+            font-size: 0.7rem;
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+            margin-bottom: 0.3rem;
+        }
+
+        .dep-list {
+            list-style: none;
+            max-height: 100px;
+            overflow-y: auto;
+        }
+
+        .dep-list li {
+            padding: 0.15rem 0;
+            cursor: pointer;
+            color: var(--accent);
+        }
+
+        .dep-list li:hover { text-decoration: underline; }
+
+        .node-detail-log {
+            margin-top: 0.75rem;
+            font-size: 0.75rem;
+            color: var(--text-dim);
+        }
+
+        .node-detail-log code {
+            display: block;
+            background: var(--bg);
+            border-radius: 4px;
+            padding: 0.4rem 0.6rem;
+            margin-top: 0.3rem;
+            word-break: break-all;
+        }
+
+        /* ── Execution Replay Slider ── */
+        .replay-controls {
+            display: flex;
+            align-items: center;
+            gap: 0.6rem;
+            padding: 0.5rem 0.75rem;
+            border-top: 1px solid var(--border);
+            font-size: 0.75rem;
+        }
+
+        .replay-btn {
+            background: var(--surface-alt);
+            border: 1px solid var(--border);
+            color: var(--text);
+            width: 28px;
+            height: 28px;
+            border-radius: 4px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 0.8rem;
+        }
+
+        .replay-btn:hover { background: var(--accent); border-color: var(--accent); }
+        .replay-btn.active { background: var(--accent); border-color: var(--accent); }
+
+        .replay-slider {
+            flex: 1;
+            -webkit-appearance: none;
+            appearance: none;
+            height: 4px;
+            background: var(--border);
+            border-radius: 2px;
+            outline: none;
+        }
+
+        .replay-slider::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 14px;
+            height: 14px;
+            border-radius: 50%;
+            background: var(--accent);
+            cursor: pointer;
+        }
+
+        .replay-time {
+            color: var(--text-dim);
+            min-width: 60px;
+            text-align: right;
+            font-variant-numeric: tabular-nums;
+        }
+
+        /* ── Critical Path ── */
+        .critical-path-btn {
+            background: transparent;
+            border: 1px solid var(--border);
+            color: var(--text-dim);
+            padding: 0.25rem 0.6rem;
+            border-radius: 4px;
+            font-size: 0.75rem;
+            cursor: pointer;
+            transition: all 0.15s;
+        }
+
+        .critical-path-btn:hover { border-color: var(--red); color: var(--red); }
+        .critical-path-btn.active { background: rgba(248,113,113,0.15); border-color: var(--red); color: var(--red); }
+
+        .gantt-bar.critical-path {
+            outline: 2px solid var(--red);
+            outline-offset: 1px;
+            z-index: 2;
+        }
+
+        /* ── Export DAG button ── */
+        .export-btn {
+            background: transparent;
+            border: 1px solid var(--border);
+            color: var(--text-dim);
+            padding: 0.25rem 0.6rem;
+            border-radius: 4px;
+            font-size: 0.75rem;
+            cursor: pointer;
+            transition: all 0.15s;
+        }
+
+        .export-btn:hover { border-color: var(--accent); color: var(--accent); }
+
+        .export-menu {
+            position: absolute;
+            right: 0;
+            top: 100%;
+            background: var(--surface-alt);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+            z-index: 50;
+            display: none;
+            min-width: 100px;
+        }
+
+        .export-menu.visible { display: block; }
+
+        .export-menu button {
+            display: block;
+            width: 100%;
+            background: transparent;
+            border: none;
+            color: var(--text);
+            padding: 0.4rem 0.75rem;
+            font-size: 0.75rem;
+            cursor: pointer;
+            text-align: left;
+        }
+
+        .export-menu button:hover { background: var(--accent); color: #fff; }
+        .export-menu button:first-child { border-radius: 6px 6px 0 0; }
+        .export-menu button:last-child { border-radius: 0 0 6px 6px; }
+
+        /* ── DAG view transition ── */
+        #cy {
+            transition: opacity 0.2s ease;
+        }
+
+        #cy.transitioning { opacity: 0.3; }
+    </style>
+</head>
+<body>
+    <header>
+        <h1><span>Oxy</span>Make</h1>
+        <div class="header-right">
+            <div class="connection-status">
+                <div class="connection-dot" id="sse-dot"></div>
+                <span id="sse-label">Connecting...</span>
+            </div>
+        </div>
+    </header>
+
+    <main>
+        <!-- Overall Progress -->
+        <div class="overall-progress" id="overall-progress">
+            <div class="overall-progress-header">
+                <span class="title">Workflow Progress</span>
+                <span class="meta">
+                    <span id="progress-pct">-</span>
+                    <span id="progress-elapsed">-</span>
+                    <span id="progress-throughput" style="color:var(--blue);font-weight:500;"></span>
+                    <span class="eta" id="progress-eta"></span>
+                </span>
+            </div>
+            <div class="overall-track">
+                <div class="overall-fill-completed" id="op-completed" style="width:0%"></div>
+                <div class="overall-fill-running" id="op-running" style="width:0%"></div>
+                <div class="overall-fill-failed" id="op-failed" style="width:0%"></div>
+            </div>
+        </div>
+
+        <!-- Status Cards -->
+        <div class="status-cards" id="status-cards">
+            <div class="card pending">
+                <div class="value" id="c-pending">-</div>
+                <div class="label">Pending</div>
+            </div>
+            <div class="card running">
+                <div class="value" id="c-running">-</div>
+                <div class="label">Running</div>
+            </div>
+            <div class="card completed">
+                <div class="value" id="c-completed">-</div>
+                <div class="label">Completed</div>
+            </div>
+            <div class="card failed">
+                <div class="value" id="c-failed">-</div>
+                <div class="label">Failed</div>
+            </div>
+            <div class="card skipped">
+                <div class="value" id="c-skipped">-</div>
+                <div class="label">Skipped</div>
+            </div>
+            <div class="card total">
+                <div class="value" id="c-total">-</div>
+                <div class="label">Total</div>
+            </div>
+        </div>
+
+        <!-- DAG + Job Table -->
+        <div class="grid-2col">
+            <!-- DAG Visualization -->
+            <div class="panel">
+                <div class="panel-header">
+                    <h2>Dependency Graph</h2>
+                    <div class="filter-bar" style="gap:0.6rem;">
+                        <div class="dag-toggle">
+                            <button class="dag-toggle-btn active" id="dag-view-jobs" title="Show individual jobs">Jobs</button>
+                            <button class="dag-toggle-btn" id="dag-view-rules" title="Show rules (grouped)">Rules</button>
+                        </div>
+                        <button class="critical-path-btn" id="critical-path-btn" title="Highlight critical path">Critical Path</button>
+                        <button class="filter-btn active" id="dag-fit-btn" title="Fit to view">Fit</button>
+                        <button class="filter-btn" id="dag-reset-btn" title="Reset highlight">Reset</button>
+                        <div style="position:relative;">
+                            <button class="export-btn" id="dag-export-btn" title="Export DAG">Export</button>
+                            <div class="export-menu" id="dag-export-menu">
+                                <button id="export-svg">Export SVG</button>
+                                <button id="export-png">Export PNG</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="panel-body" style="padding:0;position:relative;">
+                    <div id="cy"></div>
+                    <div class="cy-tooltip" id="cy-tooltip" style="display:none;"></div>
+                </div>
+            </div>
+
+            <!-- Jobs Table -->
+            <div class="panel">
+                <div class="panel-header">
+                    <h2>Jobs</h2>
+                    <div class="filter-bar">
+                        <button class="filter-btn active" data-filter="all">All</button>
+                        <button class="filter-btn" data-filter="pending">Pending</button>
+                        <button class="filter-btn" data-filter="running">Running</button>
+                        <button class="filter-btn" data-filter="completed">Completed</button>
+                        <button class="filter-btn" data-filter="failed">Failed</button>
+                    </div>
+                </div>
+                <div class="table-scroll">
+                    <table id="jobs-table">
+                        <thead>
+                            <tr>
+                                <th data-sort="rule_name">Rule</th>
+                                <th data-sort="wildcards">Wildcards</th>
+                                <th data-sort="status">Status</th>
+                                <th data-sort="started_at">Started</th>
+                            </tr>
+                        </thead>
+                        <tbody id="jobs-body"></tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <!-- Node Detail Panel -->
+        <div class="node-detail" id="node-detail">
+            <div class="node-detail-header">
+                <h3 id="nd-title">-</h3>
+                <button class="node-detail-close" id="nd-close">&times;</button>
+            </div>
+            <div class="node-detail-grid">
+                <dt>Status</dt><dd id="nd-status">-</dd>
+                <dt>Duration</dt><dd id="nd-duration">-</dd>
+                <dt>Rule</dt><dd id="nd-rule">-</dd>
+                <dt>Wildcards</dt><dd id="nd-wildcards">-</dd>
+            </div>
+            <div class="node-detail-deps">
+                <div class="dep-section">
+                    <h4>Upstream (inputs)</h4>
+                    <ul class="dep-list" id="nd-upstream"></ul>
+                </div>
+                <div class="dep-section">
+                    <h4>Downstream (outputs)</h4>
+                    <ul class="dep-list" id="nd-downstream"></ul>
+                </div>
+            </div>
+            <div class="node-detail-log" id="nd-log-section" style="display:none;">
+                <strong>Log path:</strong>
+                <code id="nd-log-path">-</code>
+            </div>
+            <div class="node-detail-log" style="display:none;">
+                <strong>Log excerpt:</strong>
+                <code id="nd-log-excerpt" style="max-height:120px;overflow-y:auto;white-space:pre-wrap;font-size:0.7rem;">-</code>
+            </div>
+        </div>
+
+        <!-- Execution Timeline (Gantt Chart) -->
+        <div class="panel">
+            <div class="panel-header">
+                <h2>Execution Timeline</h2>
+                <div class="filter-bar" style="gap:0.6rem;">
+                    <select class="gantt-select" id="gantt-run-select">
+                        <option value="live">Current run</option>
+                    </select>
+                    <div class="gantt-color-toggle">
+                        <button class="gantt-color-btn active" id="gantt-color-rule" title="Color by rule">By Rule</button>
+                        <button class="gantt-color-btn" id="gantt-color-status" title="Color by status">By Status</button>
+                    </div>
+                </div>
+            </div>
+            <div class="panel-body" style="padding:0.5rem;">
+                <div class="gantt-container" id="gantt-container">
+                    <div class="empty" id="gantt-empty">No execution data yet</div>
+                    <div class="gantt-canvas" id="gantt-canvas" style="display:none;"></div>
+                </div>
+                <div class="gantt-legend" id="gantt-legend" style="display:none;"></div>
+                <div class="gantt-tooltip" id="gantt-tooltip"></div>
+                <div class="replay-controls" id="replay-controls" style="display:none;">
+                    <button class="replay-btn" id="replay-play" title="Play/Pause">&#9654;</button>
+                    <input type="range" class="replay-slider" id="replay-slider" min="0" max="100" value="100">
+                    <span class="replay-time" id="replay-time">-</span>
+                    <span class="replay-time" id="replay-speed">1x</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- Rule Progress -->
+        <div class="panel">
+            <div class="panel-header"><h2>Per-Rule Progress</h2></div>
+            <div class="panel-body" id="rule-progress">
+                <div class="empty">Loading rule stats...</div>
+            </div>
+        </div>
+
+        <!-- Grid View (Airflow-style) -->
+        <div class="panel" id="grid-view-panel" style="display:none;">
+            <div class="panel-header">
+                <h2>Run Grid</h2>
+                <span style="font-size:0.7rem;color:var(--text-dim);">Rows = rules, Columns = runs (latest right)</span>
+            </div>
+            <div class="panel-body" style="padding:0.5rem;">
+                <div class="grid-view-container" id="grid-view-container">
+                    <div class="empty">Loading grid...</div>
+                </div>
+            </div>
+            <div class="grid-tooltip" id="grid-tooltip"></div>
+        </div>
+
+        <!-- Run History + Gates -->
+        <div class="grid-2col">
+            <div class="panel">
+                <div class="panel-header"><h2>Run History</h2></div>
+                <div class="table-scroll">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Run</th>
+                                <th>Started</th>
+                                <th>Duration</th>
+                                <th>OK</th>
+                                <th>Fail</th>
+                                <th>Skip</th>
+                            </tr>
+                        </thead>
+                        <tbody id="runs-body"></tbody>
+                    </table>
+                </div>
+            </div>
+
+            <div class="panel">
+                <div class="panel-header"><h2>Gates</h2></div>
+                <div class="table-scroll">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Rule</th>
+                                <th>Job</th>
+                                <th>Status</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody id="gates-body"></tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <script>
+    (function() {
+        'use strict';
+
+        // ── Shared state ──
+        var statusData = null;
+        var workflowStartTime = null;
+        var avgJobDuration = null;
+        var dagViewMode = 'jobs'; // 'jobs' or 'rules'
+        var ganttColorMode = 'rule'; // 'rule' or 'status'
+        var lastDagData = null;
+        var jobDurations = {}; // job_id -> duration in seconds
+
+        // Color palette for rule-based coloring (12 distinct colors)
+        var RULE_COLORS = [
+            '#6c72cb', '#34d399', '#f59e0b', '#60a5fa', '#f87171',
+            '#a78bfa', '#2dd4bf', '#fb923c', '#818cf8', '#4ade80',
+            '#e879f9', '#38bdf8'
+        ];
+        var ruleColorMap = {};
+        var nextRuleColor = 0;
+
+        function getRuleColor(ruleName) {
+            if (!ruleColorMap[ruleName]) {
+                ruleColorMap[ruleName] = RULE_COLORS[nextRuleColor % RULE_COLORS.length];
+                nextRuleColor++;
+            }
+            return ruleColorMap[ruleName];
+        }
+
+        // ── SSE connection ──
+        var sseDot = document.getElementById('sse-dot');
+        var sseLabel = document.getElementById('sse-label');
+        var evtSource;
+
+        function connectSSE() {
+            evtSource = new EventSource('/api/events');
+            evtSource.addEventListener('status', function(e) {
+                sseDot.classList.add('live');
+                sseLabel.textContent = 'Live';
+                var d = JSON.parse(e.data);
+                statusData = d;
+                document.getElementById('c-pending').textContent = d.pending;
+                document.getElementById('c-running').textContent = d.running;
+                document.getElementById('c-completed').textContent = d.completed;
+                document.getElementById('c-failed').textContent = d.failed;
+                document.getElementById('c-skipped').textContent = d.skipped;
+                document.getElementById('c-total').textContent = d.total;
+                updateOverallProgress(d);
+            });
+            evtSource.addEventListener('error', function() {
+                sseDot.classList.remove('live');
+                sseLabel.textContent = 'Reconnecting...';
+            });
+            evtSource.onerror = function() {
+                sseDot.classList.remove('live');
+                sseLabel.textContent = 'Disconnected';
+                evtSource.close();
+                setTimeout(connectSSE, 3000);
+            };
+        }
+        connectSSE();
+
+        // ── Overall Progress with ETA and throughput ──
+        function updateOverallProgress(d) {
+            var total = d.total || 0;
+            if (total === 0) return;
+            var done = d.completed + d.skipped;
+            var pctDone = (done / total * 100);
+            var pctRunning = (d.running / total * 100);
+            var pctFailed = (d.failed / total * 100);
+
+            document.getElementById('op-completed').style.width = pctDone + '%';
+            document.getElementById('op-running').style.width = pctRunning + '%';
+            document.getElementById('op-failed').style.width = pctFailed + '%';
+            document.getElementById('progress-pct').textContent = Math.round(pctDone) + '% complete';
+
+            // Elapsed time and throughput
+            if (workflowStartTime) {
+                var elapsed = Math.floor((Date.now() / 1000) - workflowStartTime);
+                document.getElementById('progress-elapsed').textContent = formatDurationSec(elapsed);
+
+                // Throughput: completed jobs per second
+                if (elapsed > 0 && done > 0) {
+                    var throughput = done / elapsed;
+                    document.getElementById('progress-throughput').textContent =
+                        throughput.toFixed(1) + ' jobs/sec';
+                } else {
+                    document.getElementById('progress-throughput').textContent = '';
+                }
+            }
+
+            // ETA estimation based on average completed job duration from rule stats
+            var remaining = d.pending + d.running;
+            if (avgJobDuration && remaining > 0 && d.running > 0) {
+                var etaSec = Math.ceil((remaining * avgJobDuration) / Math.max(d.running, 1));
+                document.getElementById('progress-eta').textContent = 'ETA: ~' + formatDurationSec(etaSec);
+            } else if (remaining === 0) {
+                document.getElementById('progress-eta').textContent = 'Done';
+            } else {
+                document.getElementById('progress-eta').textContent = '';
+            }
+        }
+
+        function formatDurationSec(s) {
+            if (s < 60) return s + 's';
+            if (s < 3600) return Math.floor(s / 60) + 'm ' + (s % 60) + 's';
+            return Math.floor(s / 3600) + 'h ' + Math.floor((s % 3600) / 60) + 'm';
+        }
+
+        // ── Cytoscape DAG with dagre layout ──
+        var cy = cytoscape({
+            container: document.getElementById('cy'),
+            style: [
+                {
+                    selector: 'node',
+                    style: {
+                        'label': 'data(label)',
+                        'font-size': '10px',
+                        'color': '#e2e4ed',
+                        'text-valign': 'bottom',
+                        'text-margin-y': 6,
+                        'width': 'data(nodeSize)',
+                        'height': 'data(nodeSize)',
+                        'background-color': '#6b7280',
+                        'border-width': 2,
+                        'border-color': 'rgba(0,0,0,0)',
+                        'text-wrap': 'ellipsis',
+                        'text-max-width': '80px'
+                    }
+                },
+                {
+                    selector: 'node[status="completed"]',
+                    style: { 'background-color': '#34d399' }
+                },
+                {
+                    selector: 'node[status="running"]',
+                    style: { 'background-color': '#60a5fa' }
+                },
+                {
+                    selector: 'node[status="pending"]',
+                    style: { 'background-color': '#6b7280' }
+                },
+                {
+                    selector: 'node[status="failed"]',
+                    style: { 'background-color': '#f87171' }
+                },
+                {
+                    selector: 'node[status="skipped"]',
+                    style: { 'background-color': '#4b5563' }
+                },
+                {
+                    selector: 'node.highlighted',
+                    style: { 'border-color': '#fbbf24', 'border-width': 3 }
+                },
+                {
+                    selector: 'node.dimmed',
+                    style: { 'opacity': 0.25 }
+                },
+                {
+                    selector: 'node.pulsing',
+                    style: { 'border-color': '#60a5fa', 'border-width': 3 }
+                },
+                {
+                    selector: 'node.rule-node',
+                    style: {
+                        'shape': 'round-rectangle',
+                        'text-valign': 'center',
+                        'text-halign': 'center',
+                        'font-size': '11px',
+                        'font-weight': 'bold',
+                        'width': 'label',
+                        'height': 32,
+                        'padding': '8px'
+                    }
+                },
+                {
+                    selector: 'edge',
+                    style: {
+                        'width': 1.5,
+                        'line-color': '#3b3f5c',
+                        'target-arrow-color': '#3b3f5c',
+                        'target-arrow-shape': 'triangle',
+                        'curve-style': 'bezier',
+                        'arrow-scale': 0.8
+                    }
+                },
+                {
+                    selector: 'edge.highlighted',
+                    style: {
+                        'line-color': '#6c72cb',
+                        'target-arrow-color': '#6c72cb',
+                        'width': 2.5
+                    }
+                },
+                {
+                    selector: 'edge.dimmed',
+                    style: { 'opacity': 0.15 }
+                },
+                {
+                    selector: 'edge.running-edge',
+                    style: {
+                        'line-color': '#60a5fa',
+                        'target-arrow-color': '#60a5fa',
+                        'line-style': 'dashed',
+                        'line-dash-pattern': [6, 4],
+                        'line-dash-offset': 0,
+                        'width': 2.5
+                    }
+                }
+            ],
+            layout: { name: 'preset' },
+            userZoomingEnabled: true,
+            userPanningEnabled: true,
+            boxSelectionEnabled: false
+        });
+
+        // Pulse animation for running nodes + flowing edge animation
+        var pulseInterval = null;
+        var dashOffset = 0;
+        function startPulseAnimation() {
+            if (pulseInterval) return;
+            var pulseState = true;
+            pulseInterval = setInterval(function() {
+                var running = cy.nodes('[status="running"]');
+                if (running.length === 0) {
+                    if (pulseInterval) { clearInterval(pulseInterval); pulseInterval = null; }
+                    return;
+                }
+                pulseState = !pulseState;
+                running.forEach(function(n) {
+                    n.style('border-width', pulseState ? 3 : 1);
+                    n.style('border-color', pulseState ? '#60a5fa' : 'rgba(0,0,0,0)');
+                });
+                // Animate flowing edges
+                dashOffset = (dashOffset + 2) % 20;
+                cy.edges('.running-edge').forEach(function(e) {
+                    e.style('line-dash-offset', -dashOffset);
+                });
+            }, 150);
+        }
+
+        // DAG tooltip
+        var cyTooltip = document.getElementById('cy-tooltip');
+        cy.on('mouseover', 'node', function(e) {
+            var node = e.target;
+            var pos = node.renderedPosition();
+            var container = document.getElementById('cy').getBoundingClientRect();
+            var html = '<div class="tt-rule">' + esc(node.data('label') || node.id()) + '</div>'
+                + '<div class="tt-status">Status: <span class="badge ' + node.data('status') + '">' + node.data('status') + '</span></div>';
+
+            // Show wildcards for job-level nodes
+            if (node.data('wildcards') && node.data('wildcards') !== '{}') {
+                html += '<div class="tt-wildcards">' + esc(parseWildcards(node.data('wildcards'))) + '</div>';
+            }
+
+            // Show duration if available
+            if (node.data('duration')) {
+                html += '<div class="tt-duration">Duration: ' + formatDurationSec(node.data('duration')) + '</div>';
+            }
+
+            // Show job count for rule-level nodes
+            if (node.data('jobCount')) {
+                html += '<div class="tt-count">' + node.data('jobCount') + ' jobs</div>';
+            }
+
+            html += '<div class="tt-id">' + esc(node.id()) + '</div>';
+            cyTooltip.innerHTML = html;
+            cyTooltip.style.left = (container.left + pos.x + 15) + 'px';
+            cyTooltip.style.top = (container.top + pos.y - 10) + 'px';
+            cyTooltip.style.display = 'block';
+        });
+        cy.on('mouseout', 'node', function() {
+            cyTooltip.style.display = 'none';
+        });
+
+        // Click node to highlight upstream/downstream
+        cy.on('tap', 'node', function(e) {
+            var node = e.target;
+            // Get predecessors (upstream) and successors (downstream)
+            var upstream = node.predecessors();
+            var downstream = node.successors();
+            var connected = upstream.union(downstream).union(node);
+
+            // Dim everything, highlight connected
+            cy.elements().addClass('dimmed').removeClass('highlighted');
+            connected.removeClass('dimmed').addClass('highlighted');
+        });
+
+        // Double-click node to show job detail panel
+        cy.on('dbltap', 'node', function(e) {
+            var node = e.target;
+            var upstream = node.predecessors();
+            var downstream = node.successors();
+            showNodeDetail(node, upstream.nodes(), downstream.nodes());
+        });
+
+        // Click background to reset
+        cy.on('tap', function(e) {
+            if (e.target === cy) {
+                cy.elements().removeClass('dimmed').removeClass('highlighted');
+                hideNodeDetail();
+            }
+        });
+
+        // Fit / Reset buttons
+        document.getElementById('dag-fit-btn').addEventListener('click', function() {
+            cy.fit(undefined, 20);
+        });
+        document.getElementById('dag-reset-btn').addEventListener('click', function() {
+            cy.elements().removeClass('dimmed').removeClass('highlighted');
+        });
+
+        var needsLayout = true;
+
+        // DAG view toggle handlers with smooth transition
+        function switchDagView(mode) {
+            if (dagViewMode === mode) return;
+            dagViewMode = mode;
+            document.getElementById('dag-view-jobs').classList.toggle('active', mode === 'jobs');
+            document.getElementById('dag-view-rules').classList.toggle('active', mode === 'rules');
+            needsLayout = true;
+
+            var cyContainer = document.getElementById('cy');
+            cyContainer.classList.add('transitioning');
+            setTimeout(function() {
+                if (lastDagData) renderDAG(lastDagData);
+                cyContainer.classList.remove('transitioning');
+            }, 200);
+        }
+        document.getElementById('dag-view-jobs').addEventListener('click', function() { switchDagView('jobs'); });
+        document.getElementById('dag-view-rules').addEventListener('click', function() { switchDagView('rules'); });
+
+        // Derive rule-level DAG from job-level data
+        function deriveRuleDAG(data) {
+            var ruleNodes = {};
+            var ruleEdges = {};
+
+            // Group nodes by rule_name
+            data.nodes.forEach(function(n) {
+                var rule = n.rule_name || n.id;
+                if (!ruleNodes[rule]) {
+                    ruleNodes[rule] = { id: 'rule:' + rule, rule_name: rule, status: 'completed', jobCount: 0,
+                        completed: 0, running: 0, failed: 0, pending: 0, skipped: 0 };
+                }
+                ruleNodes[rule].jobCount++;
+                ruleNodes[rule][n.status] = (ruleNodes[rule][n.status] || 0) + 1;
+            });
+
+            // Compute aggregate status per rule
+            Object.keys(ruleNodes).forEach(function(rule) {
+                var r = ruleNodes[rule];
+                if (r.failed > 0) r.status = 'failed';
+                else if (r.running > 0) r.status = 'running';
+                else if (r.pending > 0) r.status = 'pending';
+                else if (r.completed > 0) r.status = 'completed';
+                else r.status = 'skipped';
+            });
+
+            // Build rule-to-rule edges by mapping job-edges through rule names
+            var nodeRuleMap = {};
+            data.nodes.forEach(function(n) { nodeRuleMap[n.id] = n.rule_name || n.id; });
+
+            if (data.edges) {
+                data.edges.forEach(function(e) {
+                    var fromRule = nodeRuleMap[e.from];
+                    var toRule = nodeRuleMap[e.to];
+                    if (fromRule && toRule && fromRule !== toRule) {
+                        var key = fromRule + '->' + toRule;
+                        if (!ruleEdges[key]) {
+                            ruleEdges[key] = { from: 'rule:' + fromRule, to: 'rule:' + toRule };
+                        }
+                    }
+                });
+            }
+
+            return {
+                nodes: Object.values(ruleNodes),
+                edges: Object.values(ruleEdges)
+            };
+        }
+
+        function computeNodeSize(node, isRuleView) {
+            if (isRuleView) return 32; // Rule nodes use label-width
+            // Size proportional to duration (clamped between 20-50)
+            var dur = jobDurations[node.id] || 0;
+            if (dur <= 0) return 28;
+            return Math.min(50, Math.max(20, 20 + Math.sqrt(dur) * 3));
+        }
+
+        function renderDAG(data) {
+            var viewData = dagViewMode === 'rules' ? deriveRuleDAG(data) : data;
+            var isRuleView = dagViewMode === 'rules';
+            var existingIds = new Set();
+            var addedNew = false;
+
+            // Clear graph when switching views
+            if (needsLayout) {
+                cy.elements().remove();
+                addedNew = true;
+            }
+
+            // Update or add nodes
+            viewData.nodes.forEach(function(n) {
+                existingIds.add(n.id);
+                // Track started_at from DAG data for duration computation
+                if (n.started_at && !jobDurations[n.id]) {
+                    var now = Math.floor(Date.now() / 1000);
+                    jobDurations[n.id] = now - n.started_at;
+                }
+                var nodeSize = computeNodeSize(n, isRuleView);
+                var existing = cy.getElementById(n.id);
+                if (existing.length) {
+                    existing.data('status', n.status);
+                    existing.data('nodeSize', nodeSize);
+                    if (n.rule_name) existing.data('label', n.rule_name);
+                    if (n.wildcards) existing.data('wildcards', n.wildcards);
+                    if (n.jobCount) existing.data('jobCount', n.jobCount);
+                    if (jobDurations[n.id]) existing.data('duration', jobDurations[n.id]);
+                } else {
+                    var nodeData = {
+                        id: n.id,
+                        label: n.rule_name || n.id,
+                        status: n.status,
+                        nodeSize: nodeSize
+                    };
+                    if (n.wildcards) nodeData.wildcards = n.wildcards;
+                    if (n.jobCount) nodeData.jobCount = n.jobCount;
+                    if (jobDurations[n.id]) nodeData.duration = jobDurations[n.id];
+                    var classes = isRuleView ? 'rule-node' : '';
+                    cy.add({ group: 'nodes', data: nodeData, classes: classes });
+                    addedNew = true;
+                }
+            });
+
+            // Update or add edges
+            if (viewData.edges) {
+                viewData.edges.forEach(function(e) {
+                    var edgeId = e.from + '->' + e.to;
+                    existingIds.add(edgeId);
+                    if (!cy.getElementById(edgeId).length) {
+                        cy.add({
+                            group: 'edges',
+                            data: { id: edgeId, source: e.from, target: e.to }
+                        });
+                        addedNew = true;
+                    }
+                });
+            }
+
+            // Remove stale elements
+            cy.elements().forEach(function(el) {
+                if (!existingIds.has(el.id())) { el.remove(); addedNew = true; }
+            });
+
+            // Animate edges connected to running nodes (flowing effect)
+            cy.edges().removeClass('running-edge');
+            var runningNodes = cy.nodes('[status="running"]');
+            runningNodes.connectedEdges().addClass('running-edge');
+
+            // Start pulse animation for running nodes
+            if (cy.nodes('[status="running"]').length > 0) {
+                startPulseAnimation();
+            }
+
+            // Use dagre layout for better DAG rendering (only on structural changes)
+            if ((addedNew || needsLayout) && cy.nodes().length > 0) {
+                needsLayout = false;
+                cy.layout({
+                    name: 'dagre',
+                    rankDir: 'TB',
+                    nodeSep: isRuleView ? 40 : 30,
+                    rankSep: isRuleView ? 80 : 60,
+                    animate: false,
+                    fit: true,
+                    padding: 20
+                }).run();
+            }
+        }
+
+        function refreshDAG() {
+            fetch('/api/dag').then(function(r) { return r.json(); }).then(function(data) {
+                lastDagData = data;
+                renderDAG(data);
+            }).catch(function() {});
+        }
+
+        // ── Jobs table ──
+        var allJobs = [];
+        var currentFilter = 'all';
+        var sortCol = 'rule_name';
+        var sortDir = 'asc';
+
+        function formatTime(ts) {
+            if (!ts) return '-';
+            var d = new Date(ts * 1000);
+            return d.toLocaleTimeString();
+        }
+
+        function parseWildcards(wc) {
+            if (!wc || wc === '{}') return '-';
+            try {
+                var obj = JSON.parse(wc);
+                return Object.entries(obj).map(function(kv) { return kv[0] + '=' + kv[1]; }).join(', ');
+            } catch(e) { return wc; }
+        }
+
+        function renderJobs() {
+            var filtered = currentFilter === 'all'
+                ? allJobs
+                : allJobs.filter(function(j) { return j.status === currentFilter; });
+
+            filtered.sort(function(a, b) {
+                var va = a[sortCol] || '', vb = b[sortCol] || '';
+                if (typeof va === 'number' && typeof vb === 'number') {
+                    return sortDir === 'asc' ? va - vb : vb - va;
+                }
+                va = String(va).toLowerCase();
+                vb = String(vb).toLowerCase();
+                if (va < vb) return sortDir === 'asc' ? -1 : 1;
+                if (va > vb) return sortDir === 'asc' ? 1 : -1;
+                return 0;
+            });
+
+            var tbody = document.getElementById('jobs-body');
+            if (filtered.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="4" class="empty">No jobs</td></tr>';
+                return;
+            }
+            tbody.innerHTML = filtered.map(function(j) {
+                return '<tr>'
+                    + '<td>' + esc(j.rule_name) + '</td>'
+                    + '<td>' + esc(parseWildcards(j.wildcards)) + '</td>'
+                    + '<td><span class="badge ' + j.status + '">' + j.status + '</span></td>'
+                    + '<td>' + formatTime(j.started_at) + '</td>'
+                    + '</tr>';
+            }).join('');
+        }
+
+        function refreshJobs() {
+            fetch('/api/jobs').then(function(r) { return r.json(); }).then(function(data) {
+                allJobs = data;
+                renderJobs();
+
+                // Track per-job durations for DAG node sizing
+                var now = Math.floor(Date.now() / 1000);
+                data.forEach(function(j) {
+                    if (j.started_at) {
+                        jobDurations[j.id] = now - j.started_at;
+                    }
+                });
+            }).catch(function() {});
+        }
+
+        // Filter buttons
+        document.querySelectorAll('.filter-btn[data-filter]').forEach(function(btn) {
+            btn.addEventListener('click', function() {
+                document.querySelectorAll('.filter-btn[data-filter]').forEach(function(b) { b.classList.remove('active'); });
+                btn.classList.add('active');
+                currentFilter = btn.dataset.filter;
+                renderJobs();
+            });
+        });
+
+        // Sort headers
+        document.querySelectorAll('#jobs-table thead th').forEach(function(th) {
+            th.addEventListener('click', function() {
+                var col = th.dataset.sort;
+                if (!col) return;
+                if (sortCol === col) {
+                    sortDir = sortDir === 'asc' ? 'desc' : 'asc';
+                } else {
+                    sortCol = col;
+                    sortDir = 'asc';
+                }
+                document.querySelectorAll('#jobs-table thead th').forEach(function(t) {
+                    t.classList.remove('sorted-asc', 'sorted-desc');
+                });
+                th.classList.add(sortDir === 'asc' ? 'sorted-asc' : 'sorted-desc');
+                renderJobs();
+            });
+        });
+
+        // ── Execution Timeline (Gantt Chart) ──
+        var ganttTooltip = document.getElementById('gantt-tooltip');
+        var ganttRunSelect = document.getElementById('gantt-run-select');
+        var runsLoaded = false;
+
+        // Gantt color toggle handlers
+        document.getElementById('gantt-color-rule').addEventListener('click', function() {
+            ganttColorMode = 'rule';
+            document.getElementById('gantt-color-rule').classList.add('active');
+            document.getElementById('gantt-color-status').classList.remove('active');
+            refreshGanttLive();
+        });
+        document.getElementById('gantt-color-status').addEventListener('click', function() {
+            ganttColorMode = 'status';
+            document.getElementById('gantt-color-status').classList.add('active');
+            document.getElementById('gantt-color-rule').classList.remove('active');
+            refreshGanttLive();
+        });
+
+        function renderGantt(jobs) {
+            var canvas = document.getElementById('gantt-canvas');
+            var empty = document.getElementById('gantt-empty');
+            var legend = document.getElementById('gantt-legend');
+            var container = document.getElementById('gantt-container');
+
+            // Separate jobs with timing data from pending (no started_at)
+            var timed = jobs.filter(function(j) { return j.started_at; });
+            var pending = jobs.filter(function(j) { return !j.started_at && (j.status === 'pending'); });
+            if (timed.length === 0 && pending.length === 0) {
+                canvas.style.display = 'none';
+                empty.style.display = 'block';
+                legend.style.display = 'none';
+                return;
+            }
+            canvas.style.display = 'block';
+            empty.style.display = 'none';
+
+            // Compute time range from timed jobs
+            var now = Math.floor(Date.now() / 1000);
+            var minT = Infinity, maxT = 0;
+            var hasRunning = false;
+            timed.forEach(function(j) {
+                if (j.started_at < minT) minT = j.started_at;
+                var end = j.completed_at || now;
+                if (end > maxT) maxT = end;
+                if (!j.completed_at && j.status !== 'completed' && j.status !== 'failed' && j.status !== 'skipped') {
+                    hasRunning = true;
+                }
+            });
+            if (minT === Infinity) minT = now;
+            var span = maxT - minT || 1;
+
+            // Determine appropriate time scale label
+            var scaleLabel = span < 120 ? 'seconds' : span < 7200 ? 'minutes' : 'hours';
+
+            // Compute average job duration for ETA
+            var totalDur = 0, durCount = 0;
+            timed.forEach(function(j) {
+                if (j.completed_at && j.started_at) {
+                    totalDur += (j.completed_at - j.started_at);
+                    durCount++;
+                }
+            });
+            if (durCount > 0) avgJobDuration = totalDur / durCount;
+
+            // Collect unique rules for legend
+            var seenRules = {};
+            jobs.forEach(function(j) {
+                var rule = j.rule_name || j.job_id || '';
+                if (rule && !seenRules[rule]) seenRules[rule] = getRuleColor(rule);
+            });
+
+            // Sort timed jobs by start time
+            timed.sort(function(a, b) { return a.started_at - b.started_at; });
+
+            // Build time axis labels
+            var tickCount = 5;
+            var axisHtml = '<div class="gantt-time-axis"><div class="gantt-label">Time (' + scaleLabel + ')</div><div class="gantt-track">';
+            for (var t = 0; t <= tickCount; t++) {
+                var tickT = minT + (span * t / tickCount);
+                axisHtml += '<span>' + formatTime(tickT) + '</span>';
+            }
+            axisHtml += '</div></div>';
+
+            // Build rows for timed jobs
+            var rowsHtml = '';
+            var lastRunningIdx = -1;
+            var rowIdx = 0;
+            timed.forEach(function(j) {
+                var start = j.started_at;
+                var end = j.completed_at || now;
+                var leftPct = ((start - minT) / span * 100);
+                var widthPct = ((end - start) / span * 100);
+                if (widthPct < 0.5) widthPct = 0.5;
+
+                // Determine status from exit_code and completed_at
+                var status;
+                if (j.exit_code !== undefined && j.exit_code !== null) {
+                    status = j.exit_code === 0 ? 'completed' : 'failed';
+                } else if (j.completed_at) {
+                    status = j.status === 'skipped' ? 'skipped' : 'completed';
+                } else {
+                    status = 'running';
+                    lastRunningIdx = rowIdx;
+                }
+
+                var label = j.rule_name || j.job_id || '';
+                var dur = end - start;
+                var durStr = dur < 60 ? dur + 's' : Math.floor(dur / 60) + 'm ' + (dur % 60) + 's';
+
+                // Determine bar color based on color mode
+                var barClass = status;
+                var barStyle = 'left:' + leftPct + '%;width:' + widthPct + '%';
+                if (ganttColorMode === 'rule' && status !== 'failed') {
+                    barClass = 'rule-colored';
+                    if (status === 'running') barClass += ' running';
+                    barStyle += ';background:' + getRuleColor(label);
+                }
+
+                var exitCodeStr = (j.exit_code !== undefined && j.exit_code !== null) ? String(j.exit_code) : '';
+
+                rowsHtml += '<div class="gantt-row">'
+                    + '<div class="gantt-label" title="' + esc(j.job_id || label) + '">' + esc(label) + '</div>'
+                    + '<div class="gantt-track">'
+                    + '<div class="gantt-bar ' + barClass + '"'
+                    + ' style="' + barStyle + '"'
+                    + ' data-job-id="' + esc(j.job_id || '') + '"'
+                    + ' data-rule="' + esc(label) + '"'
+                    + ' data-dur="' + esc(durStr) + '"'
+                    + ' data-status="' + status + '"'
+                    + ' data-wildcards="' + esc(j.wildcards || '') + '"'
+                    + ' data-exit-code="' + exitCodeStr + '"'
+                    + '>'
+                    + (widthPct > 8 ? '<span class="gantt-bar-label">' + esc(durStr) + '</span>' : '')
+                    + '</div>'
+                    + '</div></div>';
+                rowIdx++;
+            });
+
+            // Build rows for pending jobs (no bar, just dashed placeholder)
+            pending.forEach(function(j) {
+                var label = j.rule_name || j.job_id || '';
+                var barClass = 'pending';
+                var barStyle = 'left:0%;width:0%';
+
+                rowsHtml += '<div class="gantt-row">'
+                    + '<div class="gantt-label" title="' + esc(j.job_id || label) + '">' + esc(label) + '</div>'
+                    + '<div class="gantt-track">'
+                    + '<div class="gantt-bar ' + barClass + '"'
+                    + ' style="' + barStyle + '"'
+                    + ' data-job-id="' + esc(j.job_id || '') + '"'
+                    + ' data-rule="' + esc(label) + '"'
+                    + ' data-dur="pending"'
+                    + ' data-status="pending"'
+                    + ' data-wildcards="' + esc(j.wildcards || '') + '"'
+                    + ' data-exit-code=""'
+                    + '></div>'
+                    + '</div></div>';
+            });
+
+            canvas.innerHTML = axisHtml + rowsHtml;
+
+            // Render legend when in rule color mode
+            if (ganttColorMode === 'rule' && Object.keys(seenRules).length > 0) {
+                legend.style.display = 'flex';
+                legend.innerHTML = Object.keys(seenRules).map(function(rule) {
+                    return '<div class="gantt-legend-item">'
+                        + '<div class="gantt-legend-swatch" style="background:' + seenRules[rule] + '"></div>'
+                        + '<span>' + esc(rule) + '</span></div>';
+                }).join('');
+            } else {
+                legend.style.display = 'none';
+            }
+
+            // Auto-scroll to follow running jobs
+            if (hasRunning && lastRunningIdx >= 0) {
+                var rows = canvas.querySelectorAll('.gantt-row');
+                if (rows[lastRunningIdx + 1]) { // +1 to skip time axis row
+                    var row = rows[lastRunningIdx + 1];
+                    var containerRect = container.getBoundingClientRect();
+                    var rowRect = row.getBoundingClientRect();
+                    // Only scroll if the running row is below the visible area
+                    if (rowRect.bottom > containerRect.bottom) {
+                        row.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+                    }
+                }
+            }
+
+            // Attach tooltip handlers to bars
+            canvas.querySelectorAll('.gantt-bar').forEach(function(bar) {
+                bar.addEventListener('mouseenter', function(e) {
+                    var exitInfo = '';
+                    if (bar.dataset.exitCode !== '') {
+                        exitInfo = '<div>Exit code: ' + esc(bar.dataset.exitCode) + '</div>';
+                    }
+                    ganttTooltip.innerHTML =
+                        '<div><strong>' + esc(bar.dataset.rule) + '</strong></div>'
+                        + (bar.dataset.jobId ? '<div style="color:var(--text-dim);font-size:0.7rem">' + esc(bar.dataset.jobId) + '</div>' : '')
+                        + '<div>Duration: ' + esc(bar.dataset.dur) + '</div>'
+                        + '<div>Status: <span class="badge ' + bar.dataset.status + '">' + bar.dataset.status + '</span></div>'
+                        + exitInfo
+                        + (bar.dataset.wildcards ? '<div style="color:var(--text-dim)">' + esc(parseWildcards(bar.dataset.wildcards)) + '</div>' : '');
+                    ganttTooltip.style.display = 'block';
+                });
+                bar.addEventListener('mousemove', function(e) {
+                    ganttTooltip.style.left = (e.clientX + 12) + 'px';
+                    ganttTooltip.style.top = (e.clientY - 10) + 'px';
+                });
+                bar.addEventListener('mouseleave', function() {
+                    ganttTooltip.style.display = 'none';
+                });
+            });
+        }
+
+        function refreshGanttLive() {
+            if (ganttRunSelect.value !== 'live') return;
+            // Build gantt from current jobs — API now returns completed_at and exit_code
+            var ganttJobs = allJobs.map(function(j) {
+                return {
+                    rule_name: j.rule_name,
+                    job_id: j.id,
+                    started_at: j.started_at,
+                    completed_at: j.completed_at || null,
+                    wildcards: j.wildcards,
+                    exit_code: j.exit_code,
+                    status: j.status
+                };
+            });
+            renderGantt(ganttJobs);
+        }
+
+        ganttRunSelect.addEventListener('change', function() {
+            var val = ganttRunSelect.value;
+            if (val === 'live') {
+                replayControls.style.display = 'none';
+                if (replayTimer) { clearInterval(replayTimer); replayPlaying = false; }
+                refreshGanttLive();
+            } else {
+                // Fetch jobs for this run and show replay controls
+                fetch('/api/runs/' + encodeURIComponent(val) + '/jobs')
+                    .then(function(r) { return r.json(); })
+                    .then(function(data) {
+                        renderGantt(data);
+                        showReplayControls(data);
+                    })
+                    .catch(function() {});
+            }
+        });
+
+        // ── Rule Progress (with elapsed time, ETA from completed job avg, throughput) ──
+        function refreshRuleProgress() {
+            fetch('/api/stats/rules').then(function(r) { return r.json(); }).then(function(data) {
+                var container = document.getElementById('rule-progress');
+                if (!data || data.length === 0) {
+                    container.innerHTML = '<div class="empty">No rule stats available</div>';
+                    return;
+                }
+
+                // Compute global avgJobDuration from rule stats for overall ETA
+                var totalAvgMs = 0;
+                var totalAvgCount = 0;
+                data.forEach(function(r) {
+                    if (r.avg_wall_time_ms > 0) {
+                        // Weight by number of completed jobs
+                        var completedWithTime = r.completed - (r.failed || 0);
+                        if (completedWithTime > 0) {
+                            totalAvgMs += r.avg_wall_time_ms * completedWithTime;
+                            totalAvgCount += completedWithTime;
+                        }
+                    }
+                });
+                if (totalAvgCount > 0) {
+                    avgJobDuration = (totalAvgMs / totalAvgCount) / 1000; // convert ms to seconds
+                }
+
+                var now = Math.floor(Date.now() / 1000);
+
+                container.innerHTML = data.map(function(r) {
+                    var pctDone = r.total > 0 ? (r.completed / r.total * 100) : 0;
+                    var pctRun = r.total > 0 ? (r.running / r.total * 100) : 0;
+                    var statusText = r.completed + '/' + r.total + ' completed';
+                    if (r.running > 0) statusText = r.completed + '/' + r.total;
+
+                    // Elapsed time for this rule (from earliest started_at)
+                    var elapsedText = '';
+                    if (r.earliest_started_at) {
+                        var elapsed = now - r.earliest_started_at;
+                        elapsedText = ' \u2014 ' + formatDurationSec(elapsed) + ' elapsed';
+
+                        // Track workflow start time from earliest rule start
+                        if (!workflowStartTime || r.earliest_started_at < workflowStartTime) {
+                            workflowStartTime = r.earliest_started_at;
+                        }
+                    }
+
+                    // ETA based on avg_wall_time_ms from completed jobs (from the API)
+                    var etaText = '';
+                    var remaining = r.total - r.completed;
+                    var avgSec = r.avg_wall_time_ms / 1000;
+                    if (remaining > 0 && avgSec > 0 && r.running > 0) {
+                        var etaSec = Math.ceil((remaining * avgSec) / Math.max(r.running, 1));
+                        etaText = ' \u2014 <span class="rule-eta">ETA ~' + formatDurationSec(etaSec) + '</span>';
+                    } else if (remaining === 0) {
+                        etaText = ' \u2014 <span class="rule-eta" style="color:var(--green)">Done</span>';
+                    }
+
+                    // Color swatch for rule
+                    var swatchColor = getRuleColor(r.rule_name);
+
+                    return '<div class="rule-progress">'
+                        + '<div class="rule-label">'
+                        + '<span class="name" style="display:flex;align-items:center;gap:0.3rem;">'
+                        + '<span style="display:inline-block;width:8px;height:8px;border-radius:2px;background:' + swatchColor + ';flex-shrink:0;"></span>'
+                        + esc(r.rule_name)
+                        + '</span>'
+                        + '<span class="count">' + statusText + elapsedText + etaText + '</span></div>'
+                        + '<div class="progress-track">'
+                        + '<div class="progress-fill-completed" style="width:' + pctDone + '%"></div>'
+                        + '<div class="progress-fill-running" style="width:' + pctRun + '%"></div>'
+                        + '</div></div>';
+                }).join('');
+            }).catch(function() {});
+        }
+
+        // ── Run History ──
+        function formatDuration(start, end) {
+            if (!start) return '-';
+            if (!end) return 'running...';
+            var ms = (end - start) * 1000;
+            if (ms < 1000) return ms + 'ms';
+            var s = Math.floor(ms / 1000);
+            if (s < 60) return s + 's';
+            return Math.floor(s / 60) + 'm ' + (s % 60) + 's';
+        }
+
+        function refreshRuns() {
+            fetch('/api/runs').then(function(r) { return r.json(); }).then(function(data) {
+                var tbody = document.getElementById('runs-body');
+                if (!data || data.length === 0) {
+                    tbody.innerHTML = '<tr><td colspan="6" class="empty">No runs recorded</td></tr>';
+                    return;
+                }
+                tbody.innerHTML = data.map(function(r) {
+                    var started = r.started_at ? new Date(r.started_at * 1000).toLocaleString() : '-';
+                    return '<tr class="run-row" data-run-id="' + esc(r.id) + '">'
+                        + '<td title="' + esc(r.id) + '">' + esc(r.id.substring(0, 8)) + '</td>'
+                        + '<td>' + started + '</td>'
+                        + '<td>' + formatDuration(r.started_at, r.completed_at) + '</td>'
+                        + '<td style="color:var(--green)">' + (r.succeeded != null ? r.succeeded : '-') + '</td>'
+                        + '<td style="color:var(--red)">' + (r.failed != null ? r.failed : '-') + '</td>'
+                        + '<td style="color:var(--gray)">' + (r.skipped != null ? r.skipped : '-') + '</td>'
+                        + '</tr>';
+                }).join('');
+
+                // Populate Gantt run selector
+                if (!runsLoaded && data.length > 0) {
+                    runsLoaded = true;
+                    data.forEach(function(r) {
+                        var opt = document.createElement('option');
+                        opt.value = r.id;
+                        opt.textContent = r.id.substring(0, 8) + ' - ' + new Date(r.started_at * 1000).toLocaleString();
+                        ganttRunSelect.appendChild(opt);
+                    });
+                }
+
+                // Click run row to view its Gantt
+                document.querySelectorAll('.run-row').forEach(function(row) {
+                    row.style.cursor = 'pointer';
+                    row.addEventListener('click', function() {
+                        var runId = row.dataset.runId;
+                        ganttRunSelect.value = runId;
+                        ganttRunSelect.dispatchEvent(new Event('change'));
+                        document.getElementById('gantt-container').scrollIntoView({ behavior: 'smooth' });
+                    });
+                });
+            }).catch(function() {});
+        }
+
+        // ── Gates ──
+        function refreshGates() {
+            fetch('/api/gates').then(function(r) { return r.json(); }).then(function(data) {
+                var tbody = document.getElementById('gates-body');
+                if (!data || data.length === 0) {
+                    tbody.innerHTML = '<tr><td colspan="4" class="empty">No gates</td></tr>';
+                    return;
+                }
+                tbody.innerHTML = data.map(function(g) {
+                    var actions = g.status === 'pending'
+                        ? '<div class="gate-actions">'
+                          + '<button class="btn approve" onclick="gateAction(' + g.id + ',\'approve\')">Approve</button>'
+                          + '<button class="btn reject" onclick="gateAction(' + g.id + ',\'reject\')">Reject</button>'
+                          + '</div>'
+                        : '<span class="badge ' + g.status + '">' + g.status + '</span>';
+                    return '<tr>'
+                        + '<td>' + esc(g.rule_name) + '</td>'
+                        + '<td title="' + esc(g.job_id) + '">' + esc(g.job_id.substring(0, 12)) + '</td>'
+                        + '<td><span class="badge ' + g.status + '">' + g.status + '</span></td>'
+                        + '<td>' + actions + '</td>'
+                        + '</tr>';
+                }).join('');
+            }).catch(function() {});
+        }
+
+        // Gate actions
+        window.gateAction = function(id, action) {
+            fetch('/api/gates/' + id + '/' + action, { method: 'POST' })
+                .then(function() { refreshGates(); })
+                .catch(function(err) { console.error('Gate action failed:', err); });
+        };
+
+        // ── HTML escaping ──
+        function esc(s) {
+            if (s == null) return '';
+            var el = document.createElement('span');
+            el.textContent = String(s);
+            return el.innerHTML;
+        }
+
+        // ── Node Detail Panel ──
+        var nodeDetailEl = document.getElementById('node-detail');
+
+        function showNodeDetail(node, upstreamNodes, downstreamNodes) {
+            var id = node.id();
+            var data = node.data();
+
+            document.getElementById('nd-title').textContent = data.label || id;
+            document.getElementById('nd-status').innerHTML = '<span class="badge ' + (data.status || '') + '">' + (data.status || '-') + '</span>';
+            document.getElementById('nd-rule').textContent = data.label || '-';
+            document.getElementById('nd-wildcards').textContent = data.wildcards ? parseWildcards(data.wildcards) : '-';
+
+            // Duration
+            var dur = data.duration || jobDurations[id];
+            document.getElementById('nd-duration').textContent = dur ? formatDurationSec(dur) : '-';
+
+            // Upstream list
+            var upList = document.getElementById('nd-upstream');
+            if (upstreamNodes.length === 0) {
+                upList.innerHTML = '<li style="color:var(--text-dim);cursor:default;">None</li>';
+            } else {
+                upList.innerHTML = upstreamNodes.map(function(n) {
+                    return '<li data-node-id="' + esc(n.id()) + '">' + esc(n.data('label') || n.id()) + '</li>';
+                }).join('');
+            }
+
+            // Downstream list
+            var downList = document.getElementById('nd-downstream');
+            if (downstreamNodes.length === 0) {
+                downList.innerHTML = '<li style="color:var(--text-dim);cursor:default;">None</li>';
+            } else {
+                downList.innerHTML = downstreamNodes.map(function(n) {
+                    return '<li data-node-id="' + esc(n.id()) + '">' + esc(n.data('label') || n.id()) + '</li>';
+                }).join('');
+            }
+
+            // Click dep list items to navigate
+            nodeDetailEl.querySelectorAll('.dep-list li[data-node-id]').forEach(function(li) {
+                li.addEventListener('click', function() {
+                    var targetNode = cy.getElementById(li.dataset.nodeId);
+                    if (targetNode.length) {
+                        cy.animate({ center: { eles: targetNode }, zoom: 1.5 }, { duration: 300 });
+                        targetNode.emit('tap');
+                    }
+                });
+            });
+
+            // Fetch enriched detail for job-level nodes
+            var logSection = document.getElementById('nd-log-section');
+            if (!id.startsWith('rule:')) {
+                fetch('/api/job/' + encodeURIComponent(id))
+                    .then(function(r) { return r.ok ? r.json() : null; })
+                    .then(function(detail) {
+                        if (detail) {
+                            // Update fields from API response
+                            if (detail.rule_name) {
+                                document.getElementById('nd-rule').textContent = detail.rule_name;
+                            }
+                            if (detail.wildcards && detail.wildcards !== '{}') {
+                                document.getElementById('nd-wildcards').textContent = parseWildcards(detail.wildcards);
+                            }
+                            if (detail.log_path) {
+                                document.getElementById('nd-log-path').textContent = detail.log_path;
+                                logSection.style.display = 'block';
+                            } else {
+                                logSection.style.display = 'none';
+                            }
+                            // Show log excerpt if available
+                            var excerptEl = document.getElementById('nd-log-excerpt');
+                            if (detail.stderr_tail && excerptEl) {
+                                excerptEl.textContent = detail.stderr_tail;
+                                excerptEl.parentElement.style.display = 'block';
+                            } else if (excerptEl) {
+                                excerptEl.parentElement.style.display = 'none';
+                            }
+                        } else {
+                            logSection.style.display = 'none';
+                        }
+                    })
+                    .catch(function() { logSection.style.display = 'none'; });
+            } else {
+                logSection.style.display = 'none';
+            }
+
+            nodeDetailEl.classList.add('visible');
+        }
+
+        function hideNodeDetail() {
+            nodeDetailEl.classList.remove('visible');
+        }
+
+        document.getElementById('nd-close').addEventListener('click', function() {
+            hideNodeDetail();
+            cy.elements().removeClass('dimmed').removeClass('highlighted');
+        });
+
+        // ── Critical Path Highlighting ──
+        var criticalPathActive = false;
+
+        function computeCriticalPath() {
+            // Find the critical path: longest sequential chain through the DAG
+            // Uses topological sort + longest path algorithm
+            var nodes = cy.nodes();
+            var edges = cy.edges();
+            if (nodes.length === 0) return [];
+
+            // Build adjacency and compute longest path via dynamic programming
+            var dist = {};   // node id -> longest path length to this node
+            var parent = {}; // node id -> predecessor on critical path
+            var nodeDur = {};
+
+            nodes.forEach(function(n) {
+                var id = n.id();
+                // Use duration if available, otherwise 1 for each node
+                nodeDur[id] = n.data('duration') || jobDurations[id] || 1;
+                dist[id] = nodeDur[id];
+                parent[id] = null;
+            });
+
+            // Find roots (no incoming edges)
+            var hasIncoming = {};
+            edges.forEach(function(e) { hasIncoming[e.target().id()] = true; });
+            var roots = nodes.filter(function(n) { return !hasIncoming[n.id()]; });
+
+            // BFS in topological order to compute longest paths
+            var visited = {};
+            var queue = [];
+            roots.forEach(function(n) { queue.push(n); visited[n.id()] = true; });
+
+            // Kahn's algorithm for topological traversal
+            var inDegree = {};
+            nodes.forEach(function(n) { inDegree[n.id()] = 0; });
+            edges.forEach(function(e) { inDegree[e.target().id()]++; });
+
+            var topoQueue = [];
+            nodes.forEach(function(n) { if (inDegree[n.id()] === 0) topoQueue.push(n); });
+
+            while (topoQueue.length > 0) {
+                var current = topoQueue.shift();
+                var cid = current.id();
+
+                current.outgoers('edge').forEach(function(edge) {
+                    var target = edge.target();
+                    var tid = target.id();
+                    var newDist = dist[cid] + nodeDur[tid];
+                    if (newDist > dist[tid]) {
+                        dist[tid] = newDist;
+                        parent[tid] = cid;
+                    }
+                    inDegree[tid]--;
+                    if (inDegree[tid] === 0) topoQueue.push(target);
+                });
+            }
+
+            // Find the node with maximum distance (end of critical path)
+            var maxDist = 0;
+            var endNode = null;
+            Object.keys(dist).forEach(function(id) {
+                if (dist[id] > maxDist) { maxDist = dist[id]; endNode = id; }
+            });
+
+            // Trace back the critical path
+            var path = [];
+            var cur = endNode;
+            while (cur) {
+                path.unshift(cur);
+                cur = parent[cur];
+            }
+            return path;
+        }
+
+        document.getElementById('critical-path-btn').addEventListener('click', function() {
+            var btn = document.getElementById('critical-path-btn');
+            criticalPathActive = !criticalPathActive;
+            btn.classList.toggle('active', criticalPathActive);
+
+            if (criticalPathActive) {
+                var path = computeCriticalPath();
+                if (path.length === 0) return;
+
+                // Highlight critical path nodes and edges
+                cy.elements().addClass('dimmed').removeClass('highlighted');
+                var pathSet = new Set(path);
+                path.forEach(function(nodeId) {
+                    var node = cy.getElementById(nodeId);
+                    node.removeClass('dimmed').addClass('highlighted');
+                    node.style('border-color', '#f87171');
+                    node.style('border-width', 3);
+                });
+
+                // Highlight edges between consecutive path nodes
+                for (var i = 0; i < path.length - 1; i++) {
+                    var edgeId = path[i] + '->' + path[i + 1];
+                    var edge = cy.getElementById(edgeId);
+                    if (edge.length) {
+                        edge.removeClass('dimmed').addClass('highlighted');
+                        edge.style('line-color', '#f87171');
+                        edge.style('target-arrow-color', '#f87171');
+                        edge.style('width', 3);
+                    }
+                }
+            } else {
+                cy.elements().removeClass('dimmed').removeClass('highlighted');
+                cy.elements().removeStyle();
+            }
+        });
+
+        // ── Export DAG as SVG/PNG ──
+        var exportMenu = document.getElementById('dag-export-menu');
+
+        document.getElementById('dag-export-btn').addEventListener('click', function(e) {
+            e.stopPropagation();
+            exportMenu.classList.toggle('visible');
+        });
+
+        document.addEventListener('click', function() {
+            exportMenu.classList.remove('visible');
+        });
+
+        document.getElementById('export-png').addEventListener('click', function() {
+            exportMenu.classList.remove('visible');
+            var png = cy.png({ full: true, scale: 2, bg: '#0f1117' });
+            var link = document.createElement('a');
+            link.href = png;
+            link.download = 'oxymake-dag.png';
+            link.click();
+        });
+
+        document.getElementById('export-svg').addEventListener('click', function() {
+            exportMenu.classList.remove('visible');
+            var svgContent = cy.svg({ full: true, scale: 1, bg: '#0f1117' });
+            var blob = new Blob([svgContent], { type: 'image/svg+xml' });
+            var url = URL.createObjectURL(blob);
+            var link = document.createElement('a');
+            link.href = url;
+            link.download = 'oxymake-dag.svg';
+            link.click();
+            URL.revokeObjectURL(url);
+        });
+
+        // ── Execution Replay ──
+        var replayControls = document.getElementById('replay-controls');
+        var replaySlider = document.getElementById('replay-slider');
+        var replayTimeEl = document.getElementById('replay-time');
+        var replaySpeedEl = document.getElementById('replay-speed');
+        var replayPlayBtn = document.getElementById('replay-play');
+        var replayPlaying = false;
+        var replayTimer = null;
+        var replayJobs = [];  // Current jobs for replay
+        var replayMinT = 0;
+        var replayMaxT = 0;
+        var replaySpeed = 1;
+
+        function showReplayControls(jobs) {
+            var timed = jobs.filter(function(j) { return j.started_at; });
+            if (timed.length < 2) {
+                replayControls.style.display = 'none';
+                return;
+            }
+            replayControls.style.display = 'flex';
+            replayJobs = timed;
+
+            replayMinT = Infinity;
+            replayMaxT = 0;
+            var now = Math.floor(Date.now() / 1000);
+            timed.forEach(function(j) {
+                if (j.started_at < replayMinT) replayMinT = j.started_at;
+                var end = j.completed_at || now;
+                if (end > replayMaxT) replayMaxT = end;
+            });
+
+            replaySlider.value = 100;
+            replayTimeEl.textContent = formatDurationSec(replayMaxT - replayMinT);
+        }
+
+        replaySlider.addEventListener('input', function() {
+            var pct = parseInt(replaySlider.value);
+            var currentT = replayMinT + ((replayMaxT - replayMinT) * pct / 100);
+            replayTimeEl.textContent = formatDurationSec(Math.floor(currentT - replayMinT));
+            renderGanttAtTime(currentT);
+        });
+
+        replayPlayBtn.addEventListener('click', function() {
+            replayPlaying = !replayPlaying;
+            replayPlayBtn.innerHTML = replayPlaying ? '&#9646;&#9646;' : '&#9654;';
+            replayPlayBtn.classList.toggle('active', replayPlaying);
+
+            if (replayPlaying) {
+                if (parseInt(replaySlider.value) >= 100) replaySlider.value = 0;
+                replayTimer = setInterval(function() {
+                    var val = parseInt(replaySlider.value) + 1;
+                    if (val > 100) {
+                        val = 100;
+                        replayPlaying = false;
+                        replayPlayBtn.innerHTML = '&#9654;';
+                        replayPlayBtn.classList.remove('active');
+                        clearInterval(replayTimer);
+                    }
+                    replaySlider.value = val;
+                    replaySlider.dispatchEvent(new Event('input'));
+                }, 50 / replaySpeed);
+            } else if (replayTimer) {
+                clearInterval(replayTimer);
+            }
+        });
+
+        replaySpeedEl.addEventListener('click', function() {
+            var speeds = [1, 2, 4, 8];
+            var idx = speeds.indexOf(replaySpeed);
+            replaySpeed = speeds[(idx + 1) % speeds.length];
+            replaySpeedEl.textContent = replaySpeed + 'x';
+            // Restart timer with new speed if playing
+            if (replayPlaying && replayTimer) {
+                clearInterval(replayTimer);
+                replayTimer = setInterval(function() {
+                    var val = parseInt(replaySlider.value) + 1;
+                    if (val > 100) {
+                        val = 100;
+                        replayPlaying = false;
+                        replayPlayBtn.innerHTML = '&#9654;';
+                        replayPlayBtn.classList.remove('active');
+                        clearInterval(replayTimer);
+                    }
+                    replaySlider.value = val;
+                    replaySlider.dispatchEvent(new Event('input'));
+                }, 50 / replaySpeed);
+            }
+        });
+
+        function renderGanttAtTime(currentT) {
+            // Filter and clip jobs to show state at currentT
+            var canvas = document.getElementById('gantt-canvas');
+            var empty = document.getElementById('gantt-empty');
+            var legend = document.getElementById('gantt-legend');
+            var now = Math.floor(Date.now() / 1000);
+
+            var visible = replayJobs.filter(function(j) {
+                return j.started_at <= currentT;
+            });
+
+            if (visible.length === 0) {
+                canvas.style.display = 'none';
+                empty.style.display = 'block';
+                legend.style.display = 'none';
+                return;
+            }
+            canvas.style.display = 'block';
+            empty.style.display = 'none';
+
+            var span = replayMaxT - replayMinT || 1;
+
+            // Collect rules for legend
+            var seenRules = {};
+            visible.forEach(function(j) {
+                var rule = j.rule_name || j.job_id || '';
+                if (rule && !seenRules[rule]) seenRules[rule] = getRuleColor(rule);
+            });
+
+            visible.sort(function(a, b) { return a.started_at - b.started_at; });
+
+            // Time axis
+            var tickCount = 5;
+            var axisHtml = '<div class="gantt-time-axis"><div class="gantt-label">Time</div><div class="gantt-track">';
+            for (var t = 0; t <= tickCount; t++) {
+                var tickT = replayMinT + (span * t / tickCount);
+                axisHtml += '<span>' + formatTime(tickT) + '</span>';
+            }
+            axisHtml += '</div></div>';
+
+            // Rows - clip end time to currentT for "in progress" effect
+            var rowsHtml = '';
+            visible.forEach(function(j) {
+                var start = j.started_at;
+                var actualEnd = j.completed_at || now;
+                var end = Math.min(actualEnd, currentT);
+                var leftPct = ((start - replayMinT) / span * 100);
+                var widthPct = ((end - start) / span * 100);
+                if (widthPct < 0.5) widthPct = 0.5;
+
+                var status;
+                if (j.completed_at && j.completed_at <= currentT) {
+                    status = (j.exit_code !== undefined && j.exit_code !== 0) ? 'failed' : 'completed';
+                } else {
+                    status = 'running';
+                }
+
+                var label = j.rule_name || j.job_id || '';
+                var dur = end - start;
+                var durStr = dur < 60 ? dur + 's' : Math.floor(dur / 60) + 'm ' + (dur % 60) + 's';
+
+                var barClass = status;
+                var barStyle = 'left:' + leftPct + '%;width:' + widthPct + '%';
+                if (ganttColorMode === 'rule' && status !== 'failed') {
+                    barClass = 'rule-colored' + (status === 'failed' ? ' failed' : '');
+                    barStyle += ';background:' + getRuleColor(label);
+                }
+
+                rowsHtml += '<div class="gantt-row">'
+                    + '<div class="gantt-label" title="' + esc(label) + '">' + esc(label) + '</div>'
+                    + '<div class="gantt-track">'
+                    + '<div class="gantt-bar ' + barClass + '"'
+                    + ' style="' + barStyle + '">'
+                    + (widthPct > 8 ? '<span class="gantt-bar-label">' + esc(durStr) + '</span>' : '')
+                    + '</div>'
+                    + '</div></div>';
+            });
+
+            canvas.innerHTML = axisHtml + rowsHtml;
+
+            // Legend
+            if (ganttColorMode === 'rule' && Object.keys(seenRules).length > 0) {
+                legend.style.display = 'flex';
+                legend.innerHTML = Object.keys(seenRules).map(function(rule) {
+                    return '<div class="gantt-legend-item">'
+                        + '<div class="gantt-legend-swatch" style="background:' + seenRules[rule] + '"></div>'
+                        + '<span>' + esc(rule) + '</span></div>';
+                }).join('');
+            } else {
+                legend.style.display = 'none';
+            }
+        }
+
+        // ── Grid View (Airflow-style) ──
+        var gridViewCache = null; // { runs: [...], jobsByRun: { runId: [...] } }
+
+        function deriveJobStatus(job) {
+            if (job.exit_code !== undefined && job.exit_code !== null) {
+                return job.exit_code === 0 ? 'completed' : 'failed';
+            }
+            if (job.completed_at) {
+                return 'skipped';
+            }
+            if (job.started_at) {
+                return 'running';
+            }
+            return 'pending';
+        }
+
+        function isRuleFlaky(cells) {
+            var hasSuccess = false;
+            var hasFail = false;
+            for (var i = 0; i < cells.length; i++) {
+                if (cells[i] === 'completed') hasSuccess = true;
+                if (cells[i] === 'failed') hasFail = true;
+            }
+            return hasSuccess && hasFail;
+        }
+
+        function refreshGridView() {
+            fetch('/api/runs').then(function(r) { return r.json(); }).then(function(runs) {
+                var panel = document.getElementById('grid-view-panel');
+                var container = document.getElementById('grid-view-container');
+
+                if (!runs || runs.length < 2) {
+                    panel.style.display = 'none';
+                    return;
+                }
+
+                panel.style.display = '';
+
+                // Sort runs by started_at ascending (oldest left, newest right)
+                runs.sort(function(a, b) { return a.started_at - b.started_at; });
+
+                // Limit to last 30 runs to keep the grid manageable
+                if (runs.length > 30) {
+                    runs = runs.slice(runs.length - 30);
+                }
+
+                // Fetch jobs for all runs in parallel
+                var promises = runs.map(function(r) {
+                    return fetch('/api/runs/' + encodeURIComponent(r.id) + '/jobs')
+                        .then(function(resp) { return resp.json(); })
+                        .then(function(jobs) { return { runId: r.id, jobs: jobs }; })
+                        .catch(function() { return { runId: r.id, jobs: [] }; });
+                });
+
+                Promise.all(promises).then(function(results) {
+                    // Build jobsByRun map
+                    var jobsByRun = {};
+                    results.forEach(function(res) {
+                        jobsByRun[res.runId] = res.jobs;
+                    });
+
+                    // Collect all rule names across all runs
+                    var ruleSet = {};
+                    results.forEach(function(res) {
+                        res.jobs.forEach(function(j) {
+                            if (j.rule_name) ruleSet[j.rule_name] = true;
+                        });
+                    });
+                    var rules = Object.keys(ruleSet).sort();
+
+                    if (rules.length === 0) {
+                        container.innerHTML = '<div class="empty">No job data available</div>';
+                        return;
+                    }
+
+                    // Build the grid matrix: rules x runs
+                    // For each rule+run, find the job and its status
+                    var matrix = {}; // matrix[rule][runId] = { status, job }
+                    rules.forEach(function(rule) {
+                        matrix[rule] = {};
+                    });
+
+                    results.forEach(function(res) {
+                        res.jobs.forEach(function(j) {
+                            if (!j.rule_name) return;
+                            var status = deriveJobStatus(j);
+                            matrix[j.rule_name][res.runId] = { status: status, job: j };
+                        });
+                    });
+
+                    // Build HTML table
+                    var html = '<table class="grid-view-table">';
+
+                    // Header row: empty cell + run columns
+                    html += '<thead><tr><th class="grid-rule-header">Rule</th>';
+                    runs.forEach(function(r) {
+                        var label = r.id.substring(0, 6);
+                        var dateStr = new Date(r.started_at * 1000).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+                        html += '<th class="grid-run-header" data-run-id="' + esc(r.id) + '" title="' + esc(r.id) + '\n' + dateStr + '">'
+                            + dateStr + '</th>';
+                    });
+                    html += '</tr></thead>';
+
+                    // Body rows: one per rule
+                    html += '<tbody>';
+                    rules.forEach(function(rule) {
+                        // Check if rule is flaky
+                        var statusList = runs.map(function(r) {
+                            var cell = matrix[rule][r.id];
+                            return cell ? cell.status : null;
+                        }).filter(function(s) { return s !== null; });
+
+                        var flaky = isRuleFlaky(statusList);
+
+                        html += '<tr><td class="grid-rule-cell">'
+                            + esc(rule)
+                            + (flaky ? '<span class="grid-flaky-indicator" title="Flaky: mixed success/failure"></span>' : '')
+                            + '</td>';
+
+                        runs.forEach(function(r) {
+                            var cell = matrix[rule][r.id];
+                            if (cell) {
+                                html += '<td><div class="grid-cell ' + cell.status + '"'
+                                    + ' data-rule="' + esc(rule) + '"'
+                                    + ' data-run-id="' + esc(r.id) + '"'
+                                    + ' data-job-id="' + esc(cell.job.job_id) + '"'
+                                    + ' data-status="' + cell.status + '"'
+                                    + ' data-wall-time="' + (cell.job.wall_time_ms || '') + '"'
+                                    + '></div></td>';
+                            } else {
+                                html += '<td><div class="grid-cell empty" title="No job for this rule in this run"></div></td>';
+                            }
+                        });
+
+                        html += '</tr>';
+                    });
+                    html += '</tbody></table>';
+
+                    container.innerHTML = html;
+
+                    // Tooltip and click handlers
+                    var tooltip = document.getElementById('grid-tooltip');
+
+                    container.querySelectorAll('.grid-cell:not(.empty)').forEach(function(el) {
+                        el.addEventListener('mouseenter', function(e) {
+                            var rule = el.dataset.rule;
+                            var status = el.dataset.status;
+                            var wallTime = el.dataset.wallTime;
+                            var runId = el.dataset.runId;
+
+                            var durStr = '';
+                            if (wallTime) {
+                                var ms = parseInt(wallTime, 10);
+                                if (ms < 1000) durStr = ms + 'ms';
+                                else if (ms < 60000) durStr = (ms / 1000).toFixed(1) + 's';
+                                else durStr = Math.floor(ms / 60000) + 'm ' + Math.floor((ms % 60000) / 1000) + 's';
+                            }
+
+                            tooltip.innerHTML = '<div class="tip-rule">' + esc(rule) + '</div>'
+                                + '<div class="tip-run">Run: ' + esc(runId.substring(0, 8)) + '</div>'
+                                + '<div class="tip-status" style="color:var(--' + statusColor(status) + ')">' + status + '</div>'
+                                + (durStr ? '<div class="tip-duration">' + durStr + '</div>' : '');
+
+                            tooltip.style.display = 'block';
+                            positionTooltip(tooltip, e);
+                        });
+
+                        el.addEventListener('mousemove', function(e) {
+                            positionTooltip(tooltip, e);
+                        });
+
+                        el.addEventListener('mouseleave', function() {
+                            tooltip.style.display = 'none';
+                        });
+
+                        el.addEventListener('click', function() {
+                            var runId = el.dataset.runId;
+                            // Click cell → show that run in the Gantt chart
+                            if (runId && ganttRunSelect) {
+                                ganttRunSelect.value = runId;
+                                ganttRunSelect.dispatchEvent(new Event('change'));
+                                document.getElementById('gantt-container').scrollIntoView({ behavior: 'smooth' });
+                            }
+                        });
+                    });
+
+                    // Click run header to scroll to Gantt
+                    container.querySelectorAll('.grid-run-header').forEach(function(th) {
+                        th.addEventListener('click', function() {
+                            var runId = th.dataset.runId;
+                            if (runId && typeof ganttRunSelect !== 'undefined') {
+                                ganttRunSelect.value = runId;
+                                ganttRunSelect.dispatchEvent(new Event('change'));
+                                document.getElementById('gantt-container').scrollIntoView({ behavior: 'smooth' });
+                            }
+                        });
+                    });
+                });
+            }).catch(function() {});
+        }
+
+        function statusColor(status) {
+            switch (status) {
+                case 'completed': return 'green';
+                case 'failed': return 'red';
+                case 'running': return 'blue';
+                case 'skipped': return 'gray';
+                case 'pending': return 'amber';
+                default: return 'text-dim';
+            }
+        }
+
+        function positionTooltip(tooltip, e) {
+            var x = e.clientX + 12;
+            var y = e.clientY + 12;
+            if (x + 280 > window.innerWidth) x = e.clientX - 280;
+            if (y + 100 > window.innerHeight) y = e.clientY - 100;
+            tooltip.style.left = x + 'px';
+            tooltip.style.top = y + 'px';
+        }
+
+        // ── Polling ──
+        function poll() {
+            refreshDAG();
+            refreshJobs();
+            refreshRuleProgress();
+            refreshRuns();
+            refreshGates();
+            refreshGridView();
+            // Update gantt if in live mode
+            setTimeout(function() { refreshGanttLive(); }, 500);
+        }
+
+        // Initial load
+        poll();
+        // Refresh all panels every 2 seconds
+        setInterval(poll, 2000);
+    })();
+    </script>
+</body>
+</html>

@@ -1,0 +1,39 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH ox-invalidate 1  "ox-invalidate " 
+.SH NAME
+ox\-invalidate \- Invalidate cached outputs
+.SH SYNOPSIS
+\fBox\-invalidate\fR [\fB\-\-rule\fR] [\fB\-\-output\fR] [\fB\-\-cascade\fR] [\fB\-\-all\fR] [\fB\-n\fR|\fB\-\-dry\-run\fR] [\fB\-\-keep\-outputs\fR] [\fB\-\-json\fR] [\fB\-f\fR|\fB\-\-file\fR] [\fB\-h\fR|\fB\-\-help\fR] 
+.SH DESCRIPTION
+Invalidate cached outputs
+.SH OPTIONS
+.TP
+\fB\-\-rule\fR \fI<RULE>\fR
+Filter by rule name (exact match or /regex/)
+.TP
+\fB\-\-output\fR \fI<PATH>\fR
+Specific output file paths to invalidate (repeatable)
+.TP
+\fB\-\-cascade\fR
+Also invalidate all downstream rules
+.TP
+\fB\-\-all\fR
+Invalidate all cache entries
+.TP
+\fB\-n\fR, \fB\-\-dry\-run\fR
+Show what would be invalidated without modifying the cache
+.TP
+\fB\-\-keep\-outputs\fR
+Keep output files on disk (only clear cache entries).
+
+By default, `ox invalidate` deletes output files so that subsequent runs rebuild them regardless of cache validation mode.  With `\-\-keep\-outputs`, only the cache database entries are removed.
+.TP
+\fB\-\-json\fR
+Output results as JSON
+.TP
+\fB\-f\fR, \fB\-\-file\fR \fI<FILE>\fR [default: Oxymakefile.toml]
+Oxymakefile path
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)

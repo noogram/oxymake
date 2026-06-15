@@ -1,0 +1,263 @@
+---
+source: crates/ox-format/src/parse.rs
+expression: wf
+---
+Workflow {
+    ox_version: Some(
+        "0.1",
+    ),
+    format_version: "1",
+    config: {
+        "callers": List(
+            [
+                "gatk",
+                "deepvariant",
+            ],
+        ),
+        "cohorts": List(
+            [
+                "human",
+                "mouse",
+                "yeast",
+            ],
+        ),
+        "windows": List(
+            [
+                "5",
+                "10",
+                "20",
+                "60",
+            ],
+        ),
+    },
+    rules: [
+        Rule {
+            name: RuleName(
+                "all",
+            ),
+            priority: None,
+            inputs: [
+                InputPattern {
+                    pattern: TargetPattern(
+                        "annotate/{cohort}/{caller}.parquet",
+                    ),
+                    name: None,
+                    format: None,
+                },
+            ],
+            outputs: [],
+            execution: Shell {
+                command: "",
+            },
+            resources: {},
+            environment: None,
+            tags: {},
+            meta: RuleMeta {
+                description: None,
+            },
+            wildcard_constraints: {},
+            when: None,
+            expand_mode: Product,
+            error_strategy: Terminate,
+            timeout: None,
+            executor: None,
+            log: LogConfig {
+                stdout: None,
+                stderr: None,
+            },
+            benchmark: None,
+            retries: None,
+            params: {},
+            param_files: [],
+            shell_executable: None,
+            reproducibility: Deterministic,
+            source_line: None,
+        },
+        Rule {
+            name: RuleName(
+                "annotate",
+            ),
+            priority: None,
+            inputs: [
+                InputPattern {
+                    pattern: TargetPattern(
+                        "calls/{cohort}/{caller}.parquet",
+                    ),
+                    name: None,
+                    format: None,
+                },
+            ],
+            outputs: [
+                OutputPattern {
+                    pattern: TargetPattern(
+                        "annotate/{cohort}/{caller}.parquet",
+                    ),
+                    name: None,
+                    format: None,
+                    lifecycle: Permanent,
+                    materialize: Always,
+                },
+            ],
+            execution: Call {
+                function: "pipeline.annotate:compute",
+                lang: "python",
+            },
+            resources: {},
+            environment: None,
+            tags: {
+                "domain": "reporting",
+                "stage": "annotate",
+            },
+            meta: RuleMeta {
+                description: None,
+            },
+            wildcard_constraints: {},
+            when: None,
+            expand_mode: Product,
+            error_strategy: Terminate,
+            timeout: None,
+            executor: None,
+            log: LogConfig {
+                stdout: None,
+                stderr: None,
+            },
+            benchmark: None,
+            retries: None,
+            params: {},
+            param_files: [],
+            shell_executable: None,
+            reproducibility: Deterministic,
+            source_line: None,
+        },
+        Rule {
+            name: RuleName(
+                "call",
+            ),
+            priority: None,
+            inputs: [
+                InputPattern {
+                    pattern: TargetPattern(
+                        "features/{cohort}/{window}d.parquet",
+                    ),
+                    name: None,
+                    format: None,
+                },
+            ],
+            outputs: [
+                OutputPattern {
+                    pattern: TargetPattern(
+                        "calls/{cohort}/{caller}.parquet",
+                    ),
+                    name: None,
+                    format: None,
+                    lifecycle: Permanent,
+                    materialize: Always,
+                },
+            ],
+            execution: Call {
+                function: "pipeline.call:run",
+                lang: "python",
+            },
+            resources: {
+                "cpu": Int(
+                    4,
+                ),
+                "mem": Str(
+                    "8G",
+                ),
+            },
+            environment: None,
+            tags: {
+                "domain": "genomics",
+                "stage": "call",
+            },
+            meta: RuleMeta {
+                description: None,
+            },
+            wildcard_constraints: {},
+            when: None,
+            expand_mode: Product,
+            error_strategy: Terminate,
+            timeout: None,
+            executor: None,
+            log: LogConfig {
+                stdout: None,
+                stderr: None,
+            },
+            benchmark: None,
+            retries: None,
+            params: {},
+            param_files: [],
+            shell_executable: None,
+            reproducibility: Deterministic,
+            source_line: None,
+        },
+        Rule {
+            name: RuleName(
+                "features",
+            ),
+            priority: None,
+            inputs: [
+                InputPattern {
+                    pattern: TargetPattern(
+                        "data/{cohort}/reads.parquet",
+                    ),
+                    name: None,
+                    format: None,
+                },
+            ],
+            outputs: [
+                OutputPattern {
+                    pattern: TargetPattern(
+                        "features/{cohort}/{window}d.parquet",
+                    ),
+                    name: None,
+                    format: None,
+                    lifecycle: Permanent,
+                    materialize: Always,
+                },
+            ],
+            execution: Call {
+                function: "pipeline.features:compute",
+                lang: "python",
+            },
+            resources: {},
+            environment: Some(
+                Uv {
+                    requirements: None,
+                },
+            ),
+            tags: {
+                "domain": "genomics",
+                "stage": "features",
+            },
+            meta: RuleMeta {
+                description: None,
+            },
+            wildcard_constraints: {},
+            when: None,
+            expand_mode: Product,
+            error_strategy: Terminate,
+            timeout: None,
+            executor: None,
+            log: LogConfig {
+                stdout: None,
+                stderr: None,
+            },
+            benchmark: None,
+            retries: None,
+            params: {},
+            param_files: [],
+            shell_executable: None,
+            reproducibility: Deterministic,
+            source_line: None,
+        },
+    ],
+    gates: [],
+    includes: [],
+    global_environment: None,
+    profiles: {},
+    executor_config: ExecutorConfig {
+        slurm: None,
+    },
+}

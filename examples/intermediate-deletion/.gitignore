@@ -1,0 +1,4 @@
+# Generated outputs
+output/
+.oxymake/
+.snakemake/

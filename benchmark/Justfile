@@ -1,0 +1,103 @@
+# Benchmark recipes for OxyMake
+#
+# Prerequisites: ox (in PATH), python3, optional: hyperfine, snakemake
+
+set shell := ["bash", "-euo", "pipefail", "-c"]
+
+# Default: run the full perf benchmark
+default: benchmark
+
+# Full DAG-resolution perf benchmark (all sizes: 1K, 5K, 10K, 50K)
+benchmark *sizes:
+    bash perf/run.sh {{ sizes }}
+
+# Quick perf benchmark (1K jobs only)
+benchmark-quick:
+    bash perf/run.sh 1000
+
+# Snakemake compatibility suite — run all 4 workflows with ox
+benchmark-snakemake:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cd snakemake-compat
+    pass=0
+    fail=0
+    for suite in 01-* 02-* 03-* 04-*; do
+        [ -d "$suite" ] || continue
+        printf "--- %s ---\n" "$suite"
+        cd "$suite"
+        if ox run 2>&1; then
+            echo "  PASS"
+            ((pass++))
+        else
+            echo "  FAIL"
+            ((fail++))
+        fi
+        cd ..
+        echo ""
+    done
+    echo "Results: $pass passed, $fail failed"
+    [ "$fail" -eq 0 ]
+
+# Word-frequency side-by-side benchmark (OxyMake vs Snakemake)
+benchmark-word-frequency:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    echo "============================================"
+    echo " Benchmark: Word Frequency Pipeline"
+    echo " Samples: alpha, beta, gamma"
+    echo "============================================"
+    echo ""
+
+    # --- Snakemake ---
+    if command -v snakemake &>/dev/null; then
+        echo "--- Snakemake ---"
+        rm -rf data results logs .snakemake .oxymake
+        start=$(python3 -c 'import time; print(time.perf_counter())')
+        snakemake --cores 1 --quiet 2>&1
+        end=$(python3 -c 'import time; print(time.perf_counter())')
+        sm_time=$(python3 -c "print(f'{$end - $start:.3f}s')")
+        sm_md5=$(md5 -q results/merged_counts.txt 2>/dev/null || md5sum results/merged_counts.txt | cut -d' ' -f1)
+        echo "  Time:   $sm_time"
+        echo "  Output: $sm_md5"
+        echo ""
+    else
+        echo "--- Snakemake: not installed (skipped) ---"
+        echo ""
+        sm_md5=""
+        sm_time="n/a"
+    fi
+
+    # --- OxyMake ---
+    echo "--- OxyMake ---"
+    rm -rf data results logs .snakemake .oxymake
+    mkdir -p logs
+    start=$(python3 -c 'import time; print(time.perf_counter())')
+    ox run 2>&1
+    end=$(python3 -c 'import time; print(time.perf_counter())')
+    ox_time=$(python3 -c "print(f'{$end - $start:.3f}s')")
+    ox_md5=$(md5 -q results/merged_counts.txt 2>/dev/null || md5sum results/merged_counts.txt | cut -d' ' -f1)
+    echo "  Time:   $ox_time"
+    echo "  Output: $ox_md5"
+    echo ""
+
+    # --- Compare ---
+    echo "--- Comparison ---"
+    if [ -n "$sm_md5" ] && [ "$sm_md5" = "$ox_md5" ]; then
+        echo "  Output: IDENTICAL (md5: $sm_md5)"
+    elif [ -n "$sm_md5" ]; then
+        echo "  Output: DIFFERENT!"
+        echo "    Snakemake: $sm_md5"
+        echo "    OxyMake:   $ox_md5"
+    fi
+    echo "  Snakemake: $sm_time"
+    echo "  OxyMake:   $ox_time"
+    echo ""
+
+    # --- Cache test ---
+    echo "--- OxyMake Cache Test (re-run) ---"
+    start=$(python3 -c 'import time; print(time.perf_counter())')
+    ox run 2>&1
+    end=$(python3 -c 'import time; print(time.perf_counter())')
+    cache_time=$(python3 -c "print(f'{$end - $start:.3f}s')")
+    echo "  Time:   $cache_time (cached)"

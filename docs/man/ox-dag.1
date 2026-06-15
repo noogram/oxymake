@@ -1,0 +1,25 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH ox-dag 1  "ox-dag " 
+.SH NAME
+ox\-dag \- Visualize the DAG
+.SH SYNOPSIS
+\fBox\-dag\fR [\fB\-\-group\-by\fR] [\fB\-\-format\fR] [\fB\-\-json\fR] [\fB\-f\fR|\fB\-\-file\fR] [\fB\-h\fR|\fB\-\-help\fR] 
+.SH DESCRIPTION
+Visualize the DAG
+.SH OPTIONS
+.TP
+\fB\-\-group\-by\fR \fI<GROUP_BY>\fR
+Group by field(s), comma\-separated
+.TP
+\fB\-\-format\fR \fI<FORMAT>\fR [default: text]
+Output format: text, dot, mermaid
+.TP
+\fB\-\-json\fR
+Output structured JSON instead of human\-readable text
+.TP
+\fB\-f\fR, \fB\-\-file\fR \fI<FILE>\fR [default: Oxymakefile.toml]
+Oxymakefile path
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help

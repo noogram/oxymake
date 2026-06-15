@@ -1,0 +1,55 @@
+# Benchmark workflow: word frequency analysis
+# A simple multi-step pipeline that exercises wildcards, named I/O, and config.
+#
+# Pipeline:
+#   1. generate: Create sample text files
+#   2. count:    Count word frequencies per sample
+#   3. merge:    Merge all counts into a single report
+
+SAMPLES = ["alpha", "beta", "gamma"]
+
+rule all:
+    input:
+        "results/merged_counts.txt"
+
+rule generate:
+    output:
+        "data/{sample}.txt"
+    params:
+        seed="{sample}"
+    shell:
+        """
+        echo "the quick brown fox jumps over the lazy dog" > {output}
+        echo "the {wildcards.sample} sample has unique words" >> {output}
+        echo "fox and dog are repeated in the {wildcards.sample} text" >> {output}
+        """
+
+rule count:
+    input:
+        txt="data/{sample}.txt"
+    output:
+        counts="results/{sample}_counts.txt"
+    log:
+        "logs/{sample}_count.log"
+    shell:
+        """
+        echo "Counting words in {input.txt}" > {log}
+        cat {input.txt} | tr ' ' '\n' | sort | uniq -c | sort -rn > {output.counts}
+        echo "Done: $(wc -l < {output.counts}) unique words" >> {log}
+        """
+
+rule merge:
+    input:
+        counts=expand("results/{sample}_counts.txt", sample=SAMPLES)
+    output:
+        "results/merged_counts.txt"
+    shell:
+        """
+        echo "# Merged word counts" > {output}
+        for f in {input}; do
+            sample=$(basename "$f" _counts.txt)
+            echo "## $sample" >> {output}
+            cat "$f" >> {output}
+            echo "" >> {output}
+        done
+        """

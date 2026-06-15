@@ -1,0 +1,92 @@
+# Forbid-strings Gate — exogenous referee over confidential residue (Q-REL-4)
+#
+# WHY THIS EXISTS
+# ---------------
+# The one-shot cleanup that scrubbed confidential strings from history and docs
+# has no recurring referee. This gate is that referee — a grep of the tree (and,
+# on a PR, the diff) for strings that must NOT live on the public surface,
+# failing the build RED if any reappears.
+#
+# Patterned EXACTLY on the proven `forbid-pyo3` job (ci.yml:97-112): the repo's
+# canonical "a banned thing reappears → build red" template. NO `continue-on-error`,
+# NO skip-env. To silence it you must edit this file in an attributable commit.
+#
+# WHAT IS FORBIDDEN — externalized denylist (do NOT inline it here)
+# ----------------------------------------------------------------
+# The denylist is a confidential artefact in its own right: a guard that prints
+# in clear the very strings it bans re-leaks them (the auto-doxxing pathology).
+# So the literal patterns live OUTSIDE the tracked
+# tree, in the repository secret `FORBID_PATTERN` (a `git grep -E` alternation).
+# It covers the same three confidential categories as before:
+#   1. Operator private filesystem paths   (private home / dev roots)
+#   2. Internal fund domain + tool alias    (non-public org identity)
+#   3. Third-party outreach personal email  (a non-public named individual)
+# Set it once (canonical repo only):
+#   gh secret set FORBID_PATTERN --body '<alternation>'
+# Fork PRs and public clones never receive the secret → the gate is inert there
+# (it cannot leak the denylist it does not hold). On the canonical repo the
+# secret is present and the gate bites. This is honest demotion on forks, not a
+# silent waiver: the absence is announced as a ::warning::.
+#
+# WHAT IS DELIBERATELY *NOT* FORBIDDEN
+# ------------------------------------
+#   - `serie-research.dev` — the intended public maintainer identity, and the
+#     live contact in oxymake-paper.tex + CHANGELOG.md. Forbidding the operator's
+#     own public contact would make the paper un-shippable and turn this gate
+#     into a red-forever check that gets disabled. The risk that the domain may
+#     one day lapse is an AVAILABILITY concern, not a confidentiality leak; it is
+#     handled as an explicitly-labeled ADVISORY item in docs/RELEASE-CHECKLIST.md
+#     (a reachability probe), not a hard string-forbid.
+
+name: Forbid Strings
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch: {} # manual fire; can make the build run, never make it pass.
+
+permissions:
+  contents: read
+
+jobs:
+  forbid-strings:
+    name: Forbid confidential strings (release gate v)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Forbid confidential residue in the tracked tree
+        shell: bash
+        env:
+          FORBID_PATTERN: ${{ secrets.FORBID_PATTERN }}
+        run: |
+          set -uo pipefail
+
+          # The denylist (a `git grep -E` alternation) is supplied by the
+          # repository secret FORBID_PATTERN — never inlined in this file.
+          if [ -z "${FORBID_PATTERN:-}" ]; then
+            echo "::warning::FORBID_PATTERN secret is unset — the forbid-strings gate is"
+            echo "::warning::inert here (expected on forks / public clones that lack the"
+            echo "::warning::secret). The canonical repo provides it; honest demotion, not"
+            echo "::warning::a silent waiver. See .github/workflows/forbid-strings.yml header."
+            echo "SKIP: no denylist available, gate inert."
+            exit 0
+          fi
+
+          # `git grep` over tracked files only — never scans build artifacts or
+          # untracked scratch. `-I` skips binary blobs. The gate excludes only
+          # itself (it is the one place the secret value transiently materializes
+          # in the runner env, never in the tree).
+          if git grep -nIE "$FORBID_PATTERN" -- . \
+               ':(exclude).github/workflows/forbid-strings.yml'; then
+            echo ""
+            echo "ERROR: a forbidden confidential string is present on the tracked tree."
+            echo "A pattern from the FORBID_PATTERN denylist (private home paths, internal"
+            echo "fund domain, third-party outreach email) must NOT ship in a public clone."
+            echo "Remove it (or move the file to the author+agent orphan branch — see"
+            echo "docs/adr/017-artifact-residence-topology.md) before this gate can pass."
+            exit 1
+          fi
+          echo "OK: no forbidden confidential strings in the tracked tree."

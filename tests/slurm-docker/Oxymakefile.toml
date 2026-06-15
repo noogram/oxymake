@@ -1,0 +1,105 @@
+# OxyMake SLURM Demo — Multi-stage Data Pipeline
+#
+# 4 rules, ~12 jobs across generate → process → merge → report.
+# Each job sleeps 5-15s for visibility in squeue/dashboard.
+#
+# Designed for a 2-node SLURM cluster (c1, c2).
+
+ox_version = "0.1"
+
+[config]
+samples = ["s01", "s02", "s03", "s04", "s05"]
+
+# Default target: build the final report.
+[rule.all]
+input = ["output/report.txt"]
+
+# Stage 1: Generate synthetic data for each sample (5 parallel jobs).
+[rule.generate]
+output = ["data/{sample}.csv"]
+wildcard_constraints = { sample = "s01|s02|s03|s04|s05" }
+resources = { cpus = 2, mem_mb = 1024 }
+shell = """
+mkdir -p data
+DELAY=$((RANDOM % 6 + 5))
+echo "[generate:{sample}] creating dataset (${DELAY}s)..."
+sleep $DELAY
+echo "id,value,sample" > {output}
+for i in $(seq 1 100); do
+    echo "$i,$((RANDOM % 1000)),{sample}" >> {output}
+done
+echo "[generate:{sample}] done — $(wc -l < {output}) rows"
+"""
+
+# Stage 2: Process each sample — sort, filter, compute stats (5 parallel jobs).
+[rule.process]
+input = { csv = "data/{sample}.csv" }
+output = { stats = "results/{sample}_stats.txt", filtered = "results/{sample}_filtered.csv" }
+wildcard_constraints = { sample = "s01|s02|s03|s04|s05" }
+resources = { cpus = 2, mem_mb = 1024 }
+shell = """
+mkdir -p results
+DELAY=$((RANDOM % 6 + 8))
+echo "[process:{sample}] analyzing data (${DELAY}s)..."
+sleep $DELAY
+# Compute basic stats
+ROWS=$(tail -n +2 {input.csv} | wc -l | tr -d ' ')
+SUM=$(tail -n +2 {input.csv} | cut -d, -f2 | paste -sd+ | bc 2>/dev/null || echo 0)
+echo "sample: {sample}" > {output.stats}
+echo "rows: $ROWS" >> {output.stats}
+echo "sum: $SUM" >> {output.stats}
+echo "processed: $(date -u +%H:%M:%S)" >> {output.stats}
+# Filter rows where value > 500
+head -1 {input.csv} > {output.filtered}
+tail -n +2 {input.csv} | awk -F, '$2 > 500' >> {output.filtered}
+echo "[process:{sample}] done"
+"""
+
+# Stage 3: Merge all filtered results into a combined dataset (1 job, fan-in).
+[rule.merge]
+input = ["results/{sample}_filtered.csv"]
+output = ["output/combined.csv"]
+expand = "product"
+resources = { cpus = 1, mem_mb = 512 }
+shell = """
+mkdir -p output
+DELAY=$((RANDOM % 4 + 5))
+echo "[merge] combining filtered results (${DELAY}s)..."
+sleep $DELAY
+FIRST=true
+for f in {input}; do
+    if [ "$FIRST" = true ]; then
+        cat "$f" > {output}
+        FIRST=false
+    else
+        tail -n +2 "$f" >> {output}
+    fi
+done
+echo "[merge] done — $(wc -l < {output}) total rows"
+"""
+
+# Stage 4: Generate final report from merged data + per-sample stats (1 job).
+[rule.report]
+input = ["output/combined.csv", "results/{sample}_stats.txt"]
+output = ["output/report.txt"]
+expand = "product"
+resources = { cpus = 1, mem_mb = 512 }
+shell = """
+DELAY=$((RANDOM % 3 + 5))
+echo "[report] generating final report (${DELAY}s)..."
+sleep $DELAY
+echo "═══════════════════════════════════════════" > {output}
+echo "  OxyMake SLURM Demo — Pipeline Report" >> {output}
+echo "═══════════════════════════════════════════" >> {output}
+echo "" >> {output}
+echo "Combined dataset: $(wc -l < output/combined.csv) rows" >> {output}
+echo "" >> {output}
+echo "Per-sample statistics:" >> {output}
+for f in results/*_stats.txt; do
+    echo "  ---" >> {output}
+    cat "$f" | sed 's/^/  /' >> {output}
+done
+echo "" >> {output}
+echo "Generated: $(date -u +%Y-%m-%dT%H:%M:%SZ)" >> {output}
+echo "[report] done"
+"""

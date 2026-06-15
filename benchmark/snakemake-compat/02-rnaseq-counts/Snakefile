@@ -1,0 +1,121 @@
+# RNA-seq read counting pipeline
+# Exercises: configfile, named I/O, wildcard_constraints, threads, resources, log
+#
+# Pipeline:
+#   1. Generate mock FASTQ reads
+#   2. Trim adapters (quality filtering)
+#   3. Align to genome
+#   4. Count features per gene
+#   5. Merge into count matrix
+
+configfile: "config.yaml"
+
+rule all:
+    input:
+        "results/count_matrix.tsv"
+
+rule generate_reads:
+    output:
+        r1="data/reads/{sample}_R1.fastq",
+        r2="data/reads/{sample}_R2.fastq"
+    wildcard_constraints:
+        sample="[a-z]+_[0-9]+"
+    params:
+        n_reads=50
+    shell:
+        """
+        for i in $(seq 1 {params.n_reads}); do
+            echo "@{wildcards.sample}_read${{i}}/1" >> {output.r1}
+            python3 -c "import random; random.seed($i); print(''.join(random.choices('ACGT', k=75)))" >> {output.r1}
+            echo "+" >> {output.r1}
+            python3 -c "print('I'*75)" >> {output.r1}
+
+            echo "@{wildcards.sample}_read${{i}}/2" >> {output.r2}
+            python3 -c "import random; random.seed($i+1000); print(''.join(random.choices('ACGT', k=75)))" >> {output.r2}
+            echo "+" >> {output.r2}
+            python3 -c "print('I'*75)" >> {output.r2}
+        done
+        """
+
+rule trim_reads:
+    input:
+        r1="data/reads/{sample}_R1.fastq",
+        r2="data/reads/{sample}_R2.fastq"
+    output:
+        r1="data/trimmed/{sample}_R1.trimmed.fastq",
+        r2="data/trimmed/{sample}_R2.trimmed.fastq"
+    params:
+        min_qual=config["min_quality"]
+    log:
+        "logs/trim/{sample}.log"
+    threads: 2
+    shell:
+        """
+        echo "Trimming {wildcards.sample} (min_qual={params.min_qual})" > {log}
+        cp {input.r1} {output.r1}
+        cp {input.r2} {output.r2}
+        echo "Kept all reads (mock trim)" >> {log}
+        """
+
+rule align:
+    input:
+        r1="data/trimmed/{sample}_R1.trimmed.fastq",
+        r2="data/trimmed/{sample}_R2.trimmed.fastq"
+    output:
+        bam="results/aligned/{sample}.bam"
+    params:
+        genome=config["genome"]
+    log:
+        "logs/align/{sample}.log"
+    threads: 4
+    resources:
+        mem_mb=4000
+    shell:
+        """
+        echo "Aligning {wildcards.sample} to {params.genome}" > {log}
+        echo "BAM_HEADER" > {output.bam}
+        head -2 {input.r1} | tail -1 | awk '{{ print "{wildcards.sample}\t0\tchr1\t1\t60\t75M\t*\t0\t0\t" $0 }}' >> {output.bam}
+        echo "Aligned $(wc -l < {output.bam}) reads" >> {log}
+        """
+
+rule count_features:
+    input:
+        bam="results/aligned/{sample}.bam"
+    output:
+        counts="results/counts/{sample}.counts.tsv"
+    log:
+        "logs/count/{sample}.log"
+    shell:
+        """
+        echo "Counting features for {wildcards.sample}" > {log}
+        echo "gene_id\t{wildcards.sample}" > {output.counts}
+        for gene in GENE_A GENE_B GENE_C GENE_D GENE_E; do
+            count=$((RANDOM % 1000))
+            echo "$gene\t$count" >> {output.counts}
+        done
+        echo "Counted 5 genes" >> {log}
+        """
+
+rule merge_counts:
+    input:
+        counts=expand("results/counts/{sample}.counts.tsv", sample=config["samples"])
+    output:
+        matrix="results/count_matrix.tsv"
+    log:
+        "logs/merge_counts.log"
+    shell:
+        """
+        echo "Merging count files: {input.counts}" > {log}
+        # Use first file as base (gene_id column)
+        first=true
+        for f in {input.counts}; do
+            if [ "$first" = true ]; then
+                cat "$f" > {output.matrix}
+                first=false
+            else
+                paste {output.matrix} <(cut -f2 "$f") > {output.matrix}.tmp
+                mv {output.matrix}.tmp {output.matrix}
+            fi
+        done
+        echo "Matrix: $(wc -l < {output.matrix}) rows" >> {log}
+        """

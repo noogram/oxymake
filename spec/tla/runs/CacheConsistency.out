@@ -1,0 +1,27 @@
+TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)
+Running breadth-first search Model-Checking with fp 36 and seed 8080607432676735978 with 16 workers on 16 cores with 27300MB heap and 64MB offheap memory [pid: 60691] (Mac OS X 26.5.1 aarch64, Homebrew 17.0.19 x86_64, MSBDiskFPSet, DiskStateQueue).
+Parsing file spec/tla/CacheConsistency.tla
+Parsing file /private/var/folders/_f/yp39_pl932l59d2ckz60rnq00000gn/T/Naturals.tla
+Parsing file /private/var/folders/_f/yp39_pl932l59d2ckz60rnq00000gn/T/FiniteSets.tla
+Parsing file /private/var/folders/_f/yp39_pl932l59d2ckz60rnq00000gn/T/Sequences.tla
+Parsing file /private/var/folders/_f/yp39_pl932l59d2ckz60rnq00000gn/T/TLC.tla
+Semantic processing of module Naturals
+Semantic processing of module Sequences
+Semantic processing of module FiniteSets
+Semantic processing of module TLC
+Semantic processing of module CacheConsistency
+Starting... (2026-06-10 06:19:16)
+Implied-temporal checking--satisfiability problem has 6 branches.
+Computing initial states...
+Finished computing initial states: 1 distinct state generated at 2026-06-10 06:19:17.
+Progress(16) at 2026-06-10 06:19:19: 32 257 states generated, 7 436 distinct states found, 0 states left on queue.
+Checking 6 branches of temporal properties for the complete state space with 44616 total distinct states at (2026-06-10 06:19:19)
+Finished checking temporal properties in 03s at 2026-06-10 06:19:22
+Model checking completed. No error has been found.
+  Estimates of the probability that TLC did not check all reachable states
+  because two distinct states had the same fingerprint:
+  calculated (optimistic):  val = 1.0E-11
+32257 states generated, 7436 distinct states found, 0 states left on queue.
+The depth of the complete state graph search is 16.
+The average outdegree of the complete state graph is 1 (minimum is 0, the maximum 6 and the 95th percentile is 3).
+Finished in 06s at (2026-06-10 06:19:22)

@@ -1,0 +1,37 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH ox-guide 1  "ox-guide " 
+.SH NAME
+ox\-guide \- Print the operator handbook (orientation + pointers to the docs)
+.SH SYNOPSIS
+\fBox\-guide\fR [\fB\-h\fR|\fB\-\-help\fR] 
+.SH DESCRIPTION
+OxyMake — operator handbook
+.PP
+OxyMake is a content\-addressed workflow engine: declare rules in an
+Oxymakefile.toml, and `ox` builds only what is stale, in dependency order.
+.PP
+The core loop:
+  ox init      scaffold a new workflow (Oxymakefile.toml + .oxymake/)
+  ox lint      validate the Oxymakefile before running
+  ox plan      show what would execute, without running it
+  ox run       execute the workflow, ensuring requested outputs exist
+  ox status    inspect the current run (counts, failures, progress)
+  ox explain   show the full dependency chain for a target
+.PP
+Where the canonical docs live:
+  \- CLI reference     `ox help` (per\-command `ox help <cmd>`), `man ox`
+                      (and `man oxymake`, the alias binary).
+  \- Concepts & guides the mdBook under docs/book/ (start at introduction.md).
+  \- Contributing      CONTRIBUTING.md — the single source of truth for the
+                      Definition of Done and the contribution workflow.
+.PP
+Machine interfaces: most subcommands accept \-\-json; `ox run \-\-json` emits
+NDJSON events. See `ox help` for the full list.
+.PP
+Development is cosmon\-driven: the maintainer\*(Aqs agent orchestrator. Run
+`cs help` (and `cs help guide`) for that workflow.
+.SH OPTIONS
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)

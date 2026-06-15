@@ -1,0 +1,19 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH ox-init 1  "ox-init " 
+.SH NAME
+ox\-init \- Initialize a new workflow
+.SH SYNOPSIS
+\fBox\-init\fR [\fB\-\-force\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fIDIR\fR] 
+.SH DESCRIPTION
+Initialize a new workflow
+.SH OPTIONS
+.TP
+\fB\-\-force\fR
+Overwrite existing Oxymakefile
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help
+.TP
+[\fIDIR\fR] [default: .]
+Directory to initialize (defaults to current directory)

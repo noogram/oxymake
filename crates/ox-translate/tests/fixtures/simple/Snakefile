@@ -1,0 +1,11 @@
+rule all:
+    input:
+        expand("results/{sample}.txt", sample=["A", "B", "C"])
+
+rule process:
+    input:
+        "data/{sample}.csv"
+    output:
+        "results/{sample}.txt"
+    shell:
+        "sort {input} > {output}"

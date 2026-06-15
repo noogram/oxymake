@@ -1,0 +1,9 @@
+rule generate:
+    output:
+        "results/{sample}.dat"
+    params:
+        n_iter=1000,
+        seed=42,
+        label="experiment"
+    shell:
+        "generate --iter {params.n_iter} --seed {params.seed} --label {params.label} > {output}"

@@ -1,0 +1,81 @@
+# Intermediate file deletion benchmark: ox vs snakemake
+#
+# Demonstrates that ox detects deleted intermediate files and rebuilds
+# the downstream chain, while snakemake does not.
+
+# Run the full comparison
+compare:
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    echo "============================================"
+    echo "  Intermediate File Deletion Benchmark"
+    echo "  ox vs snakemake"
+    echo "============================================"
+
+    # --- Test ox ---
+    echo ""
+    echo ">>> [ox] Step 1: Clean slate"
+    rm -rf output .oxymake
+    echo ""
+    echo ">>> [ox] Step 2: Initial full run"
+    ox run
+    echo ""
+    echo ">>> [ox] Step 3: Verify all outputs exist"
+    ls -1 output/
+    echo ""
+    echo ">>> [ox] Step 4: Delete intermediate file (step_b.txt)"
+    rm output/step_b.txt
+    echo "  Remaining files:"
+    ls -1 output/
+    echo ""
+    echo ">>> [ox] Step 5: Rerun — should rebuild step_b → step_c → step_d"
+    ox run 2>&1 || true
+    echo ""
+    if [ -f output/step_b.txt ]; then
+        OX_RESULT="PASS: ox detected missing intermediate and rebuilt it"
+    else
+        OX_RESULT="FAIL: ox did not rebuild the missing intermediate"
+    fi
+    echo "  $OX_RESULT"
+    echo ""
+
+    # --- Test snakemake ---
+    echo "--------------------------------------------"
+    echo ""
+    echo ">>> [snakemake] Step 1: Clean slate"
+    rm -rf output .snakemake
+    echo ""
+    echo ">>> [snakemake] Step 2: Initial full run"
+    snakemake --cores 1 2>&1
+    echo ""
+    echo ">>> [snakemake] Step 3: Verify all outputs exist"
+    ls -1 output/
+    echo ""
+    echo ">>> [snakemake] Step 4: Delete intermediate file (step_b.txt)"
+    rm output/step_b.txt
+    echo "  Remaining files:"
+    ls -1 output/
+    echo ""
+    echo ">>> [snakemake] Step 5: Rerun — should rebuild step_b → step_c → step_d"
+    snakemake --cores 1 2>&1 || true
+    echo ""
+    if [ -f output/step_b.txt ]; then
+        SM_RESULT="PASS: snakemake detected missing intermediate and rebuilt it"
+    else
+        SM_RESULT="FAIL: snakemake did not rebuild the missing intermediate"
+    fi
+    echo "  $SM_RESULT"
+
+    # --- Summary ---
+    echo ""
+    echo "============================================"
+    echo "  RESULTS"
+    echo "============================================"
+    echo "  ox:        $OX_RESULT"
+    echo "  snakemake: $SM_RESULT"
+    echo "============================================"
+
+# Clean all generated files
+clean:
+    rm -rf output .oxymake .snakemake

@@ -1,0 +1,7 @@
+# Generated during benchmark runs
+workloads/
+
+# Generated benchmark output — developer tool only, NOT a public numeric truth.
+# The single benchmark of record lives in bench/snakemake-vs-oxymake/RESULTS.md.
+results.md
+results-*.md

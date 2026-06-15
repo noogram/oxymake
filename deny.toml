@@ -1,0 +1,58 @@
+# cargo-deny configuration
+#
+# Split gate:
+#   - PR gate (diff-deterministic):  cargo deny check bans licenses sources
+#   - Nightly (async advisory-db):   cargo deny check advisories
+
+[graph]
+all-features = true
+
+[advisories]
+version = 2
+yanked = "deny"
+# Exceptions must be dated. Policy: 90-day expiry — the ignore entry
+# itself should carry the date you wrote it; a later pass re-evaluates.
+ignore = [
+    # number_prefix 0.4.0 is unmaintained (transitive via indicatif).
+    # Not a security issue; upstream may switch to unit-prefix.
+    # Added 2026-04-23 — re-evaluate by 2026-07-22.
+    { id = "RUSTSEC-2025-0119", reason = "transitive via indicatif; unmaintained only, no security impact — reviewed 2026-04-23" },
+]
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+# Internal workspace crates use `path = ".."` with wildcard versions —
+# standard Cargo pattern, not a semver hazard.
+allow-wildcard-paths = true
+highlight = "all"
+deny = []
+skip = []
+skip-tree = []
+
+[licenses]
+version = 2
+# Permissive allowlist — expanded as real licenses land.
+allow = [
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "MIT",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "Unicode-3.0",
+    "CC0-1.0",
+    "0BSD",
+    "BSL-1.0",
+    # webpki-roots uses CDLA-Permissive-2.0 for the bundled Mozilla root store.
+    "CDLA-Permissive-2.0",
+]
+confidence-threshold = 0.93
+exceptions = []
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

@@ -1,0 +1,115 @@
+# Simplified Snakemake tutorial workflow (genome mapping)
+# Based on: https://snakemake.readthedocs.io/en/stable/tutorial/basics.html
+#
+# Pipeline:
+#   1. Create mock genome and reads
+#   2. Index genome (bwa index)
+#   3. Map reads (bwa mem)
+#   4. Sort alignments
+#   5. Call variants
+#   6. Generate report
+
+SAMPLES = ["A", "B", "C"]
+
+rule all:
+    input:
+        "results/calls/all.vcf",
+        "results/report.html"
+
+rule create_genome:
+    output:
+        "data/genome.fa"
+    shell:
+        """
+        echo ">chr1" > {output}
+        python3 -c "import random; random.seed(42); print(''.join(random.choices('ACGT', k=1000)))" >> {output}
+        """
+
+rule create_reads:
+    output:
+        "data/samples/{sample}.fastq"
+    params:
+        seed="{sample}"
+    shell:
+        """
+        echo "@{wildcards.sample}_read1" > {output}
+        python3 -c "import random; random.seed(hash('{params.seed}')); print(''.join(random.choices('ACGT', k=100)))" >> {output}
+        echo "+" >> {output}
+        python3 -c "print('I'*100)" >> {output}
+        echo "@{wildcards.sample}_read2" >> {output}
+        python3 -c "import random; random.seed(hash('{params.seed}')+1); print(''.join(random.choices('ACGT', k=100)))" >> {output}
+        echo "+" >> {output}
+        python3 -c "print('I'*100)" >> {output}
+        """
+
+rule genome_index:
+    input:
+        "data/genome.fa"
+    output:
+        "data/genome.fa.idx"
+    shell:
+        """
+        wc -c < {input} > {output}
+        echo "index_built" >> {output}
+        """
+
+rule map_reads:
+    input:
+        genome="data/genome.fa",
+        index="data/genome.fa.idx",
+        reads="data/samples/{sample}.fastq"
+    output:
+        "results/mapped/{sample}.bam"
+    log:
+        "logs/map/{sample}.log"
+    threads: 4
+    shell:
+        """
+        echo "Mapping {wildcards.sample} with {threads} threads" > {log}
+        echo "BAM_HEADER" > {output}
+        echo "{wildcards.sample}\t0\tchr1\t1\t60\t100M\t*\t0\t0" >> {output}
+        echo "Mapping complete" >> {log}
+        """
+
+rule sort_bam:
+    input:
+        "results/mapped/{sample}.bam"
+    output:
+        "results/sorted/{sample}.sorted.bam"
+    shell:
+        """
+        sort {input} > {output}
+        """
+
+rule call_variants:
+    input:
+        genome="data/genome.fa",
+        bams=expand("results/sorted/{sample}.sorted.bam", sample=SAMPLES)
+    output:
+        "results/calls/all.vcf"
+    log:
+        "logs/call_variants.log"
+    shell:
+        """
+        echo "Calling variants from: {input.bams}" > {log}
+        echo "##fileformat=VCFv4.2" > {output}
+        echo "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO" >> {output}
+        echo "chr1\t100\t.\tA\tT\t30\tPASS\t." >> {output}
+        echo "chr1\t200\t.\tG\tC\t25\tPASS\t." >> {output}
+        echo "Variants called" >> {log}
+        """
+
+rule report:
+    input:
+        vcf="results/calls/all.vcf",
+        bams=expand("results/sorted/{sample}.sorted.bam", sample=SAMPLES)
+    output:
+        "results/report.html"
+    shell:
+        """
+        echo "<html><body>" > {output}
+        echo "<h1>Mapping Report</h1>" >> {output}
+        echo "<p>Samples: {input.bams}</p>" >> {output}
+        echo "<p>Variants: $(grep -c -v '^#' {input.vcf}) found</p>" >> {output}
+        echo "</body></html>" >> {output}
+        """

@@ -1,0 +1,16 @@
+[package]
+name = "ox-storage-local"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Local filesystem storage — implements the Storage trait for local paths"
+
+[dependencies]
+ox-core = { path = "../ox-core" }
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

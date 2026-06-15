@@ -1,0 +1,27 @@
+# CODEOWNERS — review routing for oxymake
+#
+# ┌─────────────────────────────────────────────────────────────────────────┐
+# │ HONEST DISCLOSURE                                                        │
+# │                                                                          │
+# │ This file does NOT provide an exogenous second referee.                  │
+# │                                                                          │
+# │ As of 2026-05-30, `noogram` has exactly ONE org member and ONE repo      │
+# │ admin: @eserie — the operator himself (verified via                      │
+# │ `gh api repos/noogram/oxymake/collaborators`). A CODEOWNERS entry that    │
+# │ routes review to the operator's own account is, in janis's words,        │
+# │ "a self-appointed mindguard in a reviewer's hat" — theater, not a gate.  │
+# │                                                                          │
+# │ The genuine exogenous-second-referee requirement (a named INDEPENDENT    │
+# │ human whose non-approval blocks merge, OR an org-level rule so flip-back  │
+# │ is not unilateral) is therefore UNMET. It is recorded — not hidden — as  │
+# │ explicitly-labeled ADVISORY item #15 in docs/RELEASE-CHECKLIST.md.       │
+# │                                                                          │
+# │ When a second independent maintainer joins `noogram`, replace the @eserie│
+# │ owner below with their handle (or add them) and the routing becomes a    │
+# │ real second referee — at which point item #15 may be promoted to a gate. │
+# └─────────────────────────────────────────────────────────────────────────┘
+#
+# Until then, the line below provides PR-routing convenience only (it requests
+# @eserie's review automatically); it carries no exogenous guarantee.
+
+* @eserie

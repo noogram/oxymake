@@ -1,0 +1,8 @@
+samples:
+  - control_1
+  - control_2
+  - treated_1
+  - treated_2
+
+genome: "mock_genome"
+min_quality: 20

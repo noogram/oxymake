@@ -1,0 +1,10 @@
+rule process:
+    input:
+        "data/{sample}_{replicate}.csv"
+    output:
+        "results/{sample}_{replicate}.txt"
+    wildcard_constraints:
+        sample="[A-Z]+",
+        replicate="[0-9]+"
+    shell:
+        "sort {input} > {output}"

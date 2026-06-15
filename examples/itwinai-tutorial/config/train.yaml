@@ -1,0 +1,17 @@
+# itwinai pipeline config — MNIST MLP, 1 CPU epoch.
+#
+# Hydra entry point: `itwinai exec-pipeline --config-name=train -cp config`
+# from the example directory.
+
+pipeline:
+  _target_: itwinai.pipeline.Pipeline
+  steps:
+    - _target_: src.pipeline.NpzDataLoader
+      npz_path: data/mnist.npz
+      batch_size: 128
+    - _target_: src.pipeline.MlpTrainer
+      checkpoint_path: checkpoints/model.pth
+      hidden_dim: 64
+      lr: 0.001
+      epochs: 1
+      seed: 0

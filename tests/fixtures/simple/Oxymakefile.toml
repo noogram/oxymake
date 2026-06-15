@@ -1,0 +1,12 @@
+ox_version = "0.1"
+
+[config]
+samples = ["A", "B", "C"]
+
+[rule.all]
+input = ["results/{sample}.txt"]
+
+[rule.process]
+input = ["data/{sample}.csv"]
+output = ["results/{sample}.txt"]
+shell = "cat {input} | sort > {output}"

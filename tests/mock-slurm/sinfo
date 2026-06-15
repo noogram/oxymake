@@ -1,0 +1,46 @@
+#!/bin/bash
+# Mock sinfo — returns static cluster information.
+#
+# Supports:
+#   sinfo --version     → "slurm 23.11.0"
+#   sinfo -N -h         → node list
+#   sinfo (default)     → partition info
+
+set -euo pipefail
+
+for arg in "$@"; do
+    case "$arg" in
+        --version)
+            echo "slurm 23.11.0"
+            exit 0
+            ;;
+    esac
+done
+
+NO_HEADER=false
+NODE_FORMAT=false
+
+for arg in "$@"; do
+    case "$arg" in
+        -h|--noheader) NO_HEADER=true ;;
+        -N) NODE_FORMAT=true ;;
+    esac
+done
+
+if [ "$NODE_FORMAT" = true ]; then
+    if [ "$NO_HEADER" = true ]; then
+        echo "c1          1    normal*     idle"
+        echo "c2          1    normal*     idle"
+    else
+        echo "NODELIST    NODES PARTITION   STATE"
+        echo "c1          1    normal*     idle"
+        echo "c2          1    normal*     idle"
+    fi
+else
+    if [ "$NO_HEADER" = true ]; then
+        echo "normal*     up   infinite    2    idle c[1-2]"
+    else
+        echo "PARTITION   AVAIL TIMELIMIT  NODES STATE NODELIST"
+        echo "normal*     up   infinite    2    idle c[1-2]"
+    fi
+fi

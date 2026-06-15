@@ -1,0 +1,48 @@
+# Synthetic call-mode benchmark: 5 chained identity calls
+# Tests warm worker speedup on call-mode jobs
+ox_version = "0.1"
+
+[config]
+results_dir = "bench_output"
+
+[rule.seed]
+output = ["{config.results_dir}/step_000.npz"]
+shell = "python3 -c \"import numpy; numpy.savez('{config.results_dir}/step_000.npz', arr=numpy.random.randn(100,100))\""
+
+[rule.step_001]
+output = ["{config.results_dir}/step_001.npz"]
+lang = "python"
+call = "bench.synthetic.call_identity:identity"
+[rule.step_001.input]
+data = "{config.results_dir}/step_000.npz"
+
+[rule.step_002]
+output = ["{config.results_dir}/step_002.npz"]
+lang = "python"
+call = "bench.synthetic.call_identity:identity"
+[rule.step_002.input]
+data = "{config.results_dir}/step_001.npz"
+
+[rule.step_003]
+output = ["{config.results_dir}/step_003.npz"]
+lang = "python"
+call = "bench.synthetic.call_identity:identity"
+[rule.step_003.input]
+data = "{config.results_dir}/step_002.npz"
+
+[rule.step_004]
+output = ["{config.results_dir}/step_004.npz"]
+lang = "python"
+call = "bench.synthetic.call_identity:identity"
+[rule.step_004.input]
+data = "{config.results_dir}/step_003.npz"
+
+[rule.step_005]
+output = ["{config.results_dir}/step_005.npz"]
+lang = "python"
+call = "bench.synthetic.call_identity:identity"
+[rule.step_005.input]
+data = "{config.results_dir}/step_004.npz"
+
+[rule.all]
+input = ["{config.results_dir}/step_005.npz"]

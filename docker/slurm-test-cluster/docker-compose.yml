@@ -1,0 +1,97 @@
+# SLURM test cluster for OxyMake integration tests.
+#
+# Based on giovtorres/slurm-docker-cluster with minimal modifications
+# for OxyMake testing. Provides a real SLURM cluster (slurmctld + 2 compute
+# nodes + accounting) running in Docker.
+#
+# Usage:
+#   docker compose up -d          # Start cluster (~15-20s to become healthy)
+#   docker compose exec slurmctld sinfo   # Verify cluster is ready
+#   docker compose exec slurmctld sbatch /shared/test.sh  # Submit a test job
+#   docker compose down           # Tear down
+#
+# Requirements:
+#   - Docker with compose v2
+#   - ~2GB RAM for all containers
+#   - No GPU support in CI (requires nvidia-container-toolkit on host)
+
+services:
+  mysql:
+    image: mariadb:10.11
+    hostname: mysql
+    environment:
+      MYSQL_RANDOM_ROOT_PASSWORD: "yes"
+      MYSQL_DATABASE: slurm_acct_db
+      MYSQL_USER: slurm
+      MYSQL_PASSWORD: password
+    volumes:
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  slurmdbd:
+    image: giovtorres/docker-centos7-slurm:latest
+    command: ["slurmdbd", "-D"]
+    hostname: slurmdbd
+    depends_on:
+      mysql:
+        condition: service_healthy
+    volumes:
+      - etc_munge:/etc/munge
+      - etc_slurm:/etc/slurm
+      - slurmdbd_state:/var/lib/slurmdbd
+    expose:
+      - "6819"
+
+  slurmctld:
+    image: giovtorres/docker-centos7-slurm:latest
+    command: ["slurmctld", "-D"]
+    hostname: slurmctld
+    depends_on:
+      - slurmdbd
+    volumes:
+      - etc_munge:/etc/munge
+      - etc_slurm:/etc/slurm
+      - slurmctld_state:/var/spool/slurmctld
+      - shared_jobs:/shared
+    ports:
+      - "6817:6817"
+    healthcheck:
+      test: ["CMD", "sinfo", "-N", "-h"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  c1:
+    image: giovtorres/docker-centos7-slurm:latest
+    command: ["slurmd", "-D"]
+    hostname: c1
+    depends_on:
+      - slurmctld
+    volumes:
+      - etc_munge:/etc/munge
+      - etc_slurm:/etc/slurm
+      - shared_jobs:/shared
+
+  c2:
+    image: giovtorres/docker-centos7-slurm:latest
+    command: ["slurmd", "-D"]
+    hostname: c2
+    depends_on:
+      - slurmctld
+    volumes:
+      - etc_munge:/etc/munge
+      - etc_slurm:/etc/slurm
+      - shared_jobs:/shared
+
+volumes:
+  mysql_data:
+  etc_munge:
+  etc_slurm:
+  slurmctld_state:
+  slurmdbd_state:
+  shared_jobs:

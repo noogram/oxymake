@@ -1,0 +1,8 @@
+samples:
+  - iris
+  - wine
+
+# Analysis parameters
+normalize: true
+n_components: 2
+seed: 42

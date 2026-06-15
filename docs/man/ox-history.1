@@ -1,0 +1,22 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH ox-history 1  "ox-history " 
+.SH NAME
+ox\-history \- List past runs
+.SH SYNOPSIS
+\fBox\-history\fR [\fB\-\-run\-id\fR] [\fB\-\-json\fR] [\fB\-f\fR|\fB\-\-file\fR] [\fB\-h\fR|\fB\-\-help\fR] 
+.SH DESCRIPTION
+List past runs
+.SH OPTIONS
+.TP
+\fB\-\-run\-id\fR \fI<RUN_ID>\fR
+Show details for a specific run ID (e.g., "run\-1234")
+.TP
+\fB\-\-json\fR
+Output NDJSON (one JSON object per line)
+.TP
+\fB\-f\fR, \fB\-\-file\fR \fI<FILE>\fR [default: Oxymakefile.toml]
+Oxymakefile path
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help

@@ -1,0 +1,35 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH ox-translate 1  "ox-translate " 
+.SH NAME
+ox\-translate \- Translate a workflow file (Snakemake or WDL) into OxyMake TOML
+.SH SYNOPSIS
+\fBox\-translate\fR [\fB\-o\fR|\fB\-\-output\fR] [\fB\-\-from\fR] [\fB\-\-lossy\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fIINPUT\fR> 
+.SH DESCRIPTION
+Translate a workflow file (Snakemake or WDL) into OxyMake TOML
+.SH OPTIONS
+.TP
+\fB\-o\fR, \fB\-\-output\fR \fI<OUTPUT>\fR
+Write the translated TOML to this file. The escalation file is written alongside as `<OUTPUT>.escalations.toml` when escalations exist. When omitted, the default sink is `<INPUT>.translated.toml` (and `<INPUT>.translated.toml.escalations.toml`)
+.TP
+\fB\-\-from\fR \fI<FROM>\fR
+Source format (auto\-detected from file extension if omitted)
+.br
+
+.br
+\fIPossible values:\fR
+.RS 14
+.IP \(bu 2
+snakemake: Snakemake format
+.IP \(bu 2
+wdl: WDL (Workflow Description Language) format
+.RE
+.TP
+\fB\-\-lossy\fR
+Continue translating even when unsupported Snakemake constructs are encountered (checkpoint, module, pepfile, localrules, ruleorder, onsuccess, onerror, onstart). Without this flag, such constructs make `ox translate` exit non\-zero without writing output
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)
+.TP
+<\fIINPUT\fR>
+Path to the workflow file to translate (Snakefile or .wdl)

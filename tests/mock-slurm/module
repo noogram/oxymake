@@ -1,0 +1,69 @@
+#!/bin/bash
+# Mock module — simulates HPC module environment.
+#
+# Supports:
+#   module load <name>     → sets MOCK_MODULE_<name>=loaded
+#   module unload <name>   → unsets MOCK_MODULE_<name>
+#   module list            → lists loaded modules
+#   module avail           → lists available modules
+#   module purge           → unloads all
+#
+# State is tracked via env vars (MOCK_MODULE_*) and
+# $SLURM_MOCK_DIR/modules_loaded for persistent tracking.
+
+MOCK_DIR="${SLURM_MOCK_DIR:-/tmp/slurm-mock}"
+MODULE_LOG="$MOCK_DIR/modules_loaded"
+
+ACTION="${1:-}"
+MODULE_NAME="${2:-}"
+
+case "$ACTION" in
+    load)
+        if [ -z "$MODULE_NAME" ]; then
+            echo "module: error: no module name specified" >&2
+            exit 1
+        fi
+        mkdir -p "$MOCK_DIR"
+        echo "$MODULE_NAME" >> "$MODULE_LOG"
+        # Simulate module side-effects for common modules
+        case "$MODULE_NAME" in
+            python/*)
+                # Make python3 "available" — it already is on dev machines
+                ;;
+            cuda/*)
+                export CUDA_HOME="/usr/local/cuda"
+                ;;
+            conda|conda/*)
+                # conda shell hook is handled by job_script.rs
+                ;;
+        esac
+        ;;
+    unload)
+        if [ -f "$MODULE_LOG" ]; then
+            grep -v "^${MODULE_NAME}$" "$MODULE_LOG" > "$MODULE_LOG.tmp" 2>/dev/null || true
+            mv "$MODULE_LOG.tmp" "$MODULE_LOG"
+        fi
+        ;;
+    list)
+        echo "Currently Loaded Modules:"
+        if [ -f "$MODULE_LOG" ]; then
+            cat "$MODULE_LOG" | sort -u | while read -r mod; do
+                echo "  $mod"
+            done
+        else
+            echo "  (none)"
+        fi
+        ;;
+    avail)
+        echo "Available Modules:"
+        echo "  python/3.11    python/3.12    cuda/12.2"
+        echo "  gcc/13.2       openmpi/4.1    conda"
+        ;;
+    purge)
+        rm -f "$MODULE_LOG"
+        ;;
+    *)
+        echo "module: unknown action '$ACTION'" >&2
+        exit 1
+        ;;
+esac

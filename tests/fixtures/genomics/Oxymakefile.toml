@@ -1,0 +1,32 @@
+ox_version = "0.1"
+
+[config]
+cohorts = ["human", "mouse", "yeast"]
+callers = ["gatk", "deepvariant"]
+windows = [5, 10, 20, 60]
+
+[rule.all]
+input = ["annotate/{cohort}/{caller}.parquet"]
+
+[rule.features]
+input = ["data/{cohort}/reads.parquet"]
+output = ["features/{cohort}/{window}d.parquet"]
+tags = { stage = "features", domain = "genomics" }
+lang = "python"
+environment = { uv = "pyproject.toml" }
+call = "pipeline.features:compute"
+
+[rule.call]
+input = ["features/{cohort}/{window}d.parquet"]
+output = ["calls/{cohort}/{caller}.parquet"]
+tags = { stage = "call", domain = "genomics" }
+resources = { cpu = 4, mem = "8G" }
+lang = "python"
+call = "pipeline.call:run"
+
+[rule.annotate]
+input = ["calls/{cohort}/{caller}.parquet"]
+output = ["annotate/{cohort}/{caller}.parquet"]
+tags = { stage = "annotate", domain = "reporting" }
+lang = "python"
+call = "pipeline.annotate:compute"

@@ -1,0 +1,25 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH ox-snapshot-create 1  "ox-snapshot-create " 
+.SH NAME
+ox\-snapshot\-create \- Create a named snapshot of current workflow state
+.SH SYNOPSIS
+\fBox\-snapshot\-create\fR [\fB\-m\fR|\fB\-\-message\fR] [\fB\-f\fR|\fB\-\-file\fR] [\fB\-\-json\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fINAME\fR> 
+.SH DESCRIPTION
+Create a named snapshot of current workflow state
+.SH OPTIONS
+.TP
+\fB\-m\fR, \fB\-\-message\fR \fI<MESSAGE>\fR
+Optional description
+.TP
+\fB\-f\fR, \fB\-\-file\fR \fI<FILE>\fR [default: Oxymakefile.toml]
+Oxymakefile path
+.TP
+\fB\-\-json\fR
+Output NDJSON (one JSON object per line)
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help
+.TP
+<\fINAME\fR>
+Snapshot name

@@ -1,0 +1,7 @@
+rule analyze:
+    input:
+        "data/{sample}.csv"
+    output:
+        "results/{sample}.html"
+    script:
+        "scripts/analyze.R"

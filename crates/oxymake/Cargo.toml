@@ -1,0 +1,20 @@
+# Name-reservation crate for `oxymake` on crates.io (release Option A).
+# The real engine ships as the `ox` binary via GitHub Releases. This crate
+# holds the name and points users to the install path. It deliberately does
+# NOT inherit the workspace `publish = false`; it is the one publishable crate.
+[package]
+name = "oxymake"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.85"
+authors = ["Emmanuel Sérié <emmanuel@serie.dev>"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/noogram/oxymake"
+homepage = "https://oxymake.dev"
+description = "OxyMake — a formally-specified, content-addressable workflow engine. Reserved name; the `ox` binary ships via GitHub Releases."
+keywords = ["workflow", "build-system", "orchestration", "make", "pipeline"]
+categories = ["development-tools::build-utils"]
+readme = "README.md"
+publish = true
+
+[dependencies]

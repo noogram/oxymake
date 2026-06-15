@@ -1,0 +1,22 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH ox-dashboard 1  "ox-dashboard " 
+.SH NAME
+ox\-dashboard \- Web dashboard for monitoring and DAG visualization
+.SH SYNOPSIS
+\fBox\-dashboard\fR [\fB\-\-db\fR] [\fB\-\-port\fR] [\fB\-\-bind\fR] [\fB\-h\fR|\fB\-\-help\fR] 
+.SH DESCRIPTION
+Web dashboard for monitoring and DAG visualization
+.SH OPTIONS
+.TP
+\fB\-\-db\fR \fI<DB>\fR [default: .oxymake/state.db]
+Path to state.db
+.TP
+\fB\-\-port\fR \fI<PORT>\fR [default: 9876]
+Port to listen on
+.TP
+\fB\-\-bind\fR \fI<BIND>\fR [default: 127.0.0.1]
+Bind address
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help

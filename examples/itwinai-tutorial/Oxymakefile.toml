@@ -1,0 +1,51 @@
+# OxyMake × itwinai tutorial — 3-rule DAG over an itwinai training pipeline.
+#
+# prepare → train → eval
+#
+# `prepare` and `eval` are plain Python scripts; `train` shells out to
+# `itwinai exec-pipeline` over the Hydra config in `config/train.yaml`.
+#
+# Cache contract footnote (load-bearing — see README §"Cache footnote"):
+# any Python module referenced from `config/train.yaml` via `_target_:`
+# (here: `src/pipeline.py`) MUST appear as an input of the `train` rule,
+# otherwise edits to that Python file are silently cached.
+
+ox_version = "0.1"
+
+[rule.all]
+input = ["metrics/test_accuracy.txt"]
+
+[rule.prepare]
+input = ["src/prepare.py"]
+output = ["data/mnist.npz"]
+shell = """
+mkdir -p data
+python src/prepare.py --output {output}
+"""
+
+[rule.train]
+input = [
+  "data/mnist.npz",
+  "src/pipeline.py",
+  "config/train.yaml",
+]
+output = ["checkpoints/model.pth"]
+shell = """
+mkdir -p checkpoints
+itwinai exec-pipeline --config-name=train --config-path=config
+"""
+
+[rule.eval]
+input = [
+  "checkpoints/model.pth",
+  "data/mnist.npz",
+  "src/eval.py",
+]
+output = ["metrics/test_accuracy.txt"]
+shell = """
+mkdir -p metrics
+python src/eval.py \
+  --checkpoint checkpoints/model.pth \
+  --data data/mnist.npz \
+  --output {output}
+"""

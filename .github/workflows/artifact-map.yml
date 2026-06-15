@@ -1,0 +1,86 @@
+# Artifact-Map Gate — exogenous referee over the public surface
+#
+# WHY THIS EXISTS
+# ---------------
+# This repository is published as a public clone of `main`. The release depends
+# on ONE governance rule:
+#
+#     A fresh public clone of `main` must contain ONLY public/team artifacts.
+#
+# `.cosmon/artifact-map.toml` declares, per genre, what every tracked file *is*
+# and *who it is for* (its audience). Non-public audiences resolve — by the
+# residence rules in docs/adr/017-artifact-residence-topology.md — to an orphan
+# branch or local-only, NEVER to `main`. A confidential file tracked on `main`
+# is a leak that a public clone would fetch and that history (append-only)
+# cannot un-ship.
+#
+# This workflow is the gate that catches such a leak BEFORE it reaches a public
+# clone. It is deliberately EXOGENOUS in the drift-tripwire sense: it lives in
+# CI, not in the operator's head. There is NO skip-env, NO `continue-on-error`,
+# NO branch exception. To silence this referee you must edit THIS FILE (or
+# scripts/artifact-map-audit.py) in a visible, attributable commit — the
+# referee cannot be bribed quietly, only fired in writing.
+#
+# It is NOT a `.git/hooks/pre-commit`: those are `--no-verify`-bypassable and
+# self-refereed (an author who can skip their own check is no check at all).
+#
+# NOTE ON ENFORCEMENT vs EXISTENCE
+# --------------------------------
+# A red build here is a SIGNAL until the `artifact-map` job is listed in
+# `required_status_checks` on `main` under branch protection — which is only
+# available once the repo is public (or on GitHub Pro). That wiring is a
+# separate, downstream operator act. This workflow BUILDS the gate and makes it
+# go red on a violation; it does not, by itself, block a merge.
+#
+# WHY A SELF-CONTAINED PYTHON WALKER (rather than an external audit tool)
+# ----------------------------------------------------------------------
+# Two reasons:
+#   1. A self-contained walker needs no external binary on the GitHub runner
+#      and stays buildable from this repo alone (Python 3.11+ stdlib only).
+#   2. The release gate needs not just totality (every path classifies) but the
+#      RESIDENCE check (no non-public audience on main). scripts/artifact-map-
+#      audit.py enforces BOTH, so it is the authoritative gate.
+
+name: Artifact-Map Gate
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  # Manual trigger so the referee can be run on demand (gh workflow run).
+  # This is NOT a waiver: it can only make the build run, never make it pass.
+  workflow_dispatch:
+
+# Least-privilege: this job only reads the tree.
+permissions:
+  contents: read
+
+jobs:
+  artifact-map:
+    name: Artifact-map residence gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        # The walker classifies `git ls-files`; a shallow checkout of the
+        # ref under test is sufficient (we audit the tree, not history).
+
+      - name: Audit the public surface against the artifact map
+        shell: bash
+        run: |
+          set -uo pipefail
+          echo "=============================================="
+          echo " OxyMake Artifact-Map Gate — exogenous referee"
+          echo " rule: a public clone of main carries only public/team files"
+          echo " see:  docs/adr/017-artifact-residence-topology.md"
+          echo "=============================================="
+
+          if [ ! -f .cosmon/artifact-map.toml ]; then
+            echo "::error::.cosmon/artifact-map.toml is missing — the artifact"
+            echo "::error::map has vanished from the public surface."
+            exit 1
+          fi
+
+          # ubuntu-latest ships Python 3.12 (stdlib tomllib). No pip install
+          # needed; the walker has zero third-party dependencies.
+          python3 scripts/artifact-map-audit.py

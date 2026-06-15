@@ -1,0 +1,114 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH oxymake 1  "oxymake 0.1.0" 
+.SH NAME
+oxymake \- OxyMake — workflow orchestration
+.SH SYNOPSIS
+\fBoxymake\fR [\fB\-\-color\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] <\fIsubcommands\fR>
+.SH DESCRIPTION
+OxyMake — workflow orchestration
+.SH OPTIONS
+.TP
+\fB\-\-color\fR \fI<COLOR>\fR [default: auto]
+Color output mode
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help
+.TP
+\fB\-V\fR, \fB\-\-version\fR
+Print version
+.SH SUBCOMMANDS
+.TP
+oxymake\-run(1)
+Execute a workflow, ensuring requested outputs exist
+.TP
+oxymake\-plan(1)
+Show the execution plan without running
+.TP
+oxymake\-status(1)
+Show current execution status
+.TP
+oxymake\-cancel(1)
+Cancel running jobs
+.TP
+oxymake\-invalidate(1)
+Invalidate cached outputs
+.TP
+oxymake\-explain(1)
+Show the full dependency chain for a target
+.TP
+oxymake\-query(1)
+Query the dependency graph (Bazel\-style)
+.TP
+oxymake\-dag(1)
+Visualize the DAG
+.TP
+oxymake\-logs(1)
+View job logs
+.TP
+oxymake\-history(1)
+List past runs
+.TP
+oxymake\-snapshot(1)
+Manage snapshots
+.TP
+oxymake\-gate(1)
+Manage gates
+.TP
+oxymake\-lint(1)
+Validate the Oxymakefile
+.TP
+oxymake\-lock(1)
+Generate or verify a reproducibility lockfile
+.TP
+oxymake\-init(1)
+Initialize a new workflow
+.TP
+oxymake\-clean(1)
+Clean outputs and cache
+.TP
+oxymake\-serve(1)
+Start the MCP server for AI agent integration
+.TP
+oxymake\-subscribe(1)
+Subscribe to the event stream for an active session
+.TP
+oxymake\-top(1)
+Live TUI dashboard for monitoring execution
+.TP
+oxymake\-dashboard(1)
+Web dashboard for monitoring and DAG visualization
+.TP
+oxymake\-test(1)
+Test and validate a workflow without executing it
+.TP
+oxymake\-check\-consistency(1)
+Check internal DAG invariants (orphans, shadows, overlaps)
+.TP
+oxymake\-translate(1)
+Translate a workflow file (Snakemake or WDL) into OxyMake TOML
+.TP
+oxymake\-export(1)
+Export an Oxymakefile to another format (Snakemake or WDL)
+.TP
+oxymake\-logo(1)
+Display the OxyMake ASCII art logo
+.TP
+oxymake\-guide(1)
+Print the operator handbook (orientation + pointers to the docs)
+.TP
+oxymake\-help(1)
+Print this message or the help of the given subcommand(s)
+.SH EXTRA
+Exit codes:
+  0  success
+  1  runtime error or job failure
+  2  command\-line usage error
+
+Machine interfaces (for scripts and agents):
+  Most subcommands accept \-\-json for machine\-readable output. `ox run \-\-json`
+  emits NDJSON events (one JSON object per line); `ox run \-\-report\-json <path>`
+  writes that stream to a file; `ox subscribe \-\-help` lists the event types.
+  `ox lock generate` writes ox.lock, the reproducibility lockfile.
+.SH VERSION
+v0.1.0

@@ -1,0 +1,84 @@
+TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)
+Running breadth-first search Model-Checking with fp 30 and seed -5386823080857020441 with 16 workers on 16 cores with 27300MB heap and 64MB offheap memory [pid: 95501] (Mac OS X 26.5.1 aarch64, Homebrew 17.0.19 x86_64, MSBDiskFPSet, DiskStateQueue).
+Parsing file spec/tla/CooperativeClaim.tla
+Parsing file /private/var/folders/_f/yp39_pl932l59d2ckz60rnq00000gn/T/Naturals.tla
+Parsing file /private/var/folders/_f/yp39_pl932l59d2ckz60rnq00000gn/T/FiniteSets.tla
+Parsing file /private/var/folders/_f/yp39_pl932l59d2ckz60rnq00000gn/T/TLC.tla
+Parsing file /private/var/folders/_f/yp39_pl932l59d2ckz60rnq00000gn/T/Sequences.tla
+Semantic processing of module Naturals
+Semantic processing of module Sequences
+Semantic processing of module FiniteSets
+Semantic processing of module TLC
+Semantic processing of module CooperativeClaim
+Starting... (2026-06-10 06:21:42)
+Computing initial states...
+Finished computing initial states: 1 distinct state generated at 2026-06-10 06:21:42.
+Error: Invariant DoneByClaimHolder is violated.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+/\ done_by = (j1 :> NULL @@ j2 :> NULL)
+/\ local_running = (s1 :> {} @@ s2 :> {} @@ s3 :> {})
+/\ claim_session = (j1 :> NULL @@ j2 :> NULL)
+/\ alive = {s1, s2, s3}
+/\ heartbeat = (s1 :> 0 @@ s2 :> 0 @@ s3 :> 0)
+/\ status = (j1 :> "pending" @@ j2 :> "pending")
+/\ clock = 0
+
+State 2: <Tick line 73, col 5 to line 76, col 43 of module CooperativeClaim>
+/\ done_by = (j1 :> NULL @@ j2 :> NULL)
+/\ local_running = (s1 :> {} @@ s2 :> {} @@ s3 :> {})
+/\ claim_session = (j1 :> NULL @@ j2 :> NULL)
+/\ alive = {s1, s2, s3}
+/\ heartbeat = (s1 :> 0 @@ s2 :> 0 @@ s3 :> 0)
+/\ status = (j1 :> "pending" @@ j2 :> "pending")
+/\ clock = 1
+
+State 3: <Tick line 73, col 5 to line 76, col 43 of module CooperativeClaim>
+/\ done_by = (j1 :> NULL @@ j2 :> NULL)
+/\ local_running = (s1 :> {} @@ s2 :> {} @@ s3 :> {})
+/\ claim_session = (j1 :> NULL @@ j2 :> NULL)
+/\ alive = {s1, s2, s3}
+/\ heartbeat = (s1 :> 0 @@ s2 :> 0 @@ s3 :> 0)
+/\ status = (j1 :> "pending" @@ j2 :> "pending")
+/\ clock = 2
+
+State 4: <Claim line 96, col 5 to line 100, col 53 of module CooperativeClaim>
+/\ done_by = (j1 :> NULL @@ j2 :> NULL)
+/\ local_running = (s1 :> {j1} @@ s2 :> {} @@ s3 :> {})
+/\ claim_session = (j1 :> s1 @@ j2 :> NULL)
+/\ alive = {s1, s2, s3}
+/\ heartbeat = (s1 :> 0 @@ s2 :> 0 @@ s3 :> 0)
+/\ status = (j1 :> "running" @@ j2 :> "pending")
+/\ clock = 2
+
+State 5: <Reclaim line 120, col 5 to line 129, col 68 of module CooperativeClaim>
+/\ done_by = (j1 :> NULL @@ j2 :> NULL)
+/\ local_running = (s1 :> {j1} @@ s2 :> {} @@ s3 :> {})
+/\ claim_session = (j1 :> NULL @@ j2 :> NULL)
+/\ alive = {s1, s2, s3}
+/\ heartbeat = (s1 :> 0 @@ s2 :> 0 @@ s3 :> 0)
+/\ status = (j1 :> "pending" @@ j2 :> "pending")
+/\ clock = 2
+
+State 6: <Claim line 96, col 5 to line 100, col 53 of module CooperativeClaim>
+/\ done_by = (j1 :> NULL @@ j2 :> NULL)
+/\ local_running = (s1 :> {j1} @@ s2 :> {j1} @@ s3 :> {})
+/\ claim_session = (j1 :> s2 @@ j2 :> NULL)
+/\ alive = {s1, s2, s3}
+/\ heartbeat = (s1 :> 0 @@ s2 :> 0 @@ s3 :> 0)
+/\ status = (j1 :> "running" @@ j2 :> "pending")
+/\ clock = 2
+
+State 7: <Terminalize line 145, col 5 to line 152, col 59 of module CooperativeClaim>
+/\ done_by = (j1 :> s1 @@ j2 :> NULL)
+/\ local_running = (s1 :> {} @@ s2 :> {j1} @@ s3 :> {})
+/\ claim_session = (j1 :> s2 @@ j2 :> NULL)
+/\ alive = {s1, s2, s3}
+/\ heartbeat = (s1 :> 0 @@ s2 :> 0 @@ s3 :> 0)
+/\ status = (j1 :> "done" @@ j2 :> "pending")
+/\ clock = 2
+
+20894 states generated, 6113 distinct states found, 4444 states left on queue.
+The depth of the complete state graph search is 9.
+The average outdegree of the complete state graph is 4 (minimum is 0, the maximum 13 and the 95th percentile is 9).
+Finished in 00s at (2026-06-10 06:21:43)

@@ -1,0 +1,9 @@
+rule transform:
+    input:
+        "data/{sample}.csv"
+    output:
+        "results/{sample}.out"
+    log:
+        "logs/{sample}.log"
+    shell:
+        "transform {input} > {output} 2> {log}"

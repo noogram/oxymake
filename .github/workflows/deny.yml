@@ -1,0 +1,45 @@
+name: Deny
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+    paths:
+      - "**/Cargo.toml"
+      - "**/Cargo.lock"
+      - "deny.toml"
+      - ".github/workflows/deny.yml"
+  schedule:
+    # Daily 06:00 UTC — catches advisory-db refreshes without blocking PRs.
+    - cron: "0 6 * * *"
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # PR-gate — diff-deterministic checks. Fails the build if the PR itself
+  # introduces a wildcard dep, unlicensed crate, or unknown source.
+  gate:
+    name: Deny (bans/licenses/sources)
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check bans licenses sources
+
+  # Nightly advisory scan — asynchronous CVE detection. Does NOT block PRs.
+  # A failure here surfaces on the Actions tab; pair with a dependabot
+  # security alert on the default branch to get issue-generating behavior.
+  advisories:
+    name: Deny (advisories, nightly)
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check advisories

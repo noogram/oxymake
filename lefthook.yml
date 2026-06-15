@@ -1,0 +1,10 @@
+# Lefthook config — shareable git hooks
+# Install: lefthook install (or: brew install lefthook && lefthook install)
+
+pre-commit:
+  commands:
+    recompile-paper:
+      glob: "docs/paper/*.{tex,bib}"
+      run: |
+        just paper-build &&
+        git add docs/paper/oxymake-paper.pdf

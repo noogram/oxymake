@@ -1,0 +1,51 @@
+# Feature test: retries, benchmark, global environment, file-based config, config in resources
+ox_version = "0.1"
+
+# Global environment default — inherited by all rules unless overridden
+# (commented out for testing without conda installed)
+# [environment]
+# conda = "envs/base.yaml"
+
+[config]
+# File-based config source: reads units.tsv, extracts unique sample_name values
+samples = { source = "units.tsv", key = "sample_name" }
+# Scalar config for resource interpolation
+default_threads = "2"
+
+[rule.all]
+input = ["results/report.txt"]
+
+[rule.generate]
+output = ["data/{sample}.txt"]
+params = { seed = "42", label = "{sample}" }
+retries = 3
+benchmark = "benchmarks/generate_{sample}.txt"
+resources = { cpu = "{config.default_threads}", mem = "1G" }
+# Override global environment for this rule (disabled for testing)
+# environment = { conda = "envs/generate.yaml" }
+shell = """
+echo "Generating {sample} with seed={params.seed}" > {output}
+echo "label={params.label}" >> {output}
+seq 1 10 >> {output}
+"""
+
+[rule.summarize]
+input = { data = "data/{sample}.txt" }
+output = { stats = "results/{sample}_stats.txt" }
+priority = 10
+shell = """
+echo "# Stats for {sample}" > {output.stats}
+echo "lines: $(wc -l < {input.data})" >> {output.stats}
+"""
+
+[rule.report]
+input = ["results/{sample}_stats.txt"]
+output = ["results/report.txt"]
+expand = "product"
+shell = """
+echo "=== Report ===" > {output}
+for f in {input}; do
+    cat "$f" >> {output}
+    echo "" >> {output}
+done
+"""

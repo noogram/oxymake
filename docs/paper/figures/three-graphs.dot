@@ -1,0 +1,82 @@
+digraph three_graphs {
+  rankdir=TB;
+  fontname="Helvetica";
+  node [fontname="Helvetica", fontsize=10];
+  edge [fontname="Helvetica", fontsize=9];
+  compound=true;
+  newrank=true;
+
+  // --- RuleGraph (logical) ---
+  subgraph cluster_rule {
+    label="RuleGraph (logical)";
+    style="dashed,rounded";
+    color="#4A90D9";
+    fontcolor="#4A90D9";
+    fontsize=12;
+
+    node [shape=box, style="filled,rounded", fillcolor="#D6E8FC", fontcolor="#333"];
+    r_gen   [label="generate\n{sample}"];
+    r_proc  [label="process\n{sample}"];
+    r_merge [label="merge"];
+
+    r_gen -> r_proc [label="pattern\nmatch"];
+    r_proc -> r_merge [label="pattern\nmatch"];
+  }
+
+  // --- JobGraph (physical) ---
+  subgraph cluster_job {
+    label="JobGraph (physical)";
+    style="dashed,rounded";
+    color="#D98B4A";
+    fontcolor="#D98B4A";
+    fontsize=12;
+
+    node [shape=box, style="filled,rounded", fillcolor="#FCE8D6", fontcolor="#333"];
+    j_gen_a [label="generate\nalpha"];
+    j_gen_b [label="generate\nbeta"];
+    j_gen_g [label="generate\ngamma"];
+    j_proc_a [label="process\nalpha"];
+    j_proc_b [label="process\nbeta"];
+    j_proc_g [label="process\ngamma"];
+    j_merge  [label="merge"];
+
+    j_gen_a -> j_proc_a;
+    j_gen_b -> j_proc_b;
+    j_gen_g -> j_proc_g;
+    j_proc_a -> j_merge;
+    j_proc_b -> j_merge;
+    j_proc_g -> j_merge;
+  }
+
+  // --- ExecGraph (runtime) ---
+  subgraph cluster_exec {
+    label="ExecGraph (runtime)";
+    style="dashed,rounded";
+    color="#4AD97A";
+    fontcolor="#4AD97A";
+    fontsize=12;
+
+    node [shape=box, style="filled,rounded", fontcolor=white];
+    e_gen_a [label="generate alpha\n[Skipped]", fillcolor="#999"];
+    e_gen_b [label="generate beta\n[Running]", fillcolor="#D98B4A"];
+    e_gen_g [label="generate gamma\n[Completed]", fillcolor="#4AD97A"];
+    e_proc_a [label="process alpha\n[Skipped]", fillcolor="#999"];
+    e_proc_b [label="process beta\n[Pending]", fillcolor="#4A90D9"];
+    e_proc_g [label="process gamma\n[Running]", fillcolor="#D98B4A"];
+    e_merge  [label="merge\n[Pending]", fillcolor="#4A90D9"];
+
+    e_gen_a -> e_proc_a;
+    e_gen_b -> e_proc_b;
+    e_gen_g -> e_proc_g;
+    e_proc_a -> e_merge;
+    e_proc_b -> e_merge;
+    e_proc_g -> e_merge;
+  }
+
+  // Transformation arrows between graphs
+  edge [style=bold, color="#666", penwidth=2];
+  r_merge -> j_gen_a [ltail=cluster_rule, lhead=cluster_job,
+    label="  resolve\n  wildcards", fontsize=9, fontcolor="#666"];
+  j_merge -> e_gen_a [ltail=cluster_job, lhead=cluster_exec,
+    label="  annotate\n  state", fontsize=9, fontcolor="#666"];
+}

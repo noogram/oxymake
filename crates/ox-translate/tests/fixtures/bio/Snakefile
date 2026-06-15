@@ -1,0 +1,26 @@
+configfile: "config.yaml"
+
+rule all:
+    input:
+        expand("results/{sample}.sorted.bam", sample=config["samples"])
+
+rule align:
+    input:
+        fastq="data/{sample}.fastq",
+        ref="refs/genome.fa"
+    output:
+        "results/{sample}.bam"
+    threads: 8
+    conda:
+        "envs/alignment.yaml"
+    shell:
+        "bwa mem -t {threads} {input.ref} {input.fastq} > {output}"
+
+rule sort:
+    input:
+        "results/{sample}.bam"
+    output:
+        "results/{sample}.sorted.bam"
+    threads: 4
+    shell:
+        "samtools sort -@ {threads} {input} -o {output}"

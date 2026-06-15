@@ -1,0 +1,57 @@
+# OxyMake Demo — Word Frequency Pipeline
+#
+# A 3-stage pipeline: generate data, process (sort by frequency),
+# then merge into a summary report. Demonstrates wildcards, named
+# inputs/outputs, multi-file merge, and content-addressable caching.
+
+ox_version = "0.1"
+
+[config]
+samples = ["alpha", "beta", "gamma"]
+
+# Default target: build the final report.
+[rule.all]
+input = ["report/summary.txt"]
+
+# Stage 1: Generate synthetic CSV data for each sample.
+[rule.generate]
+output = ["data/{sample}.csv"]
+wildcard_constraints = { sample = "alpha|beta|gamma" }
+shell = """
+mkdir -p data
+echo "word,count" > {output}
+echo "the,$(( RANDOM % 100 + 10 ))" >> {output}
+echo "{sample},$(( RANDOM % 50 + 5 ))" >> {output}
+echo "pipeline,$(( RANDOM % 30 + 1 ))" >> {output}
+echo "workflow,$(( RANDOM % 20 + 1 ))" >> {output}
+"""
+
+# Stage 2: Sort each sample's data by count (descending).
+[rule.process]
+input = { csv = "data/{sample}.csv" }
+output = { sorted = "results/{sample}_sorted.csv" }
+wildcard_constraints = { sample = "alpha|beta|gamma" }
+shell = """
+mkdir -p results
+head -1 {input.csv} > {output.sorted}
+tail -n +2 {input.csv} | sort -t, -k2 -rn >> {output.sorted}
+"""
+
+# Stage 3: Merge all sorted results into a single report.
+[rule.merge]
+input = ["results/{sample}_sorted.csv"]
+output = ["report/summary.txt"]
+expand = "product"
+shell = """
+mkdir -p report
+echo "=== OxyMake Pipeline Report ===" > {output}
+echo "Samples: alpha, beta, gamma" >> {output}
+echo "" >> {output}
+for f in {input}; do
+    sample=$(basename "$f" _sorted.csv)
+    echo "--- $sample ---" >> {output}
+    cat "$f" >> {output}
+    echo "" >> {output}
+done
+echo "Generated: $(date -u +%Y-%m-%dT%H:%M:%SZ)" >> {output}
+"""

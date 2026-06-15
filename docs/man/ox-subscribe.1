@@ -1,0 +1,25 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH ox-subscribe 1  "ox-subscribe " 
+.SH NAME
+ox\-subscribe \- Subscribe to the event stream for an active session
+.SH SYNOPSIS
+\fBox\-subscribe\fR [\fB\-\-session\-id\fR] [\fB\-\-event\-type\fR] [\fB\-\-where\fR] [\fB\-\-replay\fR] [\fB\-h\fR|\fB\-\-help\fR] 
+.SH DESCRIPTION
+Subscribe to the event stream for an active session
+.SH OPTIONS
+.TP
+\fB\-\-session\-id\fR \fI<SESSION_ID>\fR
+Session (run) ID to subscribe to. If omitted, subscribes to the most recent active session
+.TP
+\fB\-\-event\-type\fR \fI<TYPE>\fR
+Filter to specific event types (repeatable). If omitted, all events are streamed. Valid types: run_started, job_queued, job_started, job_completed, job_failed, job_skipped, gate_reached, gate_approved, run_completed, run_failed
+.TP
+\fB\-\-where\fR \fI<KEY=VALUE>\fR
+Filter events by tag values on the originating job (repeatable, KEY=VALUE format, AND logic)
+.TP
+\fB\-\-replay\fR
+Replay all events from session start before streaming live events. Without this flag, only new events are shown
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help

@@ -1,0 +1,25 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH ox-test 1  "ox-test " 
+.SH NAME
+ox\-test \- Test and validate a workflow without executing it
+.SH SYNOPSIS
+\fBox\-test\fR [\fB\-f\fR|\fB\-\-file\fR] [\fB\-n\fR|\fB\-\-dry\-run\fR] [\fB\-\-json\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fITARGETS\fR] 
+.SH DESCRIPTION
+Test and validate a workflow without executing it
+.SH OPTIONS
+.TP
+\fB\-f\fR, \fB\-\-file\fR \fI<FILE>\fR [default: Oxymakefile.toml]
+Oxymakefile path
+.TP
+\fB\-n\fR, \fB\-\-dry\-run\fR
+Simulate execution order without running (dry\-run)
+.TP
+\fB\-\-json\fR
+Output NDJSON
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help
+.TP
+[\fITARGETS\fR]
+Target files or patterns to test

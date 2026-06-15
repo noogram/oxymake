@@ -1,0 +1,87 @@
+name: Deploy Docs
+
+# Builds the mdBook documentation site (docs/book/) and publishes it to
+# Cloudflare Pages (project `oxymake-docs`, custom domain oxymake.dev) on every
+# push to main that touches the docs. Manual runs available via the Actions tab.
+#
+# Required repository secrets (set in GitHub → Settings → Secrets and variables
+# → Actions). These are NOT invented here — they must be provisioned in phase 2:
+#   CLOUDFLARE_API_TOKEN   — Cloudflare API token scoped to:
+#                            Account · Cloudflare Pages · Edit
+#                            (create at https://dash.cloudflare.com/profile/api-tokens
+#                             from the "Edit Cloudflare Workers" or a custom
+#                             "Cloudflare Pages: Edit" template).
+#   CLOUDFLARE_ACCOUNT_ID  — the target Cloudflare account ID (dash → any domain
+#                            → Account ID in the right sidebar).
+#
+# Full runbook (custom domain, manual deploy, prerequisites): docs/WEBDOCS.md
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "docs/book/**"
+      - "wrangler.toml"
+      - ".github/workflows/docs-deploy.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  deployments: write
+
+# Never run two doc deploys concurrently; a newer push supersedes an in-flight one.
+concurrency:
+  group: docs-deploy
+  cancel-in-progress: true
+
+env:
+  # Pin mdBook to a known-good version (matches the version validated in-repo).
+  # Bump deliberately, in a visible commit.
+  MDBOOK_VERSION: "0.4.52"
+  # mdbook-mermaid renders ```mermaid fences as diagrams. 0.14.x targets the
+  # mdBook 0.4.x preprocessor protocol; 0.15+ require mdBook 0.5.x and fail to
+  # parse 0.4.52's input ("Unable to parse the input"). Bump in lockstep with
+  # MDBOOK_VERSION.
+  MDBOOK_MERMAID_VERSION: "0.14.0"
+
+jobs:
+  deploy:
+    name: Build mdBook & deploy to Cloudflare Pages
+    # Opt-in gate: this job is skipped (and CI stays green) until Cloudflare is
+    # provisioned. To enable, set repository variable DOCS_DEPLOY_ENABLED=true
+    # (Settings → Secrets and variables → Actions → Variables) AND the two
+    # CLOUDFLARE_* secrets. Without the variable the job is skipped, so a fresh
+    # public clone never fails on a missing API token it cannot have.
+    if: ${{ vars.DOCS_DEPLOY_ENABLED == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install mdBook
+        run: |
+          set -euo pipefail
+          url="https://github.com/rust-lang/mdBook/releases/download/v${MDBOOK_VERSION}/mdbook-v${MDBOOK_VERSION}-x86_64-unknown-linux-gnu.tar.gz"
+          mkdir -p "$HOME/.local/bin"
+          curl -sSL "$url" | tar -xz -C "$HOME/.local/bin"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Install mdbook-mermaid
+        run: |
+          set -euo pipefail
+          url="https://github.com/badboy/mdbook-mermaid/releases/download/v${MDBOOK_MERMAID_VERSION}/mdbook-mermaid-v${MDBOOK_MERMAID_VERSION}-x86_64-unknown-linux-gnu.tar.gz"
+          mkdir -p "$HOME/.local/bin"
+          curl -sSL "$url" | tar -xz -C "$HOME/.local/bin"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Build documentation site
+        run: mdbook build docs/book
+
+      - name: Deploy to Cloudflare Pages
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: >-
+            pages deploy docs/book/book
+            --project-name=oxymake-docs
+            --branch=main

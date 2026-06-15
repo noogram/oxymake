@@ -1,0 +1,40 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH ox-clean 1  "ox-clean " 
+.SH NAME
+ox\-clean \- Clean outputs and cache
+.SH SYNOPSIS
+\fBox\-clean\fR [\fB\-\-dry\-run\fR] [\fB\-\-cache\-only\fR] [\fB\-\-state\-only\fR] [\fB\-\-state\fR] [\fB\-\-all\fR] [\fB\-y\fR|\fB\-\-yes\fR] [\fB\-\-force\fR] [\fB\-\-json\fR] [\fB\-f\fR|\fB\-\-file\fR] [\fB\-h\fR|\fB\-\-help\fR] 
+.SH DESCRIPTION
+Clean outputs and cache
+.SH OPTIONS
+.TP
+\fB\-\-dry\-run\fR
+Show what would be removed without deleting anything
+.TP
+\fB\-\-cache\-only\fR
+Only clean cache entries
+.TP
+\fB\-\-state\-only\fR
+Only clean state database
+.TP
+\fB\-\-state\fR
+Delete the state database file entirely (recovery escape hatch for a corrupt state.db — it is a regenerable cache)
+.TP
+\fB\-\-all\fR
+Also remove the audit trail (runs and job history)
+.TP
+\fB\-y\fR, \fB\-\-yes\fR
+Skip confirmation prompt
+.TP
+\fB\-\-force\fR
+Clear execution state even if live (non\-stale) sessions exist
+.TP
+\fB\-\-json\fR
+Output JSON
+.TP
+\fB\-f\fR, \fB\-\-file\fR \fI<FILE>\fR [default: Oxymakefile.toml]
+Oxymakefile path
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help

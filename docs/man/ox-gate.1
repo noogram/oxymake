@@ -1,0 +1,31 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH ox-gate 1  "ox-gate " 
+.SH NAME
+ox\-gate \- Manage gates
+.SH SYNOPSIS
+\fBox\-gate\fR [\fB\-\-approver\fR] [\fB\-\-reason\fR] [\fB\-\-json\fR] [\fB\-f\fR|\fB\-\-file\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fIACTION\fR] [\fIGATE_ID\fR] 
+.SH DESCRIPTION
+Manage gates
+.SH OPTIONS
+.TP
+\fB\-\-approver\fR \fI<APPROVER>\fR
+Approver identity
+.TP
+\fB\-\-reason\fR \fI<REASON>\fR
+Approval reason or rejection message
+.TP
+\fB\-\-json\fR
+Output as JSON
+.TP
+\fB\-f\fR, \fB\-\-file\fR \fI<FILE>\fR [default: Oxymakefile.toml]
+Oxymakefile path
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help
+.TP
+[\fIACTION\fR]
+Subcommand: list (default), approve, reject
+.TP
+[\fIGATE_ID\fR]
+Gate ID to approve/reject

@@ -1,0 +1,57 @@
+# UX Sandbox — deterministic pipeline for scenario testing
+#
+# 3-stage pipeline: generate → transform → report
+# Uses fixed data (no RANDOM) so cache behavior is predictable.
+# Supports config overrides for flexible scenario testing.
+
+ox_version = "0.1"
+
+[config]
+samples = ["x", "y", "z"]
+out_dir = "output"
+
+# Default target: build the final report.
+[rule.all]
+input = ["report/final.txt"]
+
+# Stage 1: Generate deterministic CSV data for each sample.
+[rule.generate]
+output = ["data/{sample}.csv"]
+wildcard_constraints = { sample = "x|y|z" }
+shell = """
+mkdir -p data
+echo "key,value" > {output}
+echo "alpha,10" >> {output}
+echo "{sample},20" >> {output}
+echo "gamma,30" >> {output}
+"""
+
+# Stage 2: Transform each sample (sort by value descending).
+[rule.transform]
+input = { csv = "data/{sample}.csv" }
+output = { sorted = "{config.out_dir}/{sample}_sorted.csv" }
+wildcard_constraints = { sample = "x|y|z" }
+tags = { stage = "transform" }
+shell = """
+mkdir -p {config.out_dir}
+head -1 {input.csv} > {output.sorted}
+tail -n +2 {input.csv} | sort -t, -k2 -rn >> {output.sorted}
+"""
+
+# Stage 3: Merge all transformed results into a report.
+[rule.report]
+input = ["{config.out_dir}/{sample}_sorted.csv"]
+output = ["report/final.txt"]
+expand = "product"
+tags = { stage = "report" }
+shell = """
+mkdir -p report
+echo "=== Sandbox Report ===" > {output}
+for f in {input}; do
+    name=$(basename "$f" _sorted.csv)
+    echo "--- $name ---" >> {output}
+    cat "$f" >> {output}
+    echo "" >> {output}
+done
+echo "DONE" >> {output}
+"""

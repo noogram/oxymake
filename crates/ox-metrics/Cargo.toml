@@ -1,0 +1,25 @@
+# Excluded from the parent workspace (see root Cargo.toml); the empty
+# [workspace] table below stops cargo from walking further up, so
+# `cargo test --manifest-path crates/ox-metrics/Cargo.toml` works from
+# any checkout (including git worktrees).
+[workspace]
+
+[package]
+name = "ox-metrics"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/noogram/oxymake"
+description = "Prometheus metrics export for OxyMake workflows"
+publish = false
+
+[dependencies]
+ox-core = { path = "../ox-core" }
+ox-state = { path = "../ox-state" }
+prometheus = "0.14"
+tokio = { version = "1", features = ["net"] }
+axum = "0.8"
+
+[dev-dependencies]
+tempfile = "3"

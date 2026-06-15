@@ -1,0 +1,22 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH ox-top 1  "ox-top " 
+.SH NAME
+ox\-top \- Live TUI dashboard for monitoring execution
+.SH SYNOPSIS
+\fBox\-top\fR [\fB\-\-db\fR] [\fB\-\-mock\fR] [\fB\-\-stdin\fR] [\fB\-h\fR|\fB\-\-help\fR] 
+.SH DESCRIPTION
+Live TUI dashboard for monitoring execution
+.SH OPTIONS
+.TP
+\fB\-\-db\fR \fI<DB>\fR [default: .oxymake/state.db]
+Path to state.db
+.TP
+\fB\-\-mock\fR
+Use mock data for development
+.TP
+\fB\-\-stdin\fR
+Read NDJSON events from stdin
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help

@@ -1,0 +1,56 @@
+#!/bin/bash
+# Mock squeue — returns status of running/pending jobs.
+#
+# Supports: squeue -j <jobid> -h -o <format>
+# Only returns jobs in PENDING or RUNNING state (like real squeue).
+#
+# Reads state from $SLURM_MOCK_DIR (default: /tmp/slurm-mock).
+
+set -euo pipefail
+
+MOCK_DIR="${SLURM_MOCK_DIR:-/tmp/slurm-mock}"
+JOB_ID=""
+FORMAT="%T"
+NO_HEADER=false
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -j|--job) JOB_ID="$2"; shift 2 ;;
+        -j=*) JOB_ID="${1#*=}"; shift ;;
+        -h|--noheader) NO_HEADER=true; shift ;;
+        -o) FORMAT="$2"; shift 2 ;;
+        -o=*) FORMAT="${1#*=}"; shift ;;
+        *) shift ;;
+    esac
+done
+
+if [ -z "$JOB_ID" ]; then
+    echo "squeue: error: No job ID specified" >&2
+    exit 1
+fi
+
+STATE_FILE="$MOCK_DIR/job_$JOB_ID"
+
+if [ ! -f "$STATE_FILE" ]; then
+    # Job not found — squeue returns nothing for completed/unknown jobs
+    exit 0
+fi
+
+STATE=$(cat "$STATE_FILE")
+
+# squeue only shows PENDING and RUNNING jobs
+case "$STATE" in
+    PENDING|RUNNING)
+        # Format output based on -o format string
+        OUTPUT="$FORMAT"
+        OUTPUT="${OUTPUT//%T/$STATE}"
+        OUTPUT="${OUTPUT//%i/$JOB_ID}"
+        OUTPUT="${OUTPUT//%j/$(cat "$MOCK_DIR/jobname_$JOB_ID" 2>/dev/null || echo "mock")}"
+        OUTPUT="${OUTPUT//%N/c1}"
+        echo "$OUTPUT"
+        ;;
+    *)
+        # Completed/failed/cancelled jobs don't show in squeue
+        exit 0
+        ;;
+esac

@@ -1,0 +1,11 @@
+# Generated data and outputs from benchmark runs
+*/data/
+*/results/
+*/logs/
+*/raw/
+*/cleaned/
+*/output/
+*/qc/
+*/reports/
+*/.oxymake/
+*.escalations.toml

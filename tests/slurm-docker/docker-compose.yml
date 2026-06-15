@@ -1,0 +1,193 @@
+# OxyMake SLURM Demo — Docker Compose
+#
+# Spins up a minimal SLURM cluster with:
+#   - slurmctld (controller)
+#   - slurmdbd (accounting database)
+#   - 2x slurmd (compute nodes)
+#   - MariaDB (backend for slurmdbd)
+#
+# Based on giovtorres/slurm-docker-cluster.
+#
+# Usage:
+#   docker-compose up -d
+#   docker exec slurm-docker-slurmctld-1 sinfo   # verify cluster is up
+#   docker-compose down
+
+services:
+  mysql:
+    image: mariadb:10.11
+    hostname: mysql
+    environment:
+      MYSQL_RANDOM_ROOT_PASSWORD: "yes"
+      MYSQL_DATABASE: slurm_acct_db
+      MYSQL_USER: slurm
+      MYSQL_PASSWORD: slurmdbpass
+    volumes:
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  slurmdbd:
+    image: giovtorres/slurm-docker-cluster:latest
+    hostname: slurmdbd
+    environment:
+      MYSQL_USER: slurm
+      MYSQL_PASSWORD: slurmdbpass
+    depends_on:
+      mysql:
+        condition: service_healthy
+    volumes:
+      - shared_work:/work
+      - ./slurm-conf:/slurm-conf-host:ro
+      - shared_slurm:/shared-slurm
+    entrypoint:
+      - /bin/bash
+      - -c
+      - |
+        cp /slurm-conf-host/slurmdbd.conf /etc/slurm/slurmdbd.conf
+        cp /slurm-conf-host/slurm.conf /etc/slurm/slurm.conf
+        chown root:root /etc/slurm/slurmdbd.conf /etc/slurm/slurm.conf
+        mkdir -p /var/run/slurm /var/log/slurm
+        chown slurm:slurm /var/run/slurm /var/log/slurm
+        # Wait for JWT key from slurmctld, add to config
+        for i in $(seq 1 30); do
+          [ -f /shared-slurm/jwt_hs256.key ] && break
+          sleep 2
+        done
+        if [ -f /shared-slurm/jwt_hs256.key ]; then
+          cp /shared-slurm/jwt_hs256.key /etc/slurm/jwt_hs256.key
+          chmod 600 /etc/slurm/jwt_hs256.key
+          chown slurm:slurm /etc/slurm/jwt_hs256.key
+          echo "" >> /etc/slurm/slurm.conf
+          echo "AuthAltTypes=auth/jwt" >> /etc/slurm/slurm.conf
+          echo "AuthAltParameters=jwt_key=/etc/slurm/jwt_hs256.key" >> /etc/slurm/slurm.conf
+        fi
+        exec /usr/local/bin/docker-entrypoint.sh slurmdbd -D
+
+  slurmctld:
+    image: giovtorres/slurm-docker-cluster:latest
+    container_name: slurmctld
+    hostname: slurmctld
+    depends_on:
+      - slurmdbd
+    volumes:
+      - shared_work:/work
+      - ./slurm-conf:/slurm-conf-host:ro
+      - ${HOST_DATA_DIR:-/tmp/oxymake-lab}:/data/lab
+      # Transparent filesystem bridge: host paths are identical inside the
+      # container so that ox-exec-slurm job scripts (which reference host
+      # absolute paths for staging and project dirs) work without rewriting.
+      - ${OXYMAKE_STAGING_DIR:-/tmp/oxymake-slurm}:${OXYMAKE_STAGING_DIR:-/tmp/oxymake-slurm}
+      - ${OXYMAKE_PROJECT_DIR:-/tmp/oxymake-project}:${OXYMAKE_PROJECT_DIR:-/tmp/oxymake-project}
+      - shared_slurm:/shared-slurm
+    entrypoint:
+      - /bin/bash
+      - -c
+      - |
+        # Install uv (Python package manager) for pipeline scripts
+        curl -LsSf https://astral.sh/uv/install.sh | sh 2>/dev/null || true
+        export PATH="$HOME/.local/bin:$PATH"
+        cp /slurm-conf-host/slurm.conf /etc/slurm/slurm.conf
+        mkdir -p /var/spool/slurmctld /var/run/slurm /var/log/slurm
+        chown slurm:slurm /var/spool/slurmctld /var/run/slurm /var/log/slurm
+        # Generate JWT key for REST API auth (shared with slurmrestd via volume)
+        dd if=/dev/urandom bs=32 count=1 2>/dev/null | base64 > /etc/slurm/jwt_hs256.key
+        chmod 600 /etc/slurm/jwt_hs256.key
+        chown slurm:slurm /etc/slurm/jwt_hs256.key
+        cp /etc/slurm/jwt_hs256.key /shared-slurm/jwt_hs256.key
+        chmod 644 /shared-slurm/jwt_hs256.key
+        # Add JWT auth to slurm.conf
+        echo "" >> /etc/slurm/slurm.conf
+        echo "AuthAltTypes=auth/jwt" >> /etc/slurm/slurm.conf
+        echo "AuthAltParameters=jwt_key=/etc/slurm/jwt_hs256.key" >> /etc/slurm/slurm.conf
+        exec /usr/local/bin/docker-entrypoint.sh slurmctld -D
+    ports:
+      - "6817:6817"
+
+  slurmrestd:
+    image: giovtorres/slurm-docker-cluster:latest
+    hostname: slurmrestd
+    environment:
+      SLURM_JWT: daemon
+    depends_on:
+      - slurmctld
+    volumes:
+      - shared_work:/work
+      - ./slurm-conf:/slurm-conf-host:ro
+      - shared_slurm:/shared-slurm
+    entrypoint:
+      - /bin/bash
+      - -c
+      - |
+        cp /slurm-conf-host/slurm.conf /etc/slurm/slurm.conf
+        mkdir -p /var/run/slurm /var/log/slurm /var/run/munge
+        # Start munge (required for SLURM auth)
+        chown munge:munge /var/run/munge
+        munged --force
+        # Wait for slurmctld to be ready
+        for i in $(seq 1 30); do
+          sinfo -N -h 2>/dev/null && break
+          sleep 2
+        done
+        # slurmrestd must not run as root or SlurmUser — create a dedicated user
+        useradd -r -s /bin/false slurmrestd 2>/dev/null || true
+        # Copy JWT key from shared volume and configure
+        cp /shared-slurm/jwt_hs256.key /etc/slurm/jwt_hs256.key
+        chmod 600 /etc/slurm/jwt_hs256.key
+        chown slurm:slurm /etc/slurm/jwt_hs256.key
+        # Add JWT auth to slurm.conf
+        echo "" >> /etc/slurm/slurm.conf
+        echo "AuthAltTypes=auth/jwt" >> /etc/slurm/slurm.conf
+        echo "AuthAltParameters=jwt_key=/etc/slurm/jwt_hs256.key" >> /etc/slurm/slurm.conf
+        # Run slurmrestd with JWT auth on TCP
+        exec su slurmrestd -s /bin/bash -c 'slurmrestd -a rest_auth/jwt -s openapi/slurmctld 0.0.0.0:6820 -vv'
+    ports:
+      - "6820:6820"
+
+  c1:
+    image: giovtorres/slurm-docker-cluster:latest
+    hostname: c1
+    privileged: true
+    depends_on:
+      - slurmctld
+    volumes:
+      - shared_work:/work
+      - ./slurm-conf:/slurm-conf-host:ro
+      - ${HOST_DATA_DIR:-/tmp/oxymake-lab}:/data/lab
+      - ${OXYMAKE_STAGING_DIR:-/tmp/oxymake-slurm}:${OXYMAKE_STAGING_DIR:-/tmp/oxymake-slurm}
+      - ${OXYMAKE_PROJECT_DIR:-/tmp/oxymake-project}:${OXYMAKE_PROJECT_DIR:-/tmp/oxymake-project}
+    entrypoint:
+      - /bin/bash
+      - -c
+      - |
+        cp /slurm-conf-host/slurm.conf /etc/slurm/slurm.conf
+        mkdir -p /var/spool/slurmd /var/run/slurm /var/log/slurm
+        exec /usr/local/bin/docker-entrypoint.sh slurmd -D
+
+  c2:
+    image: giovtorres/slurm-docker-cluster:latest
+    hostname: c2
+    privileged: true
+    depends_on:
+      - slurmctld
+    volumes:
+      - shared_work:/work
+      - ./slurm-conf:/slurm-conf-host:ro
+      - ${HOST_DATA_DIR:-/tmp/oxymake-lab}:/data/lab
+      - ${OXYMAKE_STAGING_DIR:-/tmp/oxymake-slurm}:${OXYMAKE_STAGING_DIR:-/tmp/oxymake-slurm}
+      - ${OXYMAKE_PROJECT_DIR:-/tmp/oxymake-project}:${OXYMAKE_PROJECT_DIR:-/tmp/oxymake-project}
+    entrypoint:
+      - /bin/bash
+      - -c
+      - |
+        cp /slurm-conf-host/slurm.conf /etc/slurm/slurm.conf
+        mkdir -p /var/spool/slurmd /var/run/slurm /var/log/slurm
+        exec /usr/local/bin/docker-entrypoint.sh slurmd -D
+
+volumes:
+  mysql_data:
+  shared_work:
+  shared_slurm:

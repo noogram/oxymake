@@ -1,0 +1,87 @@
+digraph crate_architecture {
+  rankdir=BT;
+  fontname="Helvetica";
+  node [fontname="Helvetica", fontsize=9, shape=box, style="filled,rounded"];
+  edge [fontname="Helvetica", fontsize=8];
+
+  // CLI layer
+  node [fillcolor="#4A90D9", fontcolor=white];
+  cli [label="ox-cli\n(17 commands)"];
+
+  // API layer
+  node [fillcolor="#6AAED9", fontcolor=white];
+  api [label="ox-api"];
+
+  // Core engine
+  node [fillcolor="#D98B4A", fontcolor=white];
+  core [label="ox-core\n(DAG, scheduler,\nresolver, events)"];
+  format [label="ox-format\n(TOML parser)"];
+  plan [label="ox-plan\n(optimizations)"];
+
+  // State & cache
+  node [fillcolor="#4AD97A", fontcolor=white];
+  state [label="ox-state\n(SQLite)"];
+  cache [label="ox-cache\n(BLAKE3)"];
+  lock [label="ox-lock\n(lockfile)"];
+
+  // Execution
+  node [fillcolor="#D94A7A", fontcolor=white];
+  exec [label="ox-exec-local"];
+
+  // Reporting & monitoring
+  node [fillcolor="#9B59B6", fontcolor=white];
+  term [label="ox-report-term"];
+  json [label="ox-report-json"];
+  dash [label="ox-dashboard\n(web UI)"];
+  tui [label="ox-monitor-tui"];
+  metrics [label="ox-metrics"];
+
+  // Environment & storage
+  node [fillcolor="#999", fontcolor=white];
+  env_sys [label="ox-env-system"];
+  env_uv [label="ox-env-uv"];
+  storage [label="ox-storage-local"];
+  codec [label="ox-codec-core"];
+
+  // Tools
+  node [fillcolor="#E67E22", fontcolor=white];
+  translate [label="ox-translate\n(Snakemake)"];
+
+  // Dependencies
+  cli -> api;
+  cli -> core;
+  cli -> format;
+  cli -> plan;
+  cli -> state;
+  cli -> cache;
+  cli -> lock;
+  cli -> exec;
+  cli -> term;
+  cli -> json;
+  cli -> dash;
+  cli -> tui;
+  cli -> metrics;
+  cli -> translate;
+
+  api -> core;
+  plan -> core;
+  state -> core;
+  exec -> core;
+  lock -> core;
+  lock -> format;
+  lock -> cache;
+  dash -> state;
+  dash -> core;
+  tui -> core;
+  metrics -> core;
+  translate -> format;
+  translate -> core;
+
+  // Layout grouping
+  {rank=max; cli}
+  {rank=same; api}
+  {rank=same; core; format; plan}
+  {rank=same; state; cache; lock}
+  {rank=same; exec; term; json; dash; tui}
+  {rank=min; env_sys; env_uv; storage; codec; translate}
+}

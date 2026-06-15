@@ -1,0 +1,12 @@
+[package]
+name = "ox-render"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Semantic color roles and terminal styling for OxyMake CLI output"
+
+[dependencies]
+console.workspace = true

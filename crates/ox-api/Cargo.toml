@@ -1,0 +1,20 @@
+[package]
+name = "ox-api"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Public Rust API facade — the single entry point for embedding OxyMake"
+
+[dependencies]
+ox-core = { path = "../ox-core" }
+ox-format = { path = "../ox-format" }
+ox-state = { path = "../ox-state" }
+ox-cache = { path = "../ox-cache" }
+ox-plan = { path = "../ox-plan" }
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

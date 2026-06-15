@@ -1,0 +1,12 @@
+rule compute:
+    input:
+        "data/{sample}.csv"
+    output:
+        "results/{sample}.out"
+    threads: 16
+    resources:
+        mem_mb=8192,
+        disk_mb=2048,
+        gpu=1
+    shell:
+        "process --threads {threads} --mem {resources.mem_mb} {input} > {output}"

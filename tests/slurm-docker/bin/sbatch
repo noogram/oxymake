@@ -1,0 +1,35 @@
+#!/bin/bash
+# Docker SLURM shim: sbatch
+#
+# Transparently bridges `sbatch` calls from the host to the Docker SLURM
+# cluster. The ox-exec-slurm executor calls this exactly like real sbatch;
+# it doesn't know it's talking to a Docker container.
+#
+# Prerequisites:
+#   - Docker SLURM cluster running (docker compose up -d)
+#   - Volume mounts configured so host paths are identical in the container
+#     (staging dir + project dir — see docker-compose.yml)
+#
+# Environment:
+#   SLURM_DOCKER_CONTAINER  Container name (default: slurmctld)
+
+set -euo pipefail
+
+CONTAINER="${SLURM_DOCKER_CONTAINER:-slurmctld}"
+
+# Find the script path (last non-flag argument) and ensure its parent
+# directory exists inside the container before submitting.
+SCRIPT_PATH=""
+for arg in "$@"; do
+    case "$arg" in
+        -*) ;;
+        *) SCRIPT_PATH="$arg" ;;
+    esac
+done
+
+if [ -n "$SCRIPT_PATH" ] && [ -f "$SCRIPT_PATH" ]; then
+    SCRIPT_DIR="$(dirname "$SCRIPT_PATH")"
+    docker exec "$CONTAINER" mkdir -p "$SCRIPT_DIR" 2>/dev/null || true
+fi
+
+exec docker exec "$CONTAINER" sbatch "$@"

@@ -1,0 +1,22 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH ox-serve 1  "ox-serve " 
+.SH NAME
+ox\-serve \- Start the MCP server for AI agent integration
+.SH SYNOPSIS
+\fBox\-serve\fR [\fB\-\-mcp\fR] [\fB\-\-workdir\fR] [\fB\-\-log\-level\fR] [\fB\-h\fR|\fB\-\-help\fR] 
+.SH DESCRIPTION
+Start the MCP server for AI agent integration
+.SH OPTIONS
+.TP
+\fB\-\-mcp\fR
+Start the MCP (Model Context Protocol) server over stdio
+.TP
+\fB\-\-workdir\fR \fI<WORKDIR>\fR
+Working directory for Oxymakefile resolution
+.TP
+\fB\-\-log\-level\fR \fI<LOG_LEVEL>\fR [default: info]
+Log level for stderr diagnostics
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help

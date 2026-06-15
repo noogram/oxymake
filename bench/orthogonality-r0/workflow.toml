@@ -1,0 +1,24 @@
+# Workflow W — minimal echo-based Oxymakefile for the OX-8 R0
+# orthogonality attestation bench.
+#
+# The single rule `emit` consumes an input file and copies its bytes
+# to an output file via `cat`. run.sh manipulates input.txt to drift
+# the OX-1 (cache-key) axis and manipulates the surrounding Guix
+# environment to drift the store-hash axis.
+#
+# See:
+#   - docs/attestations/ox8-r0.md  (protocol + predicted pattern)
+#   - orthogonality benchmark r0   (parent finding)
+#   - popper §0                    (R0 protocol definition)
+ox_version = "0.1"
+
+[config]
+out_dir = "out"
+
+[rule.emit]
+input  = ["input.txt"]
+output = ["{config.out_dir}/emit.txt"]
+shell = """
+mkdir -p {config.out_dir}
+cat {input} > {output}
+"""

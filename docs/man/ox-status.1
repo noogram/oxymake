@@ -1,0 +1,28 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH ox-status 1  "ox-status " 
+.SH NAME
+ox\-status \- Show current execution status
+.SH SYNOPSIS
+\fBox\-status\fR [\fB\-\-run\fR] [\fB\-\-group\-by\fR] [\fB\-\-json\fR] [\fB\-f\fR|\fB\-\-file\fR] [\fB\-\-ray\-address\fR] [\fB\-h\fR|\fB\-\-help\fR] 
+.SH DESCRIPTION
+Show current execution status
+.SH OPTIONS
+.TP
+\fB\-\-run\fR \fI<RUN>\fR
+Show status for a specific run ID (default: latest run)
+.TP
+\fB\-\-group\-by\fR \fI<GROUP_BY>\fR
+Group output by field
+.TP
+\fB\-\-json\fR
+Output JSON
+.TP
+\fB\-f\fR, \fB\-\-file\fR \fI<FILE>\fR [default: Oxymakefile.toml]
+Oxymakefile path
+.TP
+\fB\-\-ray\-address\fR \fI<RAY_ADDRESS>\fR
+Ray dashboard address for remote DAG status (e.g., http://127.0.0.1:8265)
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help

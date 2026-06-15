@@ -1,0 +1,36 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH ox-cancel 1  "ox-cancel " 
+.SH NAME
+ox\-cancel \- Cancel running jobs
+.SH SYNOPSIS
+\fBox\-cancel\fR [\fB\-\-all\fR] [\fB\-\-where\fR] [\fB\-\-rule\fR] [\fB\-\-session\fR] [\fB\-\-json\fR] [\fB\-f\fR|\fB\-\-file\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fINAMES\fR] 
+.SH DESCRIPTION
+Cancel running jobs
+.SH OPTIONS
+.TP
+\fB\-\-all\fR
+Cancel ALL running and pending jobs
+.TP
+\fB\-\-where\fR \fI<KEY=VALUE>\fR
+Filter by tag (KEY=VALUE)
+.TP
+\fB\-\-rule\fR \fI<RULE>\fR
+Cancel only jobs for this rule
+.TP
+\fB\-\-session\fR \fI<SESSION>\fR
+Cancel only jobs in this session
+.TP
+\fB\-\-json\fR
+Output JSON
+.TP
+\fB\-f\fR, \fB\-\-file\fR \fI<FILE>\fR [default: Oxymakefile.toml]
+Oxymakefile path
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)
+.TP
+[\fINAMES\fR]
+Job names to cancel (cancels each job and its downstream dependents).
+
+Accepts job IDs (e.g. `call\-sample01`) or output file paths. When omitted, use \-\-all or \-\-rule to select jobs.

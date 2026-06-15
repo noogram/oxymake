@@ -1,0 +1,12 @@
+rule analyze:
+    input:
+        "data/{sample}.csv"
+    output:
+        "results/{sample}.json"
+    run:
+        import json
+        import csv
+        with open(input[0]) as f:
+            data = list(csv.reader(f))
+        with open(output[0], 'w') as f:
+            json.dump({"rows": len(data)}, f)

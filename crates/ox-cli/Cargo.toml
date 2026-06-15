@@ -1,0 +1,54 @@
+[package]
+name = "ox-cli"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "OxyMake CLI binary — clap-based command-line interface"
+
+[[bin]]
+name = "ox"
+path = "src/main.rs"
+
+[dependencies]
+ox-core = { path = "../ox-core" }
+ox-format = { path = "../ox-format" }
+ox-state = { path = "../ox-state" }
+ox-cache = { path = "../ox-cache" }
+ox-plan = { path = "../ox-plan" }
+ox-api = { path = "../ox-api" }
+ox-exec-local = { path = "../ox-exec-local" }
+ox-exec-slurm = { path = "../ox-exec-slurm" }
+ox-exec-ray = { path = "../ox-exec-ray" }
+ox-storage-local = { path = "../ox-storage-local" }
+ox-env-system = { path = "../ox-env-system" }
+ox-env-uv = { path = "../ox-env-uv" }
+ox-codec-core = { path = "../ox-codec-core" }
+ox-render = { path = "../ox-render" }
+ox-report-term = { path = "../ox-report-term" }
+ox-report-json = { path = "../ox-report-json" }
+ox-monitor-tui = { path = "../ox-monitor-tui" }
+ox-translate = { path = "../ox-translate" }
+ox-lock = { path = "../ox-lock" }
+ox-dashboard = { path = "../ox-dashboard" }
+ox-mcp = { path = "../ox-mcp" }
+clap.workspace = true
+clap_mangen.workspace = true
+toml.workspace = true
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "sync", "fs", "signal"] }
+anyhow.workspace = true
+serde_json.workspace = true
+blake3.workspace = true
+miette.workspace = true
+regex.workspace = true
+indicatif.workspace = true
+console.workspace = true
+open.workspace = true
+
+[dev-dependencies]
+assert_cmd.workspace = true
+predicates = "3"
+serde_json.workspace = true
+tempfile.workspace = true

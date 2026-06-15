@@ -1,0 +1,22 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH ox-check-consistency 1  "ox-check-consistency " 
+.SH NAME
+ox\-check\-consistency \- Check internal DAG invariants (orphans, shadows, overlaps)
+.SH SYNOPSIS
+\fBox\-check\-consistency\fR [\fB\-f\fR|\fB\-\-file\fR] [\fB\-\-json\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fITARGETS\fR] 
+.SH DESCRIPTION
+Check internal DAG invariants (orphans, shadows, overlaps)
+.SH OPTIONS
+.TP
+\fB\-f\fR, \fB\-\-file\fR \fI<FILE>\fR [default: Oxymakefile.toml]
+Oxymakefile path
+.TP
+\fB\-\-json\fR
+Output NDJSON
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help
+.TP
+[\fITARGETS\fR]
+Target files or patterns to check

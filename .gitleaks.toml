@@ -1,0 +1,39 @@
+# gitleaks configuration — oxymake secret-scan gate
+#
+# Source: security/secret audit.
+# The adversary ran `gitleaks 8.30.1 --log-opts="--all"` over 670 reachable
+# commits and found ZERO leaks. This config extends the default ruleset with two
+# project-specific high-value rules and an allowlist of design-vocabulary
+# false-positives, so the secret-scan CI gate (.github/workflows/secret-scan.yml)
+# stays green on the known-clean tree and goes RED only on a genuine reappearance.
+#
+# This is an EXOGENOUS referee in the janis sense: it lives in CI, not in the
+# operator's head. There is NO `continue-on-error` and NO skip-env on the gate
+# that consumes it. To silence it you must edit this file in a visible,
+# attributable commit.
+
+title = "oxymake"
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "slurm-jwt-literal"
+description = "A real SLURM JWT literal (eyJ...) assigned to SLURM_JWT"
+regex = '''SLURM_JWT\s*[:=]\s*["']?eyJ[A-Za-z0-9_-]{20,}'''
+
+[[rules]]
+id = "operator-gesture"
+description = "A real COSMON_OPERATOR_GESTURE secret value"
+regex = '''COSMON_OPERATOR_GESTURE\s*=\s*["']?[A-Za-z0-9]{8,}'''
+
+[allowlist]
+description = "design vocabulary + test fixtures, not secrets"
+regexes = [
+  '''my-jwt-token''',              # ox-exec-slurm test fixture
+  '''VAULT_API_KEY''',             # thesis doc, env-var NAME not value
+  '''token_cmd''',
+  '''user_token''',
+  '''X-SLURM-USER-TOKEN''',
+]
+paths = ['''docs/AUDIT-REPORT\.md''']

@@ -1,0 +1,31 @@
+digraph oxymake_demo {
+  rankdir=LR;
+  fontname="Helvetica";
+  node [fontname="Helvetica", fontsize=10];
+  edge [fontname="Helvetica", fontsize=9];
+
+  // Rule nodes (boxes)
+  node [shape=box, style="filled,rounded", fillcolor="#4A90D9", fontcolor=white];
+  generate [label="generate\n{sample}"];
+  process  [label="process\n{sample}"];
+  merge    [label="merge"];
+  all      [label="all\n(target)"];
+
+  // File nodes (ellipses)
+  node [shape=ellipse, style=filled, fillcolor="#E8E8E8", fontcolor=black];
+  data_csv    [label="data/{sample}.csv"];
+  sorted_csv  [label="results/{sample}_sorted.csv"];
+  summary     [label="report/summary.txt"];
+
+  // Edges
+  generate -> data_csv;
+  data_csv -> process;
+  process -> sorted_csv;
+  sorted_csv -> merge;
+  merge -> summary;
+  summary -> all;
+
+  // Layout hint
+  {rank=same; generate}
+  {rank=same; all}
+}

@@ -1,0 +1,9 @@
+.venv/
+data/
+checkpoints/
+metrics/
+.ox/
+__pycache__/
+*.pyc
+outputs/
+multirun/

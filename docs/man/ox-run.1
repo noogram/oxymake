@@ -1,0 +1,130 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH ox-run 1  "ox-run " 
+.SH NAME
+ox\-run \- Execute a workflow, ensuring requested outputs exist
+.SH SYNOPSIS
+\fBox\-run\fR [\fB\-j\fR|\fB\-\-jobs\fR] [\fB\-\-rule\fR] [\fB\-\-json\fR] [\fB\-\-report\-json\fR] [\fB\-n\fR|\fB\-\-dry\-run\fR] [\fB\-k\fR|\fB\-\-keep\-going\fR] [\fB\-\-note\fR] [\fB\-\-set\fR] [\fB\-\-executor\fR] [\fB\-\-partition\fR] [\fB\-\-account\fR] [\fB\-\-qos\fR] [\fB\-\-slurm\-api\fR] [\fB\-\-ray\-address\fR] [\fB\-\-follow\fR] [\fB\-f\fR|\fB\-\-file\fR] [\fB\-\-no\-cache\fR] [\fB\-\-cache\-validation\fR] [\fB\-v\fR|\fB\-\-verbose\fR]... [\fB\-\-until\fR] [\fB\-\-omit\-from\fR] [\fB\-\-touch\fR] [\fB\-\-forcerun\fR] [\fB\-\-profile\fR] [\fB\-\-timings\fR] [\fB\-\-open\-dashboard\fR] [\fB\-\-memory\-budget\fR] [\fB\-\-warm\-workers\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fITARGETS\fR] 
+.SH DESCRIPTION
+Execute a workflow, ensuring requested outputs exist
+.PP
+OxyMake writes all outputs atomically (temp\-then\-rename) so a crash never leaves partial files. Cache keys include content hashes of inputs.
+.PP
+Scripts are responsible for domain validation: if a script exits 0, OxyMake trusts the outputs are valid and caches them. See docs/design/output\-integrity.md for the full contract.
+.SH OPTIONS
+.TP
+\fB\-j\fR, \fB\-\-jobs\fR \fI<JOBS>\fR [default: 1]
+Maximum concurrent jobs (must be at least 1)
+.TP
+\fB\-\-rule\fR \fI<RULE>\fR
+Filter by rule name (exact or /regex/)
+.TP
+\fB\-\-json\fR
+Output NDJSON events
+.TP
+\fB\-\-report\-json\fR \fI<PATH>\fR
+Write NDJSON events to this file (one JSON object per line)
+.TP
+\fB\-n\fR, \fB\-\-dry\-run\fR
+Show what would run without executing
+.TP
+\fB\-k\fR, \fB\-\-keep\-going\fR
+Continue on independent branches after failure
+.TP
+\fB\-\-note\fR \fI<NOTE>\fR
+Annotate this run
+.TP
+\fB\-\-set\fR \fI<KEY=VALUE>\fR
+Override config or resource values
+.TP
+\fB\-\-executor\fR \fI<EXECUTOR>\fR [default: local]
+Executor backend
+.TP
+\fB\-\-partition\fR \fI<PARTITION>\fR
+SLURM partition (only with \-\-executor slurm)
+.TP
+\fB\-\-account\fR \fI<ACCOUNT>\fR
+SLURM account (only with \-\-executor slurm)
+.TP
+\fB\-\-qos\fR \fI<QOS>\fR
+SLURM Quality of Service (only with \-\-executor slurm)
+.TP
+\fB\-\-slurm\-api\fR \fI<SLURM_API>\fR
+slurmrestd API URL for REST mode (only with \-\-executor slurm).
+
+When set, the SLURM executor uses the REST API instead of CLI commands (sbatch/sacct/squeue). Example: http://localhost:6820
+.TP
+\fB\-\-ray\-address\fR \fI<RAY_ADDRESS>\fR
+Ray dashboard address (only with \-\-executor ray, default: http://127.0.0.1:8265)
+.TP
+\fB\-\-follow\fR
+Submit DAG to remote executor and stream progress (only with \-\-executor ray)
+
+Without \-\-follow, `ox run \-\-executor ray` submits the DAG and returns immediately. With \-\-follow, it submits and then polls until completion.
+.TP
+\fB\-f\fR, \fB\-\-file\fR \fI<FILE>\fR [default: Oxymakefile.toml]
+Oxymakefile path
+.TP
+\fB\-\-no\-cache\fR
+Disable the content\-addressable cache (re\-execute everything)
+.TP
+\fB\-\-cache\-validation\fR \fI<STRATEGY>\fR
+Cache validation strategy: mtime, mtime+hash (default), or hash
+
+`mtime` checks timestamps only and never verifies content — opt\-in only, avoid on shared caches. `mtime+hash` re\-hashes a file only when its timestamp or size changed. `hash` always verifies content.
+
+Resolution order (highest wins): this flag, the OX_CACHE_VALIDATION environment variable, `cache_validation` under `[config]` in the Oxymakefile, `cache_validation` in `~/.config/oxymake/config.toml` (or `$XDG_CONFIG_HOME/oxymake/config.toml`), then the built\-in default `mtime+hash`.
+.TP
+\fB\-v\fR, \fB\-\-verbose\fR
+Verbose output (\-v: job start/end/duration/exit codes, \-vv: also show stdout/stderr)
+.TP
+\fB\-\-until\fR \fI<TARGET>\fR
+Run only up to this target (include target and all its dependencies)
+.TP
+\fB\-\-omit\-from\fR \fI<TARGET>\fR
+Omit this target and all its downstream dependents
+.TP
+\fB\-\-touch\fR
+Mark outputs as up\-to\-date without running (like make \-\-touch)
+.TP
+\fB\-\-forcerun\fR \fI<RULE>\fR
+Force re\-execution of jobs matching this rule, regardless of cache (repeatable, exact or /regex/)
+.TP
+\fB\-\-profile\fR \fI<NAME>\fR
+Named profile to apply (defined in [profile.NAME] sections of the Oxymakefile)
+.TP
+\fB\-\-timings\fR
+Print per\-phase timing breakdown to stderr
+.TP
+\fB\-\-open\-dashboard\fR
+Open dashboard in browser after submitting DAG (Ray executor)
+.TP
+\fB\-\-memory\-budget\fR \fI<SIZE>\fR [default: 0]
+Maximum bytes of in\-memory materialization before eviction triggers.
+
+When set to a non\-zero value, the scheduler keeps critical\-path output data in memory (Stage 2 optimization) and evicts the largest outputs first when the budget is exceeded (Belady optimal eviction).
+
+Accepts human\-readable sizes: `512M`, `1G`, `2G`, `0` (disabled). Default: `0` (disabled — all data flows through disk).
+.TP
+\fB\-\-warm\-workers\fR \fI<MODE>\fR
+Enable warm Python workers for call\-mode jobs (Stage 5).
+
+Modes: \- `fork`: fork\-after\-import (state isolation, but JAX JIT cache lost) \- `persistent`: same process reused (JIT cache persists, risk of state leak)
+
+Omit to disable warm workers (cold subprocess per job).
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)
+.TP
+[\fITARGETS\fR]
+Target files or patterns to build
+.SH EXTRA
+Exit codes:
+  0  all requested jobs succeeded (or were already cached)
+  1  at least one job failed, or a runtime error occurred
+  2  command\-line usage error
+
+Machine output:
+  \-\-json emits NDJSON events on stdout (one JSON object per line);
+  \-\-report\-json <path> writes the same stream to a file. Event types are
+  listed under `ox subscribe \-\-help`.

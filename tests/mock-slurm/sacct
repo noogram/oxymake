@@ -1,0 +1,93 @@
+#!/bin/bash
+# Mock sacct — returns job accounting data from mock state files.
+#
+# Supports: sacct -j <jobid>[,<jobid>...] --parsable2 --noheader -o <fields>
+# Fields: JobID, State, ExitCode, MaxRSS, Elapsed, NodeList, JobName
+#
+# Reads state from $SLURM_MOCK_DIR (default: /tmp/slurm-mock).
+
+set -euo pipefail
+
+MOCK_DIR="${SLURM_MOCK_DIR:-/tmp/slurm-mock}"
+JOB_IDS=""
+FIELDS="JobID|State|ExitCode"
+PARSABLE2=false
+NOHEADER=false
+
+# Parse arguments
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        -j|--job) JOB_IDS="$2"; shift 2 ;;
+        -j=*|--job=*) JOB_IDS="${1#*=}"; shift ;;
+        --parsable2) PARSABLE2=true; shift ;;
+        --noheader|-n) NOHEADER=true; shift ;;
+        -o) FIELDS="$2"; shift 2 ;;
+        -o=*) FIELDS="${1#*=}"; shift ;;
+        -X) shift ;; # ignore (no job steps)
+        *) shift ;;
+    esac
+done
+
+if [ -z "$JOB_IDS" ]; then
+    echo "sacct: fatal: No job IDs specified" >&2
+    exit 1
+fi
+
+# Print header if not suppressed
+if [ "$NOHEADER" = false ]; then
+    echo "$FIELDS"
+fi
+
+# Process each job ID
+IFS=',' read -ra IDS <<< "$JOB_IDS"
+for JOB_ID in "${IDS[@]}"; do
+    JOB_ID=$(echo "$JOB_ID" | tr -d ' ')
+    STATE_FILE="$MOCK_DIR/job_$JOB_ID"
+
+    if [ ! -f "$STATE_FILE" ]; then
+        continue  # Job not found — skip silently (like real sacct for expired jobs)
+    fi
+
+    STATE=$(cat "$STATE_FILE")
+    EXIT_CODE=$(cat "$MOCK_DIR/exit_$JOB_ID" 2>/dev/null || echo "0")
+    JOB_NAME=$(cat "$MOCK_DIR/jobname_$JOB_ID" 2>/dev/null || echo "mock_job")
+
+    # Format exit code as sacct does: "exitcode:signal"
+    EXIT_FMT="${EXIT_CODE}:0"
+
+    # Simulate elapsed time
+    SUBMIT_TIME=$(cat "$MOCK_DIR/submit_$JOB_ID" 2>/dev/null || echo "$(date +%s)")
+    NOW=$(date +%s)
+    ELAPSED_SECS=$((NOW - SUBMIT_TIME))
+    ELAPSED_FMT=$(printf "%02d:%02d:%02d" $((ELAPSED_SECS/3600)) $((ELAPSED_SECS%3600/60)) $((ELAPSED_SECS%60)))
+
+    # Simulate MaxRSS (random-ish value based on job ID)
+    MAX_RSS="$((JOB_ID * 1024))K"
+
+    # Simulate node assignment
+    NODE="c1"
+
+    # Build output based on requested fields
+    OUTPUT=""
+    IFS=',' read -ra FIELD_LIST <<< "${FIELDS//|/,}"
+    # Also handle %-width specifiers like "nodelist%-256"
+    for field in "${FIELD_LIST[@]}"; do
+        # Strip width specifier
+        field_name=$(echo "$field" | sed 's/%.*//' | tr '[:upper:]' '[:lower:]')
+        if [ -n "$OUTPUT" ]; then
+            OUTPUT="${OUTPUT}|"
+        fi
+        case "$field_name" in
+            jobid) OUTPUT="${OUTPUT}${JOB_ID}" ;;
+            state) OUTPUT="${OUTPUT}${STATE}" ;;
+            exitcode) OUTPUT="${OUTPUT}${EXIT_FMT}" ;;
+            maxrss) OUTPUT="${OUTPUT}${MAX_RSS}" ;;
+            elapsed) OUTPUT="${OUTPUT}${ELAPSED_FMT}" ;;
+            nodelist) OUTPUT="${OUTPUT}${NODE}" ;;
+            jobname) OUTPUT="${OUTPUT}${JOB_NAME}" ;;
+            *) OUTPUT="${OUTPUT}?" ;;
+        esac
+    done
+
+    echo "$OUTPUT"
+done

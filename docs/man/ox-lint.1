@@ -1,0 +1,19 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH ox-lint 1  "ox-lint " 
+.SH NAME
+ox\-lint \- Validate the Oxymakefile
+.SH SYNOPSIS
+\fBox\-lint\fR [\fB\-f\fR|\fB\-\-file\fR] [\fB\-\-json\fR] [\fB\-h\fR|\fB\-\-help\fR] 
+.SH DESCRIPTION
+Validate the Oxymakefile
+.SH OPTIONS
+.TP
+\fB\-f\fR, \fB\-\-file\fR \fI<FILE>\fR [default: Oxymakefile.toml]
+Oxymakefile path
+.TP
+\fB\-\-json\fR
+Output NDJSON
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help

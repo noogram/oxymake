@@ -1,0 +1,53 @@
+# Intermediate file deletion benchmark
+# Linear DAG: step_a → step_b → step_c → step_d
+#
+# Test: after a full run, delete step_b.txt (intermediate output).
+# Snakemake should detect the missing intermediate and rebuild B → C → D.
+# Observed: snakemake says "Nothing to be done" because it only checks
+# whether the final target exists and has newer mtime than its inputs.
+
+rule all:
+    input:
+        "output/step_d.txt"
+
+rule step_a:
+    output:
+        "output/step_a.txt"
+    shell:
+        """
+        mkdir -p output
+        echo "step_a: $(date +%s%N)" > {output}
+        """
+
+rule step_b:
+    input:
+        "output/step_a.txt"
+    output:
+        "output/step_b.txt"
+    shell:
+        """
+        echo "step_b: $(date +%s%N)" > {output}
+        cat {input} >> {output}
+        """
+
+rule step_c:
+    input:
+        "output/step_b.txt"
+    output:
+        "output/step_c.txt"
+    shell:
+        """
+        echo "step_c: $(date +%s%N)" > {output}
+        cat {input} >> {output}
+        """
+
+rule step_d:
+    input:
+        "output/step_c.txt"
+    output:
+        "output/step_d.txt"
+    shell:
+        """
+        echo "step_d: $(date +%s%N)" > {output}
+        cat {input} >> {output}
+        """

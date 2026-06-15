@@ -1,0 +1,16 @@
+[package]
+name = "ox-env-uv"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "uv-managed Python environment provider — per-rule virtualenvs via uv"
+
+[dependencies]
+ox-core = { path = "../ox-core" }
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

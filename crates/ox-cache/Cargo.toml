@@ -1,0 +1,24 @@
+[package]
+name = "ox-cache"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Content-addressable cache — skip/rebuild decisions via BLAKE3 hashing"
+
+[dependencies]
+ox-core = { path = "../ox-core" }
+blake3.workspace = true
+thiserror.workspace = true
+serde = { workspace = true }
+serde_json = { workspace = true }
+rusqlite = { workspace = true }
+tokio = { workspace = true, features = ["process"] }
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+proptest.workspace = true

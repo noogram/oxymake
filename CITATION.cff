@@ -1,0 +1,35 @@
+cff-version: 1.2.0
+message: "If you use OxyMake in your research, please cite both the software and the paper below."
+title: "OxyMake: A Formally-Specified, Content-Addressable Workflow Engine"
+type: software
+authors:
+  - family-names: "Sérié"
+    given-names: "Emmanuel"
+repository-code: "https://github.com/noogram/oxymake"
+url: "https://oxymake.dev"
+abstract: >-
+  OxyMake is a content-addressable workflow engine that keeps Snakemake's
+  rule model (file-based rules, backward-chaining DAG, wildcards) while
+  replacing the mechanics underneath: BLAKE3 content hashing instead of
+  mtimes, SQLite atomic claims for concurrent sessions, and daemon-free
+  execution that scales from laptop to SLURM and Ray clusters.
+license:
+  - MIT
+  - Apache-2.0
+version: "0.1.0-alpha"
+date-released: "2026-05-29"
+keywords:
+  - workflow-orchestration
+  - content-addressable
+  - reproducibility
+  - bioinformatics
+  - snakemake
+  - rust
+preferred-citation:
+  type: article
+  title: "OxyMake: A Formally-Specified, Content-Addressable Workflow Engine"
+  authors:
+    - family-names: "Sérié"
+      given-names: "Emmanuel"
+  year: 2026
+  url: "https://oxymake.dev"

@@ -1,0 +1,4 @@
+sample_name	unit_name	fq1
+iris	run1	data/iris_run1.fastq
+iris	run2	data/iris_run2.fastq
+wine	run1	data/wine_run1.fastq

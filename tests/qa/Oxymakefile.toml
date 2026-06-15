@@ -1,0 +1,55 @@
+# QA Pipeline — end-to-end validation workflow
+#
+# A deterministic 3-stage pipeline for QA testing.
+# Uses fixed data (no RANDOM) so cache behavior is predictable.
+
+ox_version = "0.1"
+
+[config]
+samples = ["alpha", "beta", "gamma"]
+results_dir = "results"
+
+# Default target: build the final report.
+[rule.all]
+input = ["report/summary.txt"]
+
+# Stage 1: Generate deterministic CSV data for each sample.
+[rule.generate]
+output = ["data/{sample}.csv"]
+wildcard_constraints = { sample = "alpha|beta|gamma" }
+shell = """
+mkdir -p data
+echo "word,count" > {output}
+echo "the,42" >> {output}
+echo "{sample},17" >> {output}
+echo "pipeline,9" >> {output}
+echo "workflow,3" >> {output}
+"""
+
+# Stage 2: Sort each sample's data by count (descending).
+[rule.process]
+input = { csv = "data/{sample}.csv" }
+output = { sorted = "{config.results_dir}/{sample}_sorted.csv" }
+wildcard_constraints = { sample = "alpha|beta|gamma" }
+shell = """
+mkdir -p {config.results_dir}
+head -1 {input.csv} > {output.sorted}
+tail -n +2 {input.csv} | sort -t, -k2 -rn >> {output.sorted}
+"""
+
+# Stage 3: Merge all sorted results into a single report.
+[rule.merge]
+input = ["{config.results_dir}/{sample}_sorted.csv"]
+output = ["report/summary.txt"]
+expand = "product"
+shell = """
+mkdir -p report
+echo "=== QA Pipeline Report ===" > {output}
+for f in {input}; do
+    sample=$(basename "$f" _sorted.csv)
+    echo "--- $sample ---" >> {output}
+    cat "$f" >> {output}
+    echo "" >> {output}
+done
+echo "DONE" >> {output}
+"""
