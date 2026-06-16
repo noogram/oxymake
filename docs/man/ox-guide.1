@@ -27,10 +27,11 @@ Where the canonical docs live:
                       Definition of Done and the contribution workflow.
 .PP
 Machine interfaces: most subcommands accept \-\-json; `ox run \-\-json` emits
-NDJSON events. See `ox help` for the full list.
+NDJSON events. `ox serve \-\-mcp` exposes the engine over the Model Context
+Protocol (stdio) so an agent can drive `ox` directly. See `ox help` for the
+full list.
 .PP
-Development is cosmon\-driven: the maintainer\*(Aqs agent orchestrator. Run
-`cs help` (and `cs help guide`) for that workflow.
+Contributing? Read CONTRIBUTING.md for the Definition of Done and workflow.
 .SH OPTIONS
 .TP
 \fB\-h\fR, \fB\-\-help\fR
