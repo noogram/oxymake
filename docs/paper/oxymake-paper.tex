@@ -103,75 +103,35 @@
 % ============================================================================
 \begin{abstract}
 Make-lineage workflow runners decide whether a job must re-run from
-file-modification times. The timestamp is a proxy for \emph{has this
-content changed?}, and it breaks under routine operations: a
-\code{git checkout}, a tree copy to a new path, or a restore from
-backup all rewrite mtimes without changing a byte of content. Wherever
-the raw proxy is trusted---GNU Make, and any engine's pure-mtime fast
-path---those operations force spurious re-execution of an entire
-pipeline; and when a timestamp lands the wrong side of a comparison, a
-stale output is silently reused. Modern runners patch the proxy
-point-wise: Snakemake~7 records per-output provenance and, as our own
-benchmark verifies, survives mtime churn unmoved. Content-addressing
-replaces the proxy instead.
-
-\textbf{OxyMake}\footnote{Source code: \url{https://github.com/noogram/oxymake}.} is a workflow engine written in Rust and shipped as a
-single static binary. It replaces the timestamp heuristic with a
-content-addressable cache key: a BLAKE3 hash of rule source $\|$ input
-content $\|$ parameters $\|$ environment $\|$ platform
-(Eq.~\ref{eq:cache-key}). Because the key is a pure function of
-content, the caching decision survives mtime churn and travels across
-same-platform machines and shared caches, where timestamps mean
-nothing. The default validation mode (\code{mtime+hash}) re-hashes a
-file whenever its metadata moves---a discipline our own benchmark
-forced on us, after measuring OxyMake's original pure-mtime default
-re-running every downstream job on the same checkout that
-Snakemake's provenance shrugged off (\S\ref{sec:git-checkout-bench}).
-Phantom re-runs from mtime perturbation
-disappear \emph{for declared inputs}---OxyMake has no build sandbox, so
-an input a rule reads but does not declare is invisible to the key
-(\S\ref{sec:undeclared-inputs})---and deletion cascades transitively to
-dependents. The workflow itself is a
-declarative, statically-parseable specification rather than a program,
-so a tool can read it without executing it. It keeps the Make-lineage
-rule model---backward-chaining DAG resolution with wildcard-driven
-genericity---so existing Snakemake pipelines port directly.
-
-The engineering envelope is falsifiable. \emph{DAG resolution} runs in
-69\,ms at 10\,000 jobs against Snakemake~7.32.4's 2.31\,s on the same
-workload (33.3$\times$; measured 2026-06-10 on an Apple~M4~Max via the
-bundled reproducer \code{bench/snakemake-vs-oxymake/}, Linux/x86\_64
-re-run pending; \S\ref{sec:evaluation}), with near-linear observed
-scaling in job count ($\approx$6.6\,$\mu$s of marginal cost per
-job)---the $10^5$-job point is projected, not yet benchmarked. We are
-explicit about the trade: on a \emph{cold end-to-end} run OxyMake is
-$1.25$--$2.3\times$ \emph{slower} than Snakemake ($0.80\times$,
-$0.44\times$, $0.70\times$ at $10^2$, $10^3$, $10^4$ jobs respectively;
-\S\ref{sec:e2e-bench}).
-That is the price of the content-addressed bookkeeping; OxyMake trades
-raw end-to-end throughput for content-addressable correctness, and pays
-it back on the warm re-run that caching exists to serve: 7.54$\times$
-faster under the metadata fast path, 4.02$\times$ under full content
-re-verification (\code{--cache-validation=hash}).
-
-Two further properties round out the engine. First,
-\emph{daemon-free execution with a cooperative multi-session protocol}:
-each \code{ox run} is self-contained, with no coordinating daemon; the
-state layer implements and model-checks the claim/reclaim protocol
-through which several \code{ox run} processes will converge on one
-workspace, with wiring it in as the execution gate staged work---today
-two concurrent sessions duplicate work safely rather than coordinate.
-Second, because that path is concurrent state transition across
-independently-failing peers---structurally the hazard class that led
-Amazon Web Services to adopt TLA+ at production
-scale~\cite[pp.~66--73]{newcombeHowAmazonWebServices2015}---the
-cross-session safety properties are specified in
-TLA+~\cite{lamportSpecifyingSystems2002} and model-checked, not merely
-tested. ``Model-checked'' here means bounded exhaustive checking at
-2--4 concurrent sessions, under an assumed-atomic state-database
-commit; \S\ref{sec:named-invariants} states exactly what is verified
-and what is assumed. An \code{ox.lock} plan-of-record and an NDJSON
-event stream let a downstream tool reconstruct exactly what ran.
+file-modification time (mtime, a timestamp)---a broken proxy for the
+question that matters: did the content change? A \code{git checkout}, a
+tree copy, or a backup restore rewrites mtimes without touching
+content, forcing spurious re-execution; and in the reverse
+case---when an output looks newer than its inputs but its content is
+stale---the stale output is silently reused. (Snakemake~7's per-output
+provenance survives this churn, as local bookkeeping; GNU Make and
+pure-mtime fast paths are where it bites.)
+\textbf{OxyMake}\footnote{Source code: \url{https://github.com/noogram/oxymake}.},
+a single-binary Rust workflow engine, replaces the proxy with a
+content-addressed cache key: a BLAKE3 hash of rule source, input
+content, parameters, environment, and platform. Because the key is a
+pure function of these declared inputs, the caching decision survives
+mtime churn and travels across same-platform machines and shared
+caches. Phantom re-runs vanish for declared inputs (no sandbox: an
+undeclared input is invisible to the key). The spec stays declarative
+and statically parseable, keeping the Make rule model so Snakemake
+pipelines port directly. DAG resolution is an order of magnitude faster
+than Snakemake's on large graphs, but a cold end-to-end run is
+slower---the price of content-addressed bookkeeping---repaid
+several-fold on the warm re-run that caching exists to serve (exact
+figures, hardware, and a bundled reproducer are in the evaluation).
+Execution is daemon-free via a cooperative claim/reclaim protocol
+(sessions claim jobs, reclaiming stalled ones); today two sessions
+duplicate work safely rather than coordinate, and wiring the protocol
+as a hard execution gate is staged, not yet done. Cross-session safety
+is specified in TLA+ and model-checked over all interleavings for
+2--3 sessions, assuming atomic state commits. An \code{ox.lock}
+plan-of-record and NDJSON event stream record exactly what ran.
 \end{abstract}
 
 % ============================================================================
