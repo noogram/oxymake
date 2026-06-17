@@ -1,7 +1,7 @@
 name: Deploy Docs
 
 # Builds the mdBook documentation site (docs/book/) and publishes it to
-# Cloudflare Pages (project `oxymake-docs`, custom domain oxymake.dev) on every
+# Cloudflare Pages (project `oxymake-docs`, custom domain oxymake.noogram.dev) on every
 # push to main that touches the docs. Manual runs available via the Actions tab.
 #
 # Required repository secrets (set in GitHub → Settings → Secrets and variables

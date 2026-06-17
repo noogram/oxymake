@@ -3,7 +3,7 @@
 This npm package **reserves the `oxymake` name** on the npm registry. It
 contains no runnable code.
 
-[OxyMake](https://oxymake.dev) is a formally-specified,
+[OxyMake](https://oxymake.noogram.dev) is a formally-specified,
 content-addressable workflow engine, distributed as a single static binary
 named **`ox`** — not as a Node module.
 
@@ -18,7 +18,7 @@ From source (requires a Rust toolchain):
 cargo install --git https://github.com/noogram/oxymake ox-cli
 ```
 
-See <https://oxymake.dev> for documentation.
+See <https://oxymake.noogram.dev> for documentation.
 
 ---
 

@@ -13,7 +13,7 @@ authors = [{ name = "Emmanuel Sérié", email = "emmanuel@serie.dev" }]
 keywords = ["workflow", "pipeline", "snakemake", "build", "cache"]
 
 [project.urls]
-Homepage = "https://oxymake.dev"
+Homepage = "https://oxymake.noogram.dev"
 Repository = "https://github.com/noogram/oxymake"
 Releases = "https://github.com/noogram/oxymake/releases"
 

@@ -23,7 +23,7 @@ The same `oxymake` identity is used everywhere:
 | description | *Next-generation workflow orchestration in Rust* |
 | license | `MIT OR Apache-2.0` |
 | repository | `https://github.com/noogram/oxymake` |
-| homepage | `https://oxymake.dev` |
+| homepage | `https://oxymake.noogram.dev` |
 | author | Emmanuel Sérié `<emmanuel@serie.dev>` |
 
 ---

@@ -242,7 +242,7 @@ topics in the same gesture:
 
 ```bash
 gh repo edit noogram/oxymake \
-  --homepage "https://oxymake.dev" \
+  --homepage "https://oxymake.noogram.dev" \
   --add-topic workflow-engine --add-topic rust --add-topic dag \
   --add-topic reproducibility --add-topic content-addressable
 ```
@@ -260,7 +260,7 @@ the paper is public the name `oxymake` is squattable everywhere — reserve earl
 
 ### Citability — Zenodo DOI
 
-The paper cites `oxymake.dev`. Enable the GitHub↔Zenodo integration
+The paper cites `oxymake.noogram.dev`. Enable the GitHub↔Zenodo integration
 before tagging so the `v*` tag auto-archives → a DOI the paper can cite as a
 permanent, versioned artifact. The DOI can land in arXiv v2 if it misses the
 first deposit.

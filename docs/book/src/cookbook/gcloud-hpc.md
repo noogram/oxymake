@@ -174,7 +174,7 @@ On the login node:
 
 ```bash
 # Install OxyMake (from prebuilt binary or cargo)
-curl -fsSL https://oxymake.dev/install.sh | sh
+curl -fsSL https://oxymake.noogram.dev/install.sh | sh
 # or: cargo install oxymake
 
 # Clone your workflow into the shared filesystem

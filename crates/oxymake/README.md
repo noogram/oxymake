@@ -2,7 +2,7 @@
 
 This crate **reserves the `oxymake` name** on crates.io. It contains no code.
 
-[OxyMake](https://oxymake.dev) is a formally-specified,
+[OxyMake](https://oxymake.noogram.dev) is a formally-specified,
 content-addressable workflow engine, distributed as a single static binary
 named **`ox`**.
 
@@ -17,4 +17,4 @@ From source:
 cargo install --git https://github.com/noogram/oxymake ox-cli
 ```
 
-See <https://oxymake.dev> for documentation.
+See <https://oxymake.noogram.dev> for documentation.

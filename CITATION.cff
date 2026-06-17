@@ -6,7 +6,7 @@ authors:
   - family-names: "Sérié"
     given-names: "Emmanuel"
 repository-code: "https://github.com/noogram/oxymake"
-url: "https://oxymake.dev"
+url: "https://oxymake.noogram.dev"
 abstract: >-
   OxyMake is a content-addressable workflow engine that keeps Snakemake's
   rule model (file-based rules, backward-chaining DAG, wildcards) while
@@ -32,4 +32,4 @@ preferred-citation:
     - family-names: "Sérié"
       given-names: "Emmanuel"
   year: 2026
-  url: "https://oxymake.dev"
+  url: "https://oxymake.noogram.dev"

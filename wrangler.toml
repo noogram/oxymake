@@ -1,4 +1,4 @@
-# Cloudflare Pages configuration for the OxyMake documentation site (oxymake.dev).
+# Cloudflare Pages configuration for the OxyMake documentation site (oxymake.noogram.dev).
 #
 # This is a STATIC SITE deploy (Cloudflare Pages), not a Worker. The site is
 # built by mdBook from docs/book/ into docs/book/book/, then published with:

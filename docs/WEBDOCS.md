@@ -1,11 +1,11 @@
-# Web Docs — oxymake.dev
+# Web Docs — oxymake.noogram.dev
 
 The OxyMake documentation site is an [mdBook](https://rust-lang.github.io/mdBook/)
 built from `docs/book/` and published to **Cloudflare Pages** under the custom
-domain **oxymake.dev**.
+domain **oxymake.noogram.dev**.
 
 ```
-docs/book/src/**.md  ──mdbook build──▶  docs/book/book/  ──wrangler pages deploy──▶  Cloudflare Pages (oxymake-docs)  ──CNAME──▶  oxymake.dev
+docs/book/src/**.md  ──mdbook build──▶  docs/book/book/  ──wrangler pages deploy──▶  Cloudflare Pages (oxymake-docs)  ──CNAME──▶  oxymake.noogram.dev
 ```
 
 This document is the runbook. The in-repo pieces it describes:
@@ -74,9 +74,9 @@ In the final repo: **Settings → Secrets and variables → Actions → New secr
 These names are referenced verbatim by `.github/workflows/docs-deploy.yml`.
 **Do not commit the token** — it lives only in GitHub Secrets.
 
-### 4. Custom domain — oxymake.dev (DNS on Cloudflare)
+### 4. Custom domain — oxymake.noogram.dev (DNS on Cloudflare)
 
-`oxymake.dev` is hosted on the operator's Cloudflare account, so DNS and Pages
+`oxymake.noogram.dev` is hosted on the operator's Cloudflare account, so DNS and Pages
 are the same account — attaching the domain is one step:
 
 ```sh
@@ -84,7 +84,7 @@ wrangler pages deployment list --project-name=oxymake-docs   # sanity check
 ```
 
 Then in the dashboard: **Workers & Pages → oxymake-docs → Custom domains →
-Set up a custom domain → `oxymake.dev`** (and optionally `www.oxymake.dev`).
+Set up a custom domain → `oxymake.noogram.dev`** (and optionally `www.oxymake.noogram.dev`).
 
 Because the zone is on the same Cloudflare account, Cloudflare adds the required
 `CNAME` (→ `oxymake-docs.pages.dev`) automatically and provisions the TLS
@@ -94,7 +94,7 @@ If you prefer the apex naked-domain via API/Terraform later, the record is:
 
 ```
 Type   Name           Content
-CNAME  oxymake.dev    oxymake-docs.pages.dev   (proxied)
+CNAME  oxymake.noogram.dev    oxymake-docs.pages.dev   (proxied)
 ```
 
 ---
@@ -118,7 +118,7 @@ wrangler pages deploy docs/book/book --project-name=oxymake-docs --branch=main
 ```
 
 `--branch=main` publishes to the production deployment (the one mapped to
-oxymake.dev). Omit it, or use another branch name, to get a preview URL instead.
+oxymake.noogram.dev). Omit it, or use another branch name, to get a preview URL instead.
 
 ---
 
@@ -128,7 +128,7 @@ oxymake.dev). Omit it, or use another branch name, to get a preview URL instead.
   doesn't exist yet on this account; run step 2.
 - **CI deploy fails with an auth error** — `CLOUDFLARE_API_TOKEN` /
   `CLOUDFLARE_ACCOUNT_ID` missing or under-scoped (needs *Pages: Edit*).
-- **404 at oxymake.dev** — custom domain not attached, or DNS not yet propagated;
+- **404 at oxymake.noogram.dev** — custom domain not attached, or DNS not yet propagated;
   re-check step 4. The raw `*.pages.dev` URL works before the custom domain does.
 - **`mdbook: command not found`** — `cargo install mdbook` locally; CI installs a
   pinned binary (`MDBOOK_VERSION` in the workflow).

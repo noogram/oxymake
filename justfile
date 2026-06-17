@@ -271,7 +271,7 @@ top-mock:
     cargo run --bin ox -- top --mock
 
 # --- Docs site ---------------------------------------------------------------
-# The documentation site (oxymake.dev) is mdBook → Cloudflare Pages.
+# The documentation site (oxymake.noogram.dev) is mdBook → Cloudflare Pages.
 # Runbook + deploy procedure: docs/WEBDOCS.md. Install mdBook: cargo install mdbook
 
 # Build the documentation site into docs/book/book/
