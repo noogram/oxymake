@@ -97,6 +97,11 @@ scripts/.release-denylist.local
 docs/agent/
 docs/health/
 
+# Cosmon per-galaxy config + live state are local-only (CLAUDE.md, ADR-017):
+# the only cosmon artifact that ships publicly is artifact-map.toml.
+.cosmon/*
+!.cosmon/artifact-map.toml
+
 # Cross-molecule-board (CMB) correspondence — cross-galaxy inbox/outbox messages.
 # Same residence class as docs/cosmon-feedback/: relational/inside-baseball notes
 # (session origins, third-party names, NDA/strategy context) that must NOT reach
