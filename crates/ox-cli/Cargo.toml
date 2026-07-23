@@ -17,6 +17,7 @@ ox-core = { path = "../ox-core" }
 ox-format = { path = "../ox-format" }
 ox-state = { path = "../ox-state" }
 ox-cache = { path = "../ox-cache" }
+ox-cache-remote = { path = "../ox-cache-remote" }
 ox-plan = { path = "../ox-plan" }
 ox-api = { path = "../ox-api" }
 ox-exec-local = { path = "../ox-exec-local" }

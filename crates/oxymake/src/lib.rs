@@ -3,7 +3,7 @@
 //! This crate reserves the `oxymake` name on crates.io. It contains no
 //! functionality.
 //!
-//! OxyMake is a formally-specified, content-addressable workflow engine,
+//! OxyMake is a content-addressed workflow engine,
 //! distributed as a single static binary named `ox`.
 //!
 //! ## Installing the `ox` binary

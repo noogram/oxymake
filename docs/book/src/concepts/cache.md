@@ -86,38 +86,42 @@ cache_validation = "mtime+hash"
 Remote caches automatically promote to `hash` regardless of the configured
 strategy, because mtime is not meaningful across machines.
 
-## The Cache on Disk
+## Local Cache Metadata
 
-Cached outputs live in `.oxymake/cache/`, organized by hash prefix:
+Local cache metadata lives in `.oxymake/cache/cache.db`. It records the
+computation key, output paths, content hashes, and validation metadata:
 
 ```
 .oxymake/cache/
-  a3/
-    a3f7b2c1...   # cached output file
-  b1/
-    b1e9d4a8...   # another cached output
+  cache.db
 ```
 
-This directory is independent of the SQLite state database. You can share
-it across machines, back it up, or delete it without losing execution state
-(jobs will simply re-run and repopulate the cache).
+The outputs themselves remain at their declared workflow paths. Deleting the
+local metadata makes jobs run again unless you use `mtime` validation; it does
+not delete outputs or execution history.
 
 ## Sharing Across Machines
 
-Because the cache key is deterministic -- same inputs, same rule, same
-environment, same platform produce the same key -- you can share cached
-outputs via S3, GCS, or any shared filesystem:
+OxyMake currently supports a shared filesystem directory as its remote
+artifact backend. Point `--cache-remote` at a directory reachable from every
+machine, for example a team NFS mount:
 
 ```bash
 # Production: everything cached locally
 ox run
 
-# CI: pull from shared remote cache
-ox run --cache-remote s3://my-bucket/oxymake-cache
+# Use a shared directory; fetched artifacts are verified by BLAKE3.
+ox run --cache-remote /mnt/team/oxymake-cache
 ```
 
-For remote caches, OxyMake adds a `trust_scope` to prevent cache poisoning:
-cached outputs from untrusted branches cannot be used by production builds.
+`--cache-remote` promotes validation to `hash`: timestamps from another
+machine are never trusted. The directory backend stores each output under its
+content hash and verifies the hash after every fetch.
+
+The local SQLite cache index maps a computation key to its output hashes.
+Keep that index (or transfer it with the workflow's `.oxymake/cache/`
+directory) when another checkout needs to restore artifacts from the shared
+directory. S3 and GCS URLs are not supported yet.
 
 ## Cache and Materialization
 
@@ -137,14 +141,14 @@ reproducibility. The next `ox run` will recompute them.
 ## Managing the Cache
 
 ```bash
-# See cache size
-ox gc --dry-run
+# Preview removal of orphaned cache metadata
+ox clean --cache-only --dry-run
 
-# Limit cache to 10 GB (removes oldest entries)
-ox gc --max-cache-size 10G
+# Remove orphaned cache metadata
+ox clean --cache-only --yes
 
-# Remove all cached outputs
-ox clean --cache
+# Remove all cache metadata
+ox clean --cache-only --all --yes
 ```
 
 ## Why This Matters

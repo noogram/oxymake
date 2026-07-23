@@ -128,3 +128,6 @@ ops/audits/prerelease-go-2026-06-14.md
 docs/design/per-alpha-signal-splitting.md
 docs/design/stage2-lab-test-plan.md
 .wrangler/
+
+# cosmon worker worktrees — never tracked
+.worktrees/

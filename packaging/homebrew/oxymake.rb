@@ -8,7 +8,7 @@
 # The release workflow (.github/workflows/release.yml) publishes both the
 # tarballs and their .sha256 sidecars, so the checksums below are copy-paste.
 class Oxymake < Formula
-  desc "Content-addressable workflow engine — git checkout no longer rebuilds everything"
+  desc "Content-addressed workflow engine — git checkout no longer rebuilds everything"
   homepage "https://github.com/noogram/oxymake"
   version "0.1.0" # TODO: bump per release
   license any_of: ["MIT", "Apache-2.0"]

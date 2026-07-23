@@ -2,7 +2,7 @@ PAPER = oxymake-paper
 TEX = pdflatex
 BIB = bibtex
 
-.PHONY: all clean view metrics
+.PHONY: all clean view metrics check-listings
 
 all: $(PAPER).pdf
 
@@ -13,7 +13,11 @@ all: $(PAPER).pdf
 metrics:
 	bash scripts/regenerate-metrics.sh
 
-$(PAPER).pdf: $(PAPER).tex references.bib metrics
+# Every [style=python] listing in the paper must be valid Python.
+check-listings:
+	bash scripts/check-python-listings.sh
+
+$(PAPER).pdf: $(PAPER).tex references.bib metrics check-listings
 	$(TEX) $(PAPER)
 	$(BIB) $(PAPER)
 	$(TEX) $(PAPER)

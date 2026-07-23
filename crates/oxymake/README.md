@@ -2,8 +2,8 @@
 
 This crate **reserves the `oxymake` name** on crates.io. It contains no code.
 
-[OxyMake](https://oxymake.noogram.dev) is a formally-specified,
-content-addressable workflow engine, distributed as a single static binary
+[OxyMake](https://oxymake.noogram.dev) is a content-addressed workflow
+engine, distributed as a single static binary
 named **`ox`**.
 
 ## Install the `ox` binary

@@ -4,6 +4,10 @@
 //! Primarily useful for testing and for single-machine shared caches
 //! (e.g., a team NFS mount).
 //!
+//! This backend is a blob transport, not a complete portable cache. The
+//! SQLite index that maps computation keys to output paths and blob hashes
+//! remains local to each checkout; it is not stored or synchronized here.
+//!
 //! ## Layout
 //!
 //! ```text
@@ -27,6 +31,8 @@ use ox_core::traits::remote_cache::{RemoteCache, RemoteCacheError};
 ///
 /// Artifacts are stored under a two-level directory structure:
 /// `<root>/<first-2-hex-chars>/<full-hash>`.
+/// The directory contains blobs only; callers still need their local cache
+/// index to know which blobs belong to a computation.
 #[derive(Debug, Clone)]
 pub struct DirectoryCache {
     root: PathBuf,

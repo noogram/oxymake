@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "oxymake"
 version = "0.1.0"
-description = "Content-addressable workflow engine — git checkout no longer rebuilds everything"
+description = "Content-addressed workflow engine — git checkout no longer rebuilds everything"
 readme = "README.md"
 requires-python = ">=3.8"
 license = { text = "MIT OR Apache-2.0" }

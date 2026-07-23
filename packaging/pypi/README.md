@@ -1,6 +1,6 @@
 # OxyMake (Python launcher)
 
-A content-addressable workflow engine. You `git checkout` an old branch, re-run
+A content-addressed workflow engine. You `git checkout` an old branch, re-run
 your pipeline, and it **does not** rebuild everything — change detection is a
 BLAKE3 hash of file *content*, not timestamps.
 

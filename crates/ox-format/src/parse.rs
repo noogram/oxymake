@@ -1818,6 +1818,66 @@ ids = { source = "units.tsv", key = "id" }
     }
 
     #[test]
+    fn parse_config_file_source_rejects_blank_header_and_skips_empty_values() {
+        let dir = tempfile::tempdir().unwrap();
+        let blank_header = dir.path().join("blank.csv");
+        std::fs::write(&blank_header, "   \nA\n").unwrap();
+        let oxf = dir.path().join("Oxymakefile.toml");
+        let err = parse_workflow(
+            "[config]\nitems = { source = \"blank.csv\", key = \"id\" }\n",
+            &oxf,
+        )
+        .unwrap_err();
+        assert!(matches!(err, ParseError::ConfigFileRead { .. }));
+        assert!(err.to_string().contains("file is empty"));
+
+        let csv = dir.path().join("items.csv");
+        std::fs::write(&csv, "id,color\nA,red\n,\nA,red\nB,blue\n").unwrap();
+        let wf = parse_workflow(
+            "[config]\nitems = { source = \"items.csv\", key = \"id\", columns = [\"color\"] }\n",
+            &oxf,
+        )
+        .unwrap();
+        assert_eq!(
+            wf.config.get("items"),
+            Some(&ConfigValue::List(vec!["A".into(), "B".into()]))
+        );
+        assert_eq!(
+            wf.config.get("color"),
+            Some(&ConfigValue::List(vec!["red".into(), "blue".into()]))
+        );
+    }
+
+    #[test]
+    fn parse_executor_slurm_config_preserves_all_fields() {
+        let toml = r#"
+[executor.slurm]
+mode = "rest"
+api_url = "http://slurm.example:6820"
+token_cmd = "scontrol token lifespan=3600"
+partition = "gpu"
+account = "research"
+qos = "high"
+staging_dir = "/scratch/ox"
+extra_flags = ["--exclusive", "--gres=gpu:1"]
+"#;
+        let wf = parse_workflow(toml, Path::new("test.toml")).unwrap();
+        assert_eq!(
+            wf.executor_config.slurm,
+            Some(SlurmExecutorToml {
+                mode: Some("rest".into()),
+                api_url: Some("http://slurm.example:6820".into()),
+                token_cmd: Some("scontrol token lifespan=3600".into()),
+                partition: Some("gpu".into()),
+                account: Some("research".into()),
+                qos: Some("high".into()),
+                staging_dir: Some("/scratch/ox".into()),
+                extra_flags: vec!["--exclusive".into(), "--gres=gpu:1".into()],
+            })
+        );
+    }
+
+    #[test]
     fn parse_gate() {
         let toml = r#"
 [gate.review]
@@ -2193,6 +2253,26 @@ output = [
 
         let o2 = &wf.rules[0].outputs[2];
         assert_eq!(o2.materialize, MaterializePolicy::Auto);
+    }
+
+    #[test]
+    fn parse_output_named_table_preserves_names_and_patterns() {
+        let toml = r#"
+[rule.test]
+shell = "process"
+
+[rule.test.output]
+counts = "results/{sample}.counts"
+report = "results/{sample}.html"
+"#;
+        let wf = parse_workflow(toml, Path::new("test.toml")).unwrap();
+        assert_eq!(wf.rules[0].outputs.len(), 2);
+        assert!(wf.rules[0].outputs.iter().any(|output| {
+            output.name.as_deref() == Some("counts") && output.pattern == "results/{sample}.counts"
+        }));
+        assert!(wf.rules[0].outputs.iter().any(|output| {
+            output.name.as_deref() == Some("report") && output.pattern == "results/{sample}.html"
+        }));
     }
 
     #[test]
@@ -3362,6 +3442,50 @@ shell = "echo hello > out.txt"
 "#;
         let wf = parse_workflow(toml, Path::new("test.toml")).unwrap();
         assert!(wf.rules[0].param_files.is_empty());
+    }
+
+    #[test]
+    fn parse_params_converts_scalar_types_to_strings() {
+        let toml = r#"
+[rule.optimizer]
+output = ["model.bin"]
+shell = "train"
+
+[rule.optimizer.params]
+name = "baseline"
+epochs = 42
+learning_rate = 0.125
+enabled = true
+"#;
+        let wf = parse_workflow(toml, Path::new("test.toml")).unwrap();
+        assert_eq!(
+            wf.rules[0].params,
+            BTreeMap::from([
+                ("enabled".into(), "true".into()),
+                ("epochs".into(), "42".into()),
+                ("learning_rate".into(), "0.125".into()),
+                ("name".into(), "baseline".into()),
+            ])
+        );
+    }
+
+    #[test]
+    fn parse_rule_reproducibility_classes() {
+        for (value, expected) in [
+            ("deterministic", ReproducibilityClass::Deterministic),
+            (
+                "seed_deterministic",
+                ReproducibilityClass::SeedDeterministic,
+            ),
+            ("approximate", ReproducibilityClass::Approximate),
+            ("non_reproducible", ReproducibilityClass::NonReproducible),
+        ] {
+            let toml = format!(
+                "[rule.test]\noutput = [\"out.txt\"]\nshell = \"echo hi\"\nreproducibility = \"{value}\"\n"
+            );
+            let wf = parse_workflow(&toml, Path::new("test.toml")).unwrap();
+            assert_eq!(wf.rules[0].reproducibility, expected, "{value}");
+        }
     }
 
     // -- Profile parsing tests -------------------------------------------------

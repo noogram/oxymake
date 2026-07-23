@@ -6,7 +6,7 @@
 //! This ensures that any change in inputs, code, or environment produces a
 //! different key.
 //!
-//! # Key format v2 (injective framing)
+//! # Key format v4 (injective framing)
 //!
 //! Every field is framed via [`ox_core::hashing`] (length-prefixed tag +
 //! presence byte + length-prefixed value), so the encoding is injective:
@@ -23,15 +23,77 @@
 use blake3::Hasher;
 use ox_core::hashing::{update_field, update_opt_field};
 use ox_core::model::{ContentHash, EnvSpec};
+use std::path::{Component, Path, PathBuf};
 
 /// Version tag of the cache key format, hashed into every key.
 ///
 /// Bump this whenever the set of hashed ingredients or their encoding
 /// changes: old cache entries then become unreachable (clean invalidation)
 /// instead of being wrongly reused under the new semantics.
-pub const CACHE_KEY_FORMAT_VERSION: &str = "oxymake-cache-key-v2";
+pub const CACHE_KEY_FORMAT_VERSION: &str = "oxymake-cache-key-v4";
 
-/// All ingredients of a cache key (format v2).
+/// Express an in-workflow path relative to the workflow root before it enters
+/// a cache key.
+///
+/// This keeps byte-identical checkouts portable across different absolute
+/// locations. Both the root and path are normalized lexically first; an
+/// existing path and root are additionally canonicalized to account for
+/// symlinks. A relative path is interpreted from `workflow_root`, rather than
+/// trusted as already in-root. Paths outside the workflow root stay absolute
+/// because their location is part of the workflow's dependency.
+pub fn workflow_relative_path(path: &Path, workflow_root: &Path) -> String {
+    let root = absolute_lexically_normalized(workflow_root);
+    let path = if path.is_absolute() {
+        lexical_normalize(path)
+    } else {
+        lexical_normalize(&root.join(path))
+    };
+
+    // Canonicalization is deliberately opportunistic: output paths may not
+    // exist when a key is computed, while existing inputs must not escape the
+    // root through a symlink.
+    let root = std::fs::canonicalize(&root)
+        .map(|p| lexical_normalize(&p))
+        .unwrap_or(root);
+    let path = std::fs::canonicalize(&path)
+        .map(|p| lexical_normalize(&p))
+        .unwrap_or(path);
+
+    path.strip_prefix(&root)
+        .unwrap_or(&path)
+        .to_string_lossy()
+        .to_string()
+}
+
+/// Make a path absolute using the process working directory, then resolve
+/// lexical `.` and `..` components without requiring it to exist.
+fn absolute_lexically_normalized(path: &Path) -> PathBuf {
+    let path = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .unwrap_or_else(|_| PathBuf::from("."))
+            .join(path)
+    };
+    lexical_normalize(&path)
+}
+
+/// Resolve lexical `.` and `..` components without following symlinks.
+fn lexical_normalize(path: &Path) -> PathBuf {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                normalized.pop();
+            }
+            component => normalized.push(component.as_os_str()),
+        }
+    }
+    normalized
+}
+
+/// All ingredients of a cache key (format v4).
 #[derive(Debug, Clone)]
 pub struct CacheKeySpec<'a> {
     /// Serialized execution block (command, inline code, script path +
@@ -265,6 +327,61 @@ mod tests {
         assert_eq!(k.as_str().len(), 64);
     }
 
+    #[test]
+    fn workflow_paths_are_relative_to_the_root() {
+        let root_a = Path::new("/build/worker-a/project");
+        let root_b = Path::new("/home/dev/project");
+        assert_eq!(
+            workflow_relative_path(&root_a.join("data/input.csv"), root_a),
+            workflow_relative_path(&root_b.join("data/input.csv"), root_b),
+        );
+    }
+
+    #[test]
+    fn workflow_path_normalization_keeps_relative_escapes_absolute() {
+        let root = Path::new("/workspace/project");
+
+        assert_eq!(
+            workflow_relative_path(Path::new("../outside/input.csv"), root),
+            "/workspace/outside/input.csv"
+        );
+        assert_eq!(
+            workflow_relative_path(Path::new("data/../input.csv"), root),
+            "input.csv"
+        );
+    }
+
+    #[test]
+    fn workflow_path_normalization_keeps_absolute_outside_paths_absolute() {
+        let root = Path::new("/workspace/project");
+
+        assert_eq!(
+            workflow_relative_path(Path::new("/workspace/project-other/input.csv"), root),
+            "/workspace/project-other/input.csv"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn workflow_path_normalization_rejects_symlink_escapes() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("workflow");
+        let outside = dir.path().join("outside");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("input.csv"), "contents").unwrap();
+        symlink(&outside, root.join("linked-outside")).unwrap();
+
+        assert_eq!(
+            workflow_relative_path(&root.join("linked-outside/input.csv"), &root),
+            std::fs::canonicalize(outside.join("input.csv"))
+                .unwrap()
+                .to_string_lossy(),
+        );
+    }
+
     // ── Injectivity (domain separation) — audit B1 ─────────────────────
 
     /// Bytes must not be able to migrate across the rule/params field
@@ -338,7 +455,7 @@ mod tests {
         });
         assert_eq!(
             key.as_str(),
-            "0c6d7ae4141e84f4f836e4a90e0a5d9b1752bdc8b89d9f4bdcb85b88967a09e5",
+            "ef6330cfdcaadcbb3404a28a588818ba93905d93e156b80d673426ddd7d5bc02",
             "cache key format drifted — bump CACHE_KEY_FORMAT_VERSION and update the golden value"
         );
     }

@@ -27,7 +27,7 @@ pub use error::CacheError;
 pub use hash::hash_file;
 pub use key::{
     CACHE_KEY_FORMAT_VERSION, CacheKeySpec, compute_cache_key, current_platform,
-    env_spec_content_hash,
+    env_spec_content_hash, workflow_relative_path,
 };
 pub use lookup::{CacheEntry, CacheHitStatus, CacheStore};
 pub use materialization::{ComputationKeyStrategy, ContentAddressedStrategy, ExternalRefStrategy};

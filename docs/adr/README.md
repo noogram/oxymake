@@ -63,6 +63,7 @@ the corpus by concern without changing the URL of any ADR.
 | 015 | Named Invariants and TLA+ Scope                  | architecture-note   | STM    | Accepted                               |
 | 016 | Metrics as Single Source of Truth                | decision            | EXT    | Accepted                               |
 | 017 | Artifact Residence Topology (Topology B)         | decision            | EXT    | Accepted                               |
+| 018 | Differentiation After the CWL Review             | decision            | CAS    | Proposed                               |
 
 † ADR-011's filename retains the historical `three-layer` slug (renaming
 breaks the URL, per the flat 3-digit no-rename rule above); its title was

@@ -3,8 +3,8 @@
 This npm package **reserves the `oxymake` name** on the npm registry. It
 contains no runnable code.
 
-[OxyMake](https://oxymake.noogram.dev) is a formally-specified,
-content-addressable workflow engine, distributed as a single static binary
+[OxyMake](https://oxymake.noogram.dev) is a content-addressed workflow
+engine, distributed as a single static binary
 named **`ox`** — not as a Node module.
 
 ## Install the `ox` binary

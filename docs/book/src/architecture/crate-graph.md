@@ -166,7 +166,7 @@ yet. They are staged for a future release, not dead code.
 | Crate | Role |
 |-------|------|
 | `ox-metrics` | Prometheus metrics export over `ox-state`. |
-| `ox-cache-remote` | Remote cache backends (S3, GCS, local directory) for sharing artifacts across machines. |
+| `ox-cache-remote` | Remote-cache backends; the CLI currently wires the content-verifying local-directory backend. |
 
 ### Outside the engine graph
 
@@ -207,7 +207,7 @@ this table (and re-confirm the inward-pointing rule).
 | `ox-metrics` | `ox-core`, `ox-state` |
 | `ox-api` | `ox-core`, `ox-format`, `ox-state`, `ox-cache`, `ox-plan` |
 | `ox-mcp` | `ox-core`, `ox-format`, `ox-state`, `ox-cache`, `ox-plan` |
-| `ox-cli` | `ox-api` + 20 others = 21 of the 24 `ox-*` crates (all except itself, `ox-cache-remote`, `ox-metrics`) |
+| `ox-cli` | `ox-api` + 21 others = 22 of the 24 `ox-*` crates (all except itself and `ox-metrics`) |
 | `oxymake` | *(name reservation — no `ox-*` deps)* |
 
 To regenerate this view locally:

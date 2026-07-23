@@ -35,6 +35,128 @@ fn version_shows_version() {
         .stdout(predicates::str::contains(env!("CARGO_PKG_VERSION")));
 }
 
+/// A directory remote cache restores a missing output from the shared
+/// content-addressed artifact store instead of re-executing the job.
+#[test]
+fn run_restores_missing_output_from_directory_remote_cache() {
+    let dir = TempDir::new().unwrap();
+    let base = dir.path();
+    let remote = base.join("shared-cache");
+    let oxymakefile = base.join("Oxymakefile.toml");
+    fs::write(
+        &oxymakefile,
+        r#"ox_version = "0.1"
+
+[rule.copy]
+input = ["input.txt"]
+output = ["output.txt"]
+shell = "cat {input} > {output}"
+"#,
+    )
+    .unwrap();
+    fs::write(base.join("input.txt"), "remote cache contents\n").unwrap();
+
+    ox().args([
+        "run",
+        "--cache-remote",
+        remote.to_str().unwrap(),
+        "-f",
+        oxymakefile.to_str().unwrap(),
+    ])
+    .current_dir(base)
+    .assert()
+    .success();
+    assert!(base.join("output.txt").exists());
+
+    fs::remove_file(base.join("output.txt")).unwrap();
+
+    ox().args([
+        "run",
+        "--cache-remote",
+        remote.to_str().unwrap(),
+        "-f",
+        oxymakefile.to_str().unwrap(),
+    ])
+    .current_dir(base)
+    .assert()
+    .success()
+    .stdout(predicates::str::contains("1 of 1 job(s) up-to-date"));
+
+    assert_eq!(
+        fs::read_to_string(base.join("output.txt")).unwrap(),
+        "remote cache contents\n"
+    );
+}
+
+/// Identical workflow checkouts compute the same key and can restore through
+/// the directory blob store when the local SQLite index is also available.
+/// The copied index is intentional: DirectoryCache transports blobs only,
+/// not the computation-key-to-output manifest.
+#[test]
+fn directory_remote_cache_hits_from_a_second_identical_checkout() {
+    let dir = TempDir::new().unwrap();
+    let first = dir.path().join("checkout-a");
+    let second = dir.path().join("checkout-b");
+    let remote = dir.path().join("shared-blobs");
+    fs::create_dir_all(&first).unwrap();
+    fs::create_dir_all(&second).unwrap();
+
+    let first_workflow = first.join("Oxymakefile.toml");
+    fs::write(
+        &first_workflow,
+        r#"ox_version = "0.1"
+
+[rule.copy]
+input = ["input.txt"]
+output = ["output.txt"]
+shell = "cat {input} > {output}"
+"#,
+    )
+    .unwrap();
+    fs::write(first.join("input.txt"), "portable cache key\n").unwrap();
+    fs::copy(&first_workflow, second.join("Oxymakefile.toml")).unwrap();
+    fs::copy(first.join("input.txt"), second.join("input.txt")).unwrap();
+
+    ox().args([
+        "run",
+        "--cache-remote",
+        remote.to_str().unwrap(),
+        "-f",
+        first_workflow.to_str().unwrap(),
+    ])
+    .current_dir(&first)
+    .assert()
+    .success()
+    .stdout(predicates::str::contains("1 succeeded"));
+
+    let first_cache = first.join(".oxymake/cache");
+    let second_cache = second.join(".oxymake/cache");
+    fs::create_dir_all(&second_cache).unwrap();
+    for file in ["cache.db", "cache.db-wal", "cache.db-shm"] {
+        let source = first_cache.join(file);
+        if source.exists() {
+            fs::copy(source, second_cache.join(file)).unwrap();
+        }
+    }
+
+    ox().args([
+        "run",
+        "--cache-remote",
+        remote.to_str().unwrap(),
+        "-f",
+        second.join("Oxymakefile.toml").to_str().unwrap(),
+    ])
+    .current_dir(&second)
+    .assert()
+    .success()
+    .stdout(predicates::str::contains("1 of 1 job(s) up-to-date"));
+
+    assert_eq!(
+        fs::read_to_string(second.join("output.txt")).unwrap(),
+        "portable cache key\n"
+    );
+}
+
 /// The operator handbook must be reachable through both surfaces — `ox guide`
 /// (runs the command) and `ox help guide` (clap long help) — and both must
 /// carry the stable anchor string from the handbook text.

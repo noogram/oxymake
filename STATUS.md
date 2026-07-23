@@ -51,6 +51,13 @@ The `ox` binary exposes 25 subcommands today (see `crates/ox-cli/src/lib.rs`).
   - `--cache-validation <strategy>` (values: `mtime`, `mtime+hash`, `hash`;
     default `mtime+hash`, content-verifying — ADR-006 amendment)
   - `--no-cache`
+
+  One `ox run` flag is shipped but **unstable**: `--cache-remote <dir>`
+  stores output blobs in and restores missing outputs from a shared
+  directory, forcing content-hash validation. It is a blob transport: the
+  local SQLite index mapping computation keys to outputs does not travel,
+  so a fresh checkout cannot restore from the shared directory alone. Its
+  semantics will evolve when a remote computation-key manifest lands.
 - **`ox init`** — `ox init [dir] [--force]`.
 - **`ox plan`**, **`ox status`**, **`ox lint`**, **`ox explain`**,
   **`ox query`**, **`ox logs`**, **`ox history`** — *names* and *exit codes*

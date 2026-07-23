@@ -465,7 +465,7 @@ repository" button reads [`CITATION.cff`](CITATION.cff)):
 ```bibtex
 @software{oxymake2026,
   author = {Sérié, Emmanuel},
-  title = {OxyMake: A Formally-Specified, Content-Addressable Workflow Engine},
+  title = {OxyMake: A Content-Addressed Workflow Engine},
   year = {2026},
   url = {https://github.com/noogram/oxymake}
 }

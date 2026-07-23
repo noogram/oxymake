@@ -38,7 +38,19 @@ ox run --no-cache               # Ignore the cache, re-run everything
 - `--report-json PATH` -- Write the NDJSON event stream to a file
 - `--note TEXT` -- Attach a note to this run
 - `--no-cache` -- Ignore cached outputs and re-execute
+- `--cache-remote DIR` -- Share output blobs through a directory blob store
+  (forces `hash` validation; see below)
 - `--executor EXEC` -- Choose executor: `local` (default), `slurm`, `ray`
+
+**`--cache-remote <dir>`** stores each job's output blobs in the given
+directory (content-addressed, BLAKE3-verified on restore) and restores
+missing outputs from it. Validation is always promoted to `hash` when the
+flag is set. The directory is a *blob transport*, not a complete portable
+cache: the local SQLite index under `.oxymake/cache/` that maps computation
+keys to output paths and hashes does not travel with the blobs, so a fresh
+checkout pointing at the same directory re-executes unless that local index
+is transferred too. A remote computation-key manifest that removes this
+requirement is future work. See [Caching](../concepts/cache.md).
 
 **Exit codes:**
 - `0` -- Success (all jobs succeeded or were cached)

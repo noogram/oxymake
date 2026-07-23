@@ -2003,6 +2003,7 @@ dependencies = [
  "open",
  "ox-api",
  "ox-cache",
+ "ox-cache-remote",
  "ox-codec-core",
  "ox-core",
  "ox-dashboard",

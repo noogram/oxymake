@@ -1,6 +1,6 @@
 cff-version: 1.2.0
 message: "If you use OxyMake in your research, please cite both the software and the paper below."
-title: "OxyMake: A Formally-Specified, Content-Addressable Workflow Engine"
+title: "OxyMake: A Content-Addressed Workflow Engine"
 type: software
 authors:
   - family-names: "Sérié"
@@ -27,7 +27,7 @@ keywords:
   - rust
 preferred-citation:
   type: article
-  title: "OxyMake: A Formally-Specified, Content-Addressable Workflow Engine"
+  title: "OxyMake: A Content-Addressed Workflow Engine"
   authors:
     - family-names: "Sérié"
       given-names: "Emmanuel"

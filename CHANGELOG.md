@@ -7,6 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- Paper title finalized as "OxyMake: A Content-Addressed Workflow Engine"
+  (dropping "Convergent," and "with Model-Checked State Protocols" from the
+  intermediate title, and superseding the original "Formally-Specified,
+  Content-Addressable" one). The title and its echoes are aligned across
+  `CITATION.cff`, `README.md`, the packaging metadata (npm, PyPI, Homebrew,
+  crates.io name-reservation crate), and the rebuilt PDF and arXiv tarball.
+
+### Added
+- `docs/paper/ERRATUM.md` — an append-only record of every paper claim
+  corrected after publication, with the superseded wording and the primary
+  source for each correction. The paper carries a matching "Revision note
+  (erratum)" section in its front matter.
+- `ox run --cache-remote <dir>` stores output blobs in and restores missing
+  outputs from a shared, content-verifying directory blob store. Remote-cache
+  validation is always content-hash based. The backend transports blobs only:
+  the local SQLite index that maps computation keys to output paths and hashes
+  does not travel, so restoring in a fresh checkout additionally requires that
+  local index (a remote computation-key manifest is future work).
+
+### Fixed
+- Cache keys now name workflow inputs relative to the workflow root (the
+  invocation directory), allowing identical checkouts at different absolute
+  paths to reuse cache entries. Key format v4: relative paths are interpreted
+  from the root, `.`/`..` components are resolved lexically, and existing
+  paths are canonicalized so a path escaping the root — by absolute spelling,
+  `..` prefix, or symlink — enters the key as a normalized absolute path.
+  Existing caches are cleanly invalidated by the format-version bump.
+- Cache documentation now describes the shipped directory remote cache rather
+  than unsupported S3 and GCS URLs.
+- Paper (revision v3.1): corrected external-system claims about CWL, `cwltool`,
+  Nextflow, Snakemake 7, Galaxy, Cromwell, WDL, Ray, Airflow/Argo, Bazel/Buck
+  and Nix/Guix against primary sources, and narrowed OxyMake's own delivery
+  claims (default `mtime+hash` verification depth, opt-in rather than
+  default shared cache, self-contained rather than statically-linked binary,
+  Kubernetes executor as planned). The standalone arXiv abstract, which had
+  gone stale against the paper, is regenerated from the corrected TeX abstract.
+- ADR-018's `cwltool` cache summary now reflects the current implementation,
+  including the `(size, mtime)` fallback when no checksum is available.
+
 ## [0.1.0] - 2026-06-17
 
 ### Added
