@@ -113,7 +113,8 @@ change. Each run must decide which results are still valid and which
 must be recomputed. This decision commonly derives from the state of
 one working copy, so it does not survive a new checkout, a new
 machine, or a new collaborator. We present OxyMake, a workflow engine
-that derives the decision from the declared content of the workflow
+delivered as a single Rust binary, that derives the decision from the
+declared content of the workflow
 itself: re-running converges to the declared outputs, performs only
 the work whose inputs changed, and gives the same answer in any copy
 of the project. The same workflow runs on a laptop or on a cluster,
@@ -2223,7 +2224,7 @@ appears in some neighbour.
 \centering\footnotesize\setlength{\tabcolsep}{4pt}
 \begin{tabular}{@{}lllll@{}}
 \toprule
-\textbf{System} & \textbf{Surface} & \textbf{Rebuild decision} & \textbf{Deployment} & \textbf{Machine iface} \\
+\textbf{System} & \textbf{Surface} & \textbf{Rebuild decision} & \textbf{Deployment} & \textbf{Machine interface} \\
 \midrule
 GNU Make            & file rules       & live mtime            & binary            & no \\
 Snakemake~7         & file rules (Py)  & per-tree provenance   & Python runtime    & partial \\
@@ -2232,7 +2233,7 @@ cwltool + Arvados   & CWL standard     & content-sensitive cache & platform     
 Bazel / Buck2       & build targets    & content-addressed     & daemon            & partial \\
 Airflow/Prefect/Dagster & DAG-as-code  & task-instance memo    & service           & yes \\
 Dask / Ray          & task/actor API   & (execution substrate) & runtime/cluster   & API \\
-\textbf{OxyMake}    & file rules (TOML)& content-derived key   & single binary     & yes (NDJSON, MCP) \\
+\textbf{OxyMake}    & file rules (TOML)& content-derived key   & single Rust binary & yes (NDJSON, MCP) \\
 \bottomrule
 \end{tabular}
 \caption{Positioning on four axes. Slurm is not a row: it is an
