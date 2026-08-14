@@ -7,7 +7,7 @@
 \usepackage{graphicx}
 \usepackage{booktabs}
 \usepackage{multirow}
-\usepackage[hypertexnames=false]{hyperref}
+\usepackage[hypertexnames=false,hidelinks]{hyperref}
 \usepackage{url}
 \usepackage{listings}
 \usepackage{xcolor}
@@ -108,20 +108,28 @@
 % ABSTRACT
 % ============================================================================
 \begin{abstract}
-Research workflows are executed repeatedly as code, data, and machines
-change. Each run must decide which results are still valid and which
-must be recomputed. This decision commonly derives from the state of
-one working copy, so it does not survive a new checkout, a new
-machine, or a new collaborator. We present OxyMake, a workflow engine
-delivered as a single Rust binary, that derives the decision from the
-declared content of the workflow
-itself: re-running converges to the declared outputs, performs only
-the work whose inputs changed, and gives the same answer in any copy
-of the project. The same workflow runs on a laptop or on a cluster,
-driven by a person or by a program. We describe the design, compare
-scheduling cost and repeated execution with an established engine, and
-analyze the safety of concurrent runs. The guarantees cover the inputs
-a workflow declares.
+A workflow engine's job is to decide which results survive a change to
+code, data, or machine. Almost every engine answers with information
+local to where the work happened---a file timestamp, or a provenance
+record written beside one copy of the project---so the answer is
+worthless anywhere else: the next machine, the next collaborator, the
+next checkout recomputes what is already correct. Engines that decide by
+content instead usually buy the property with infrastructure: a
+background service, or a store outside the project.
+
+OxyMake is built on the position that the validity of a result should be
+a property of the work, not of the place it ran, and that this need not
+cost an operational system. A result's identity is a pure function of
+what its rule declares: command text, inputs, parameters, environment.
+On a given platform and version of the tool, the same declaration yields
+the same identity in every copy of a project, decided by a single Rust
+binary with nothing running behind it. Identity is not reuse---results
+must still travel---but it is what makes reuse decidable at all.
+
+We describe the design, measure repeated execution, and model-check
+three specifications of the state layer over a bounded space of states.
+The guarantees reach exactly as far as the workflow declares, and no
+further.
 \end{abstract}
 
 % ============================================================================
@@ -130,16 +138,19 @@ a workflow declares.
 \section{Introduction}
 \label{sec:introduction}
 
-A research workflow is not run once. A user edits a rule, re-runs;
-a job crashes, they re-run; they check the project out on another
-machine, or move it from a laptop to a cluster, and run it again. The
-question an engine answers on each of these runs is which declared
-outputs already have a valid derivation and which must be rebuilt.
+The validity of a result should be a property of the work, not of the
+place it ran. Most engines decide otherwise. Asked which declared
+outputs still have a valid derivation, they answer from information
+local to one working tree---a file timestamp, or a provenance record
+written beside one copy of the project---so the answer does not survive
+the move to a second machine, a fresh checkout, or a collaborator, each
+of which starts with nothing and recomputes what is already correct.
 OxyMake\footnote{Source code and project site:
 \url{https://github.com/noogram/oxymake}
 (\url{https://oxymake.noogram.dev}). Repository paths cited in this
 paper refer to tag \code{v0.1.0}.}
-is built around that question. \code{ox run} ensures the declared
+takes the opposite position, and takes it with no operational system
+behind it. \code{ox run} ensures the declared
 outputs exist, executing
 only the jobs whose outputs are missing or out of date. The operation is
 convergent: repeating it performs only the work that remains, and on an
@@ -149,6 +160,9 @@ common filter surface---\code{ox run} (converge), \code{ox cancel}
 \code{ox status} (observe) (\S\ref{sec:idempotent}).
 
 \paragraph{Single-binary execution of a declarative file.}
+Requiring no operational system is a design constraint rather than a
+packaging property: it is what lets the key be recomputed in a checkout
+nobody provisioned.
 The workflow is a declarative TOML file; a three-line rule with
 \code{input}, \code{output}, and \code{shell} is a valid workflow. It is
 executed by a single 14.9\,MB Rust binary that bundles no interpreter
@@ -163,45 +177,33 @@ performance is measured (\S\ref{sec:evaluation}).
 Every command accepts \code{--json}; when it is given, output is
 newline-delimited JSON (NDJSON). Gate approval is a command rather than a terminal prompt,
 so a script or an AI agent drives the same operations a human does
-(\S\ref{sec:agent-api}). An MCP server (\code{ox serve --mcp}) exposes
-the engine over the Model Context Protocol. This is an
+(\S\ref{sec:agent-api}). An MCP server (\code{ox serve --mcp}) exposes a
+read-only inspection subset of the engine over the Model Context
+Protocol. This is an
 agent-compatible interface; we do not measure agent task success and
 make no claim that OxyMake improves it.
 
 \paragraph{A content-derived rebuild decision.}
-The computation key is a function of declared content. Each job's cache
-key (Eq.~\ref{eq:cache-key}) is a BLAKE3 hash of the rule source, the
-declared input contents, the parameters, the environment specification,
-the shell, and the platform. Snakemake~7 records rebuild provenance
-per working tree~\cite{kosterSnakemakeScalableBioinformatics2012,molderSustainableDataAnalysis2021};
-because that record is bound to one tree, a fresh clone starts without
-it and must recompute every output---a consequence of the record's
-scope, not a scenario we benchmark. A
-content-derived key holds no per-tree state: when every component of
-the declared specification in Eq.~\ref{eq:cache-key}---rule source,
-input contents, parameters, environment, shell---is unchanged, the
-\emph{computation key} is identical in any checkout on the same
-platform. The key alone does not fix the \emph{rebuild decision}: two
-checkouts take the same decision when they also agree on the local
-key-to-output index (SQLite state that is not shipped with the cached
-artefact bytes), the outputs materialised on disk, and the selected
-validation policy (\S\ref{sec:content-addressable}). Those are the
-preconditions; the rest of the paper claims key identity and
-cross-references them. Each of the following consequences is measured,
-specified, or argued from the key's definition.
-The key is machine-independent: for in-root inputs it is identical on
-any machine of the same OS and architecture, where a per-tree record is
-tied to one tree (\S\ref{sec:content-addressable}). The key contains
-no term derived from output content; an output whose bytes changed on
-disk is detected by the validation policy and the local key-to-output
-index---under the \code{hash} policy every byte is re-read---where a
-provenance record trusts it (\S\ref{sec:content-addressable}).
-The \code{ox.lock} plan of record suffices to audit the declared graph
-and every key derivation; auditing the rebuild decision a given
-checkout actually takes additionally requires that checkout's
-\emph{live reuse state}---the local key-to-output index, the
-materialised outputs, and the selected validation policy
-(\S\ref{sec:fair-eval}).
+Each job's cache key (Eq.~\ref{eq:cache-key}) is a BLAKE3 hash of the
+rule source, the declared input contents, the parameters, the
+environment specification, the shell, and the platform; it records no
+state private to the working tree the job ran in. When that declared
+specification is unchanged and its inputs lie inside the workflow root,
+the \emph{computation key} is therefore identical in any checkout on
+the same platform and under the same key-format version ($v$ in
+Eq.~\ref{eq:cache-key}).
+Snakemake~7 instead records rebuild provenance per working
+tree~\cite{kosterSnakemakeScalableBioinformatics2012,molderSustainableDataAnalysis2021};
+bound to one tree, that record does not travel, so a fresh clone starts
+without it even when equivalent outputs have been restored from
+elsewhere---a consequence of the record's scope, not a scenario we
+benchmark. What a shared key buys is decidability rather than reuse.
+Whether two checkouts take the same \emph{rebuild decision} depends
+further on their live reuse state---the local key-to-output index, the
+outputs materialised on disk, and the selected validation
+policy---which \S\ref{sec:content-addressable} treats, along with what
+does and does not travel between checkouts in v0.1.0. What the shipped
+system establishes across checkouts is key identity.
 
 \paragraph{Scope of the content-key claim.}
 The key is sound over declared inputs only. OxyMake does not sandbox
@@ -215,10 +217,14 @@ runners, and \code{hash} re-reads every byte
 (\S\ref{sec:content-addressable}). Timestamps serve here as an
 experimental control: our benchmark bumps a shared input's
 mtime without changing a byte---what a \code{git checkout} does to a
-working tree---and counts re-runs. Snakemake~7.32.4 re-runs zero jobs,
-because its recorded provenance ignores live timestamps; a pure-mtime
-policy re-runs the full downstream radius; the \code{mtime+hash} default
-re-runs zero (\S\ref{sec:git-checkout-bench}). The phantom re-run is
+working tree---and counts re-runs. Two of the three outcomes are
+measured: Snakemake~7.32.4 re-runs zero jobs, because its recorded
+provenance ignores live timestamps, and a pure-mtime policy re-runs the
+full downstream radius. The third is true by construction and the
+benchmark only confirms it: under the \code{mtime+hash} default a
+changed timestamp triggers a re-hash, the re-hash finds the same bytes,
+and no job can be scheduled---zero re-runs
+(\S\ref{sec:git-checkout-bench}). The phantom re-run is
 real for GNU Make~\cite{feldmanMakeProgram1979} and for any engine's
 pure-mtime fast path, and is not a difference from the benchmarked
 Snakemake.
@@ -237,6 +243,35 @@ safety properties of the concurrent state protocol
 (\S\ref{sec:named-invariants}); this is the hazard class for which
 Amazon Web Services adopted TLA+ at production
 scale~\cite[pp.~66--73]{newcombeHowAmazonWebServices2015}.
+
+\paragraph{Why a new engine.}
+No single property above is new. The combination is new among the
+systems we compare (Table~\ref{tab:landscape},
+\S\ref{sec:related}); we are not aware of a system outside that set
+that combines them, but we have not run a systematic survey. We chose
+to build the combination in rather than retrofit it. In the file-rule
+engines and build systems closest to OxyMake's design point---GNU
+Make, Snakemake, Bazel, Buck2, and Nix---the
+default rebuild decision is entangled with a state model or a
+deployment premise that an adaptation would have to move: GNU Make's
+default decision reads live mtimes, per-tree state by construction;
+Snakemake's
+default decision reads a per-tree provenance record, and its opt-in
+between-workflow cache (\code{--cache}) grafts a content-derived key
+beside that record as a per-rule side channel rather than replacing
+the default (\S\ref{sec:file-based}); Bazel, Buck2, and Nix take the
+daemon or the store as an operating premise. (DVC is the acknowledged
+exception: its default \code{dvc repro} decision already reads content
+hashes with no daemon, over pipeline stages rather than wildcard file
+rules---\S\ref{sec:file-based}.) Making a key that is a pure function
+of declared content---holding no per-tree state and requiring no
+external infrastructure---the \emph{default identity for cached
+computations} would in each case mean moving that boundary. That
+identity is not by itself the rebuild decision: as above, the decision
+also consults the local key-to-output index, the outputs materialised
+on disk, and the selected validation policy. We have not attempted
+those adaptations; building the engine around the key is a design
+choice, not an impossibility claim.
 
 \paragraph{Contributions.}
 This paper contributes:
@@ -257,7 +292,8 @@ This paper contributes:
 \item \textbf{A machine-readable execution interface.} Structured
   NDJSON events and command-based gate approval let a program or agent
   consume and drive a run without scraping terminal output; an MCP
-  server exposes the same operations (\S\ref{sec:agent-api}).
+  server exposes a read-only inspection subset of these operations
+  (\S\ref{sec:agent-api}).
 \item \textbf{Content-addressed caching by default.} The cache key is a
   BLAKE3 hash of rule source, declared input contents, parameters,
   environment, shell, and platform (Eq.~\ref{eq:cache-key}); the key is
@@ -373,6 +409,22 @@ churn unmoved (verified at every bench scale,
 \S\ref{sec:git-checkout-bench}); the record is bound to a single
 working tree and does not validate output content, so it
 is not valid on another machine and does not detect on-disk corruption.
+Snakemake also ships an opt-in between-workflow cache (\code{--cache},
+with per-rule \code{cache: True}) whose entry name is derived from
+rule, input, and software-environment content; it is a per-rule side
+channel next to the provenance record, and does not replace the
+default rebuild decision.
+
+A neighbouring family versions data pipelines rather than executing
+file rules: DVC~\cite{dvc} records content hashes of stage inputs and
+outputs in \code{dvc.lock}, a file that travels with the repository,
+and takes the \code{dvc repro} rebuild decision from those hashes with
+no daemon and an in-project cache. It is a Python runtime layered on
+Git rather than a wildcard-driven file-rule engine, and its machine
+interface does not extend to a structured event stream, so it does not
+occupy the combination claimed here
+(\S\ref{sec:discussion})---but it shows that a content-hash
+rebuild decision without a daemon predates this work.
 
 Nextflow~\cite{diTommasoNextflowEnablesReproducible2017} takes a
 dataflow-oriented approach with channels connecting processes, offering
@@ -461,7 +513,7 @@ caches on content---though the analogy is not an identity: Bazel
 supports action-time input discovery (\emph{discovered inputs}), so its
 evaluation graph is not fixed before execution in the way an OxyMake
 JobGraph is. OxyMake replaces Bazel's Starlark~\cite{starlark}
-configuration layer with declarative TOML and adding
+configuration layer with declarative TOML and adds
 domain-specific features (wildcard expansion, environment management, gates)
 for scientific workflows.  Meta's Buck2~\cite{buck2} pushes this design further
 with a fully content-addressed execution model built on the Starlark
@@ -870,11 +922,14 @@ Kubernetes  & \code{--executor k8s}   & K8s Job via kube-rs \emph{(not yet imple
 \end{table}
 
 \noindent All entries require the \code{.oxymake/} state directory on
-local disk. On a cluster the scheduler runs on the submission node and
-holds the SQLite state there; compute nodes run jobs and never touch the
-database. Multi-node coordination across NFS, Lustre, or GPFS, and
-coordination across multiple submission nodes, are future work
-(\S\ref{sec:limitations}). The evaluation is single-machine; no Slurm or
+local disk. It is created in the process working directory and cannot be
+relocated, so in practice the requirement is on the \emph{workspace}: the
+directory \code{ox run} is invoked from must be on local disk, together
+with the inputs and outputs resolved relative to it. On a cluster the
+scheduler runs on the submission node and holds the SQLite state there;
+compute nodes run jobs and never touch the database. Multi-node
+coordination across NFS, Lustre, or GPFS, and coordination across
+multiple submission nodes, are future work (\S\ref{sec:limitations}). The evaluation is single-machine; no Slurm or
 Ray run is measured (\S\ref{sec:evaluation}).
 
 \subsection{Named Invariants and Formal Specifications}
@@ -1000,8 +1055,12 @@ or GPFS---shared filesystems where one might naturally point several
 sessions at one workspace---file locking is unreliable and the premise
 is \emph{false}. This is why OxyMake requires \code{.oxymake/} on
 local disk (\S\ref{sec:limitations}): the requirement is what
-discharges the axiom. If the state database is run on NFS, the
-premise fails and INV-2's model-checked guarantee no longer applies.
+discharges the axiom. It is a requirement on the operator, not a
+mechanism the engine provides---\code{.oxymake/} is created in the
+working directory and there is no way to place it elsewhere, so
+satisfying it means putting the whole workspace on local disk. If the
+state database is run on NFS, the premise fails and INV-2's
+model-checked guarantee no longer applies.
 
 \paragraph{Verified vs.\ assumed.}
 Table~\ref{tab:verified-vs-assumed} draws the line in one place.
@@ -1650,14 +1709,22 @@ For Rust embedding, the scheduler exposes a typed
 values, enabling in-process integration without stdout parsing.
 
 \paragraph{MCP server.}
-The same operations are exposed over the Model Context Protocol through
-\code{ox serve --mcp}, an stdio server (crate \code{ox-mcp}) that lets an
-MCP-speaking agent call \code{run}, \code{plan}, \code{status}, and gate
-approval as tools and read the NDJSON event stream. This is an interface,
-not a durability layer: it adds no queueing, retry, or cross-host
-recovery, and an agent driving external side effects must supply its own
-idempotency and approval. We report the interface as implemented and do
-not evaluate agent task performance over it.
+A subset of these operations is exposed over the Model Context Protocol
+through \code{ox serve --mcp}, an stdio server (crate \code{ox-mcp}).
+The tool catalogue is deliberately narrow: eight tools, of which seven are
+read-only inspection---\code{ox\_status}, \code{ox\_plan}, \code{ox\_dag},
+\code{ox\_logs}, \code{ox\_history}, \code{ox\_lint},
+\code{ox\_explain}---plus one mutating tool, \code{ox\_clean}, which
+removes cached artifacts and state. Notably there is \emph{no}
+\code{ox\_run} tool and no gate-approval tool: an agent can plan,
+inspect, and explain a workflow over MCP, but starting execution and
+approving a gate remain human- or script-driven through the CLI. This is
+a conservative default rather than a limitation of the protocol, and the
+catalogue is pinned by a test so it cannot widen silently. The server is
+an interface, not a durability layer: it adds no queueing, retry, or
+cross-host recovery, and an agent driving external side effects must
+supply its own idempotency and approval. We report the interface as
+implemented and do not evaluate agent task performance over it.
 
 \subsection{State Management}
 
@@ -1686,8 +1753,12 @@ Three logically separated state concerns share a physical SQLite database\linebr
 \end{description}
 
 Schema versioning uses \code{PRAGMA user\_version} with automatic
-migrations from the first release, ensuring no \code{state.db} is ever
-left in an inconsistent state.
+migrations from the first release; a migration runs inside a
+transaction, so on local disk---where the
+\code{StateDbAtomicCommit} axiom holds (\S\ref{sec:named-invariants})---a
+\code{state.db} is never left half-migrated. On a shared filesystem
+that premise fails and the property is not claimed
+(\S\ref{sec:limitations}).
 
 % ============================================================================
 % 6. EVALUATION
@@ -1975,20 +2046,43 @@ auto-detected from file extensions (\code{.smk}, \code{.wdl}) or content
 inspection.
 
 \paragraph{Snakemake.}
-We validated Snakemake translation on four workflow fixtures of
-increasing complexity: a minimal two-rule pipeline, a
-bioinformatics variant-calling workflow with five rules and two wildcards,
-a multi-sample RNA-seq analysis with conditional rules, and a
-scatter/gather aggregation pattern. The fixtures are in the public repository under
-\code{crates/ox-translate/tests/fixtures/}. All four translated without manual intervention, and the
-equivalence oracle is the output file tree: the translated Oxymakefile
-produced the same set of output paths as the Snakemake source. This
-checks structural translation, not byte-identical outputs of
-nondeterministic commands.  Translation handles rule definitions, wildcard expansion,
-\code{params}/\code{threads}/\code{resources} blocks, and
-\code{configfile} references.  Unsupported Snakemake features (embedded
-Python expressions, \code{run:} blocks with arbitrary code) emit
-structured warnings with migration guidance.
+We exercised Snakemake translation on four workflows of increasing
+complexity: an eight-rule tutorial pipeline over three samples, a
+six-rule RNA-seq counting workflow over four samples driven by a
+\code{configfile}, a six-rule CSV ETL pipeline over three sources, and a
+five-rule multi-sample QC workflow over five samples. The workflows, their
+translated Oxymakefiles, and the full result log are in the public
+repository under \code{benchmark/snakemake-compat/} (see
+\code{RESULTS.md} there). The equivalence oracle is the output file tree:
+the translated Oxymakefile produced the same set of output paths as the
+Snakemake source. This checks structural translation, not byte-identical
+outputs of nondeterministic commands.
+
+\textbf{None of the four ran unmodified.} All four executed to completion
+only \emph{after} manual fixes to the translated Oxymakefile, between
+three and five edits per workflow. The recurring interventions were:
+adding \code{expand = "product"} to rules that aggregate over wildcards
+(the translator escalates \code{expand()} calls that reference a
+Python-scoped variable instead of resolving them); replacing
+\code{\{input.name\}} with unnamed \code{\{input\}} in aggregation rules,
+because a named input under \code{expand} substitutes only the first
+matching path; rewriting Snakemake's \code{\{\{\}\}} brace escaping;
+replacing bash-only shell constructs, since OxyMake executes under
+\code{/bin/sh}; and naming targets explicitly, because rules are stored in
+a \code{BTreeMap} so the default target is the alphabetically first rule
+rather than \code{rule all}. Two of the four translated with no escalation
+at all and still needed four hand edits each, so a clean translation
+report is not evidence of a runnable workflow.
+
+Translation handles rule definitions, wildcard expansion,
+\code{params}/\code{threads}/\code{resources} blocks,
+\code{wildcard\_constraints}, and \code{configfile} references.
+Unsupported Snakemake features (embedded Python expressions, \code{run:}
+blocks with arbitrary code, dynamic thread counts, \code{wrapper},
+\code{shadow}/\code{group}/\code{envmodules}) emit structured warnings or
+escalations with migration guidance. The honest summary is that
+\code{ox translate} is a migration aid that removes most of the mechanical
+work, not a drop-in transpiler.
 
 \paragraph{WDL (Workflow Description Language).}
 WDL~\cite{vossWDLCromwell2017} is the standard workflow language in genomics,
@@ -2100,7 +2194,7 @@ Idempotent convergent execution  & SQLite coordination \\
 Tags and \code{--where} filter & Implicit + explicit tags \\
 Conditional guards (\code{when}) & DAG-time evaluation \\
 Lockfile (\code{ox.lock})      & Re-derivable plan of record \\
-Snakemake translator             & \code{ox translate} \\
+Snakemake translator             & \code{ox translate}, \code{ox export snakemake} \\
 WDL translator                   & \code{ox translate}, \code{ox export wdl} \\
 TUI monitor (\code{ox top})    & Real-time dashboard \\
 Web dashboard                    & HTML status page \\
@@ -2193,7 +2287,7 @@ broader bioinformatics and genomics ecosystems.
 DAG resolution @ 1{,}001 jobs   & 10\,ms \\
 DAG resolution @ 10{,}001 jobs  & 69\,ms \\
 DAG res. speedup @ 10{,}001 jobs & 33.3$\times$ \\
-Startup time               & 7\,ms \\
+Startup time (\code{ox --help}) & 6\,ms \\
 Binary size (default)      & 14.9\,MB \\
 Test suite                 & \metricTests~passing \\
 \bottomrule
@@ -2214,9 +2308,9 @@ Test suite                 & \metricTests~passing \\
 Table~\ref{tab:landscape} places OxyMake against neighbouring systems on
 four axes: the authoring surface, how the rebuild decision is made, how
 the system is deployed, and whether it exposes a machine-readable
-interface. No single neighbouring system combines all four properties
+interface. No listed system combines all four properties
 OxyMake combines---a file-rule surface, a
-content-derived rebuild decision, a single daemon-free binary, and a
+content-derived computation key as the default identity, a single daemon-free binary, and a
 structured machine interface---though each property individually
 appears in some neighbour.
 
@@ -2228,18 +2322,28 @@ appears in some neighbour.
 \midrule
 GNU Make            & file rules       & live mtime            & binary            & no \\
 Snakemake~7         & file rules (Py)  & per-tree provenance   & Python runtime    & partial \\
+DVC                 & pipeline stages  & content hashes        & Python runtime    & partial \\
 Nextflow            & channels (Groovy)& path/size/mtime       & JVM runtime       & partial \\
 cwltool + Arvados   & CWL standard     & content-sensitive cache & platform        & varies \\
 Bazel / Buck2       & build targets    & content-addressed     & daemon            & partial \\
 Airflow/Prefect/Dagster & DAG-as-code  & task-instance memo    & service           & yes \\
 Dask / Ray          & task/actor API   & (execution substrate) & runtime/cluster   & API \\
-\textbf{OxyMake}    & file rules (TOML)& content-derived key   & single Rust binary & yes (NDJSON, MCP) \\
+\textbf{OxyMake}    & file rules (TOML)& content key + index   & single Rust binary & yes (NDJSON, MCP) \\
 \bottomrule
 \end{tabular}
-\caption{Positioning on four axes. Slurm is not a row: it is an
+\caption{Positioning on four axes. The rebuild-decision column names
+  what each engine's default decision reads; for OxyMake the
+  content-derived key is the checkout-independent identity of a
+  computation, and the decision additionally consults the local
+  key-to-output index, the materialised outputs, and the validation
+  policy (\S\ref{sec:content-addressable}). Slurm is not a row: it is an
   execution substrate OxyMake targets (\code{--executor slurm}), not a
   competitor. Dask and Ray are likewise substrates the executor
-  backends consume rather than engines OxyMake replaces.}
+  backends consume rather than engines OxyMake replaces. Snakemake's
+  opt-in \code{--cache} adds a content-keyed between-workflow cache
+  beside the per-tree record without changing the default rebuild
+  decision (\S\ref{sec:file-based}); DVC versions pipeline stages
+  rather than expanding wildcard file rules (\S\ref{sec:file-based}).}
 \label{tab:landscape}
 \end{table}
 
@@ -2341,11 +2445,18 @@ auditable \code{ox.lock} record.
 SQLite WAL mode does not work on NFS, Lustre, or GPFS---precisely the
 filesystems used on HPC clusters where Slurm runs. OxyMake requires
 \code{.oxymake/} to reside on local disk; the scheduler runs on the
-submission node, and compute nodes never touch SQLite. Multi-node
-coordination (multiple submission nodes) requires a future coordination
-layer. This local-disk requirement is also the discharge of the
-\code{StateDbAtomicCommit} axiom that the model-checked multi-session
-guarantee rests on (\S\ref{sec:named-invariants}).
+submission node, and compute nodes never touch SQLite. The requirement
+is currently unassisted: \code{.oxymake/} is created in the working
+directory, and no flag, config key, or environment variable relocates
+it, so the state database cannot be separated from the workspace whose
+inputs and outputs are resolved against the same directory. An operator
+who needs the project tree on shared storage has no supported way to
+keep only the database local; a relocatable state directory is future
+work alongside multi-node coordination (multiple submission nodes),
+which requires a future coordination layer. This local-disk requirement
+is also the discharge of the \code{StateDbAtomicCommit} axiom that the
+model-checked multi-session guarantee rests on
+(\S\ref{sec:named-invariants}).
 
 \paragraph{Cache-key residual exclusions.}
 Two ingredients are deliberately excluded from the cache key
@@ -2456,18 +2567,21 @@ benefit is that no single language has to compromise.
 \section{Conclusion}
 \label{sec:conclusion}
 
-We have presented OxyMake, a workflow engine built around a convergent
-contract: \code{ox run} ensures the declared outputs exist, runs only
-the jobs that are missing or out of date, and is safe to repeat. The
+We have presented OxyMake, a workflow engine built on the position that
+the validity of a result is a property of the work rather than of the
+place it ran, and that this need not cost an operational system. The
 computation key is a function of declared content rather than a per-tree
 record: when the entire declared specification---rule source, inputs,
 parameters, environment, shell, platform---is unchanged, the key is
-identical in any checkout; the rebuild decision follows under
-the preconditions stated in \S\ref{sec:introduction}. The workflow is
+identical in any checkout under the same key-format version. Identity
+is not reuse; the rebuild decision a checkout takes also consults its
+local key-to-output index, its materialised outputs, and the selected
+validation policy (\S\ref{sec:content-addressable}). The workflow is
 a declarative TOML file
 executed by a single 14.9\,MB Rust binary with no daemon, and every
 command can emit structured NDJSON with \code{--json} for a human or a
-program.
+program. \code{ox run} ensures the declared outputs exist, runs only
+the jobs that are missing or out of date, and is safe to repeat.
 
 The measured costs and benefits are bounded. On a
 synthetic 10,001-job workflow on one machine, DAG resolution takes 69\,ms
@@ -2549,6 +2663,7 @@ outputs are in the public repository under \code{spec/tla/}.
 % ============================================================================
 % REFERENCES
 % ============================================================================
+\clearpage
 \bibliographystyle{plain}
 {\hbadness=10000          % suppress underfull from long author names
 \bibliography{references}

@@ -346,5 +346,115 @@ Source: v3 implementation section (self-contained-binary wording).
 
 ---
 
+## D. Claims contradicted by this repository (post-v3 self-review, 2026-07-25)
+
+Sections A--C were driven by an external review of the paper's claims about
+*other* systems. This section records the same class of error found by turning
+the check inward: published claims that the OxyMake repository itself
+contradicts. Each was re-verified against the code before the text was changed;
+in every case the text was corrected, never the code. The first three were
+found on 2026-07-25; the fourth was added on 2026-08-10 after a review panel
+raised it and it was verified against the code
+(`ops/audits/panel-findings-verification-2026-08.md`).
+
+**The MCP tool surface.**
+*Superseded wording:* "`ox serve --mcp` … lets an MCP-speaking agent call
+`run`, `plan`, `status`, and gate approval as tools and read the NDJSON event
+stream." Elsewhere: "an MCP server exposes the same operations."
+
+`crates/ox-mcp/src/tools.rs` registers exactly eight tools --- `ox_status`,
+`ox_plan`, `ox_dag`, `ox_logs`, `ox_history`, `ox_lint`, `ox_explain`,
+`ox_clean` --- a catalogue pinned by a test in the same file. There is no
+`ox_run` tool, no gate-approval tool, and no event-stream tool. The real
+surface is read-only inspection plus one destructive `ox_clean`; starting a run
+and approving a gate stay on the CLI. This is a *more* conservative posture
+than the one the paper announced, so the correction strengthens the claim it
+replaces. The same overclaim was corrected in `AGENTS.md`/`CLAUDE.md`, `ox
+guide` (`crates/ox-cli/src/commands/guide.rs` and `docs/man/ox-guide.1`), a
+stale "Execute a workflow with ox_run" hint in `ox-mcp`, and a comment in
+`ox-cli` claiming a nonexistent `ox_subscribe` MCP tool. `README.md` already
+listed the eight tools correctly.
+Source: `crates/ox-mcp/src/tools.rs`.
+
+**Snakemake translation required no manual intervention.**
+*Superseded wording:* "All four translated without manual intervention."
+
+`benchmark/snakemake-compat/RESULTS.md` states the opposite: it carries a "What
+needs manual fixes" table, a per-workflow "Manual fixes" column with counts of
+5, 4, 3 and 4, and the summary line "All 4 workflows execute to completion
+after manual fixes." Two of the four translated with no escalation at all and
+still needed four hand edits each. The paper now names the recurring
+interventions --- missing `expand = "product"` on aggregation rules,
+`{input.name}` returning only the first path under `expand`, `{{` brace
+escaping, `/bin/sh` versus `/bin/bash`, and `BTreeMap` rule ordering defeating
+`rule all` --- and describes `ox translate` as a migration aid rather than a
+drop-in transpiler. The paragraph also previously pointed at
+`crates/ox-translate/tests/fixtures/` and described four workflows that are not
+there; it now cites `benchmark/snakemake-compat/`, where the four evaluated
+workflows, their translated Oxymakefiles, and the result log actually live.
+Source: `benchmark/snakemake-compat/RESULTS.md`.
+
+**The `tags` rule field is an array of strings.**
+*Superseded wording:* `docs/book/src/reference/format.md` documented `tags` as
+"Array of strings", and the bioinformatics cookbook --- the book's flagship
+tutorial --- used `tags = ["stage.align", "compute-heavy"]`.
+
+`crates/ox-format/src/parse.rs:255` declares `tags: BTreeMap<String, String>`.
+The array form is a hard TOML parse error (`invalid type: sequence, expected a
+map`), so the tutorial's workflow could not be loaded at all. The reference and
+both cookbooks now use the key/value form, and `docs/book/src/concepts/tags.md`
+was rewritten: it had also documented `ox run --tag`, `ox run --exclude-tag`
+and `ox dag --group-by tag`, none of which select jobs (there are no such `run`
+flags, and `dag`'s `--group-by` is accepted but unused). Tags are a labelling
+and observation mechanism, surfaced in `ox plan --json` and in `job_queued`
+events filterable with `ox subscribe --where KEY=VALUE`.
+
+Verifying the cookbooks end-to-end exposed four further defects in them, all
+now fixed and both cookbooks confirmed to lint and run to completion (22/22 and
+40/40 jobs): an ambiguous producer between `call_variants` and `merge_vcf`
+(fixed with `wildcard_constraints`), two aggregation rules missing `expand =
+"product"`, a `chromosomes` config key that cannot resolve a `{chrom}` wildcard
+(only the exact name or its plural resolves), TOML-escaped `\t`/`\n` breaking
+an embedded `awk` program, a multi-line inline table (invalid TOML) in the
+climate cookbook, and that cookbook's use of `asorti`, a GNU awk extension
+absent from the BSD awk on macOS. The stale sample `ox plan` transcripts in both
+cookbooks were replaced with real output.
+Source: `crates/ox-format/src/parse.rs:255`; `ox lint` and `ox run` on both
+cookbook workflows.
+
+**The local-disk requirement on `.oxymake/` is satisfiable by relocating the
+state directory.**
+*Superseded wording:* "OxyMake requires `.oxymake/` to reside on local disk;
+the scheduler runs on the submission node, and compute nodes never touch
+SQLite." The book's Slurm chapter drew the corresponding deployment
+explicitly: a diagram placing `state.db` on the submission node's local disk
+and `project/` — inputs and outputs — on the shared filesystem.
+
+That split has no code path. `.oxymake` is a bare relative `PathBuf` at every
+site that opens state, cache, logs or events
+(`crates/ox-cli/src/commands/run.rs:1018`, `:1101`, `:1423`, `:1436`;
+`clean.rs:58`; `invalidate.rs:77`; `status.rs:84`; `init.rs:56`), and no flag,
+config key, or environment variable feeds any of them. `OXYMAKE_CACHE_DIR`,
+documented in the book's configuration reference, appears in no `.rs` file at
+all — nor do `OXYMAKE_JOBS`, `OXYMAKE_EXECUTOR` and `OXYMAKE_LOG` from the same
+table, nor the `.oxymake/config.toml` the chapter described as the store of
+project-level defaults. Because the state directory *and* the rule's inputs and
+outputs are all resolved relative to the process working directory, the two
+cannot be separated: putting the project on a shared filesystem necessarily
+puts `state.db` there too.
+
+The requirement itself is not false, and the discharge of `StateDbAtomicCommit`
+still stands — but it is a requirement on the operator to run the whole
+workspace from local disk, not a facility the engine offers. The paper now says
+so, and names the absence of a relocation mechanism as a limitation rather than
+implying one exists. The book's Slurm diagram and configuration reference were
+corrected to match, and the three unimplemented environment variables were
+removed from the reference table.
+Source: `crates/ox-cli/src/commands/run.rs:1101`; full evidence and the
+reproduction (`OXYMAKE_CACHE_DIR` set, `.oxymake/` still created in the working
+directory) in `ops/audits/panel-findings-verification-2026-08.md`.
+
+---
+
 *Maintained by Noogram. Corrections and counterexamples are welcome as issues
 on `noogram/oxymake`.*
