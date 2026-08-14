@@ -28,9 +28,10 @@ Where the canonical docs live:
                       Definition of Done and the contribution workflow.
 
 Machine interfaces: most subcommands accept --json; `ox run --json` emits
-NDJSON events. `ox serve --mcp` exposes the engine over the Model Context
-Protocol (stdio) so an agent can drive `ox` directly. See `ox help` for the
-full list.
+NDJSON events. `ox serve --mcp` exposes the engine's inspection commands over
+the Model Context Protocol (stdio) so an agent can plan, inspect and explain a
+workflow; it exposes no tool that starts a run or approves a gate. See
+`ox help` for the full list.
 
 Contributing? Read CONTRIBUTING.md for the Definition of Done and workflow.
 ";

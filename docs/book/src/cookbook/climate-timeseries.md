@@ -123,10 +123,7 @@ paste -d, data/indices/*_{metric}.csv \
 
 # ── Stage 5: Cumulative index score ──────────────────────────
 [rule.score]
-input  = {
-  weights  = "data/composite/{metric}_index.csv",
-  readings = "data/readings/{station}.csv"
-}
+input  = { weights = "data/composite/{metric}_index.csv", readings = "data/readings/{station}.csv" }
 output = ["data/score/{metric}_score.csv"]
 tags   = { stage = "score" }
 shell  = """
@@ -138,17 +135,14 @@ awk -F, '
   FNR > 1 {{ readings[$1] = $2 }}
 ' {input.weights} data/readings/*.csv
 
-# Simplified: accumulate a weighted daily index
+# Simplified: accumulate a weighted daily index.
+# Sorting is done with `sort`, not awk's `asorti` — that function is a GNU awk
+# extension and is missing from the BSD awk shipped on macOS.
 tail -n +2 {input.weights} | awk -F, '
   {{ idx[$1] += $3 * (rand() - 0.48) * 0.02 }}
-  END {{
-    cum = 0
-    n = asorti(idx, dates)
-    for (i = 1; i <= n; i++) {{
-      cum += idx[dates[i]]
-      printf "%s,%.6f,%.6f\\n", dates[i], idx[dates[i]], cum
-    }}
-  }}
+  END {{ for (d in idx) printf "%s,%.6f\\n", d, idx[d] }}
+' | sort -t, -k1,1 | awk -F, '
+  {{ cum += $2; printf "%s,%.6f,%.6f\\n", $1, $2, cum }}
 ' >> {output}
 """
 
@@ -196,15 +190,15 @@ ox plan
 ```
 
 ```
-Plan: 6 rules, 42 jobs, 5 source files
+Plan: 7 rules, 40 jobs, 0 source files
 Targets: reports/network_summary.txt
-  1. [mock_readings-BOS] rule=mock_readings -> [data/readings/BOS.csv]
-  2. [features-BOS-5d] rule=features -> [data/features/BOS_5d.csv]
-  3. [features-DEN-5d] rule=features -> [data/features/DEN_5d.csv]
+  1. [mock_readings-PDX] rule=mock_readings -> [data/readings/PDX.csv]
+  2. [features-PDX-60] rule=features -> [data/features/PDX_60d.csv]
+  3. [features-PDX-20] rule=features -> [data/features/PDX_20d.csv]
   ...
-  40. [composite-trend] rule=composite -> [data/composite/trend.csv]
-  41. [score-trend] rule=score -> [data/scores/trend.csv]
-  42. [report] rule=report -> [reports/network_summary.txt]
+  38. [composite-trend] rule=composite -> [data/composite/trend_index.csv]
+  39. [score-trend] rule=score -> [data/score/trend_score.csv]
+  40. [report] rule=report -> [reports/network_summary.txt]
 ```
 
 The DAG fans out across stations and windows, then converges through indices

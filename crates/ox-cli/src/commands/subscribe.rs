@@ -1,6 +1,6 @@
 //! Implementation of `ox subscribe` — stream events from an active session.
 //!
-//! This is the CLI equivalent of the MCP `ox_subscribe` tool. It tails the
+//! Event streaming is CLI-only — there is no MCP counterpart. It tails the
 //! NDJSON event log written by `ox run` and streams matching events to stdout.
 
 use std::collections::HashSet;

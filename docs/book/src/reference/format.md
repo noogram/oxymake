@@ -45,7 +45,7 @@ shell = "python process.py {input} {output}"
 | `script` | String | One of shell/run/script/call | Path to script file |
 | `call` | String | One of shell/run/script/call | Python function reference |
 | `lang` | String | With `run`/`script` | Language: `python`, `r`, `julia` |
-| `tags` | Array of strings | No | Tags for filtering and grouping |
+| `tags` | Table of string → string | No | Key/value labels for grouping and event filtering, e.g. `tags = { stage = "align", speed = "slow" }`. An array of strings is **not** accepted. |
 | `resources` | Table | No | Resource requirements |
 | `env` | String | No | Environment to use |
 | `when` | String | No | Conditional guard expression |
@@ -90,8 +90,9 @@ call = "pipeline.features:compute_features"
 
 ### Wildcards
 
-Wildcards in `{braces}` are resolved from `[config]` arrays or inferred
-from existing files:
+Wildcards in `{braces}` are resolved from `[config]` arrays or from a requested
+target path that matches a rule output pattern. Existing files are recognized
+as source inputs; their names do not themselves enumerate wildcard values.
 
 ```toml
 [config]
@@ -133,16 +134,31 @@ include = ["rules/alignment.toml", "rules/qc.toml"]
 
 ## Environment Specification
 
-```toml
-[env.analysis]
-type = "uv"
-requirements = "requirements.txt"
+A rule declares its environment with an `environment` inline table whose
+*key* is the backend and whose value is that backend's argument:
 
+```toml
 [rule.analyze]
-env = "analysis"
+output = ["results/summary.txt"]
+shell = "python analyze.py"
+environment = { uv = "requirements.txt" }
 ```
 
-Supported environment types: `system`, `uv`, `conda`, `docker`, `nix`.
+Supported keys: `uv`, `conda`, `docker`, `apptainer`, `nix`. Omitting
+`environment` runs the command on the host as-is.
+
+A top-level `environment` table sets the default for every rule that does not
+declare its own:
+
+```toml
+environment = { uv = "pyproject.toml" }
+```
+
+There is no named-environment mechanism: `[env.NAME]` blocks and a rule-level
+`env = "NAME"` reference are not part of the format, and — because rule tables
+do not reject unknown keys — they are silently ignored rather than reported as
+an error. See [Environments](../concepts/environments.md) for what each backend
+does.
 
 ## Next Steps
 

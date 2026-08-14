@@ -344,7 +344,7 @@ fn generate_env_setup(script: &mut String, env: &Option<EnvSpec>) {
             // Docker is typically not available on HPC — warn and use Apptainer.
             script.push_str("# WARNING: Docker not supported on most HPC clusters.\n");
             script.push_str(
-                "# Consider using Apptainer (environment = { type = \"apptainer\", ... }).\n",
+                "# Consider using Apptainer (environment = { apptainer = \"image.sif\" }).\n",
             );
             script.push_str(&format!(
                 "echo 'WARNING: Docker executor on SLURM — using apptainer exec {image} instead' >&2\n"

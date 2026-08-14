@@ -427,7 +427,9 @@ demanding day job. Concretely:
 - **Environments**: `environment =` specs are delegated as command wrappers
   (`uv run`, `conda run`, `docker run`, `nix develop -c`, `apptainer exec`) —
   the named tool must be on `PATH`; OxyMake does not create, cache, or
-  isolate environments itself (see Known limitations)
+  isolate environments itself (see Known limitations). Wrapping is applied by
+  the **local executor only**: on SLURM, `docker`/`apptainer`/`nix` specs are
+  not applied and `uv` is applied only partially
 - **Distributed**: SLURM executor, Ray executor (`--executor slurm`, `--executor ray`)
 - **Remote cache**: shared-directory backend via `ox-cache-remote`
   (atomic store, content re-verification on fetch)

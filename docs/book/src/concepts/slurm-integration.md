@@ -729,11 +729,15 @@ eval "$(conda shell.bash hook)"
 conda activate torch-env
 ```
 
-### Apptainer (Not Docker)
+### Containers are not applied by the SLURM backend
 
-Most HPC clusters prohibit Docker (requires root). When a Docker
-environment is specified with the SLURM executor, OxyMake automatically
-falls back to Apptainer:
+> **Known limitation.** `docker`, `apptainer` and `nix` environments have **no
+> effect** on the SLURM executor, and `uv` has only a partial one. The local
+> executor wraps the command (`docker run`, `apptainer exec`, `nix develop -c`,
+> `uv run`); the SLURM backend does not.
+
+Most HPC clusters prohibit Docker (requires root), so a `docker` environment is
+rewritten to an Apptainer invocation in the generated sbatch script:
 
 ```toml
 [rule.inference.environment]
@@ -743,32 +747,46 @@ docker = "nvcr.io/nvidia/pytorch:24.01-py3"
 Generates:
 ```bash
 # WARNING: Docker not supported on most HPC clusters.
-# Consider using Apptainer (environment = { type = "apptainer", ... }).
-apptainer exec nvcr.io/nvidia/pytorch:24.01-py3
+# Consider using Apptainer (environment = { apptainer = "..." }).
+OXYMAKE_CONTAINER_CMD="apptainer exec nvcr.io/nvidia/pytorch:24.01-py3"
 ```
 
-For explicit Apptainer support:
+`OXYMAKE_CONTAINER_CMD` is assigned but never expanded: the rule command is
+appended to the script verbatim, so the job runs **outside** the container. The
+same holds for an explicit `apptainer` environment, and for `nix`, which emits
+no setup at all. A `uv` environment emits `uv sync -r <requirements>` but does
+not run the command under `uv run`, so the interpreter on `PATH` is unchanged.
+Only `conda` takes effect, because `conda activate` mutates the script's own
+shell.
+
+This matters beyond the missing isolation: the cache key hashes the declared
+environment regardless of backend, so a SLURM job that ran uncontained is
+stored under a key that records the container, and a later local run of the
+same rule — which *does* apply the container — reads it as a hit.
+
+Until this is fixed, put the container invocation in the rule command itself
+on SLURM:
+
 ```toml
-[rule.inference.environment]
-apptainer = "/shared/images/pytorch-24.01.sif"
+[rule.inference]
+shell = "apptainer exec /shared/images/pytorch-24.01.sif python infer.py"
 ```
 
 
 ## Shared Filesystem Constraint
 
-All data — job scripts, inputs, outputs — must live on a filesystem
-visible to both the scheduling node and compute nodes:
+Job scripts, inputs and outputs must live on a filesystem visible to both the
+scheduling node and the compute nodes — while `state.db` must **not**:
 
 ```mermaid
 flowchart LR
     subgraph "Login / Submit Node"
         OX["ox run<br/>--executor slurm"]
-        DB[("state.db<br/><i>Local disk only<br/>(SQLite WAL)</i>")]
+        WS["workspace/<br/><i>Local disk only</i><br/>.oxymake/state.db<br/>+ inputs + outputs"]
     end
 
     subgraph "Shared Filesystem<br/>(NFS / Lustre / GPFS)"
         STAGE["staging_dir/<br/><i>sbatch scripts</i>"]
-        DATA["project/<br/><i>inputs + outputs</i>"]
     end
 
     subgraph "Compute Nodes"
@@ -776,23 +794,35 @@ flowchart LR
         C2["c2: slurmd"]
     end
 
-    OX --> DB
+    OX --> WS
     OX -->|"write scripts"| STAGE
     STAGE -->|"read scripts"| C1
     STAGE -->|"read scripts"| C2
-    C1 -->|"read/write"| DATA
-    C2 -->|"read/write"| DATA
+    C1 -->|"read/write"| WS
+    C2 -->|"read/write"| WS
 
-    style DB fill:#fcc,stroke:#333
+    style WS fill:#fcc,stroke:#333
     style STAGE fill:#cfc,stroke:#333
-    style DATA fill:#cfc,stroke:#333
 ```
 
 **Critical constraint**: `state.db` uses SQLite WAL mode, which does
 **not** work on network filesystems (NFS, Lustre, GPFS). The `ox run`
 process must execute on a node with local disk. Compute nodes never
 access `state.db` — they only read sbatch scripts and read/write data
-files on the shared filesystem.
+files.
+
+**This constrains the whole workspace, not just the database.** `.oxymake/` is
+created in the working directory and cannot be relocated — there is no flag,
+config key, or environment variable for it — and a rule's inputs and outputs
+are resolved against that same directory. So the database cannot be kept on
+local disk while the project tree sits on shared storage: the entire workspace
+has to be on local disk, and the compute nodes must be able to reach it. On a
+cluster where `$HOME` is the only path visible to compute nodes and is itself
+NFS, there is no supported configuration; that is a known limitation, not a
+tuning question.
+
+Only `staging_dir` is independently configurable, and it must be on the shared
+filesystem so compute nodes can read the generated scripts.
 
 
 ## Configuration
@@ -906,7 +936,7 @@ Google Cloud cluster as one concrete example.
 | **state.db on NFS** | Run `ox run` on a node with local disk. SQLite WAL mode fails on network filesystems. |
 | **Forgetting `--parsable`** | OxyMake always uses `sbatch --parsable` — raw output format varies by SLURM version and locale. |
 | **Job name too long** | Truncated automatically to 255 characters. |
-| **Docker on HPC** | OxyMake warns and substitutes `apptainer exec`. Use Apptainer explicitly. |
+| **Containers on HPC** | `docker`/`apptainer`/`nix` environments are **not applied** by the SLURM backend. Put the `apptainer exec ...` invocation in the rule command itself. |
 | **sacct field truncation** | OxyMake uses `--parsable2` which avoids field-width truncation. |
 | **sacct job step noise** | OxyMake filters to main job entries only (skips `12345.batch`, `12345.0`). |
 | **Exit code format** | sacct returns `exit:signal` (e.g., `137:9`). OxyMake parses only the first number. |

@@ -28,6 +28,78 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   local index (a remote computation-key manifest is future work).
 
 ### Fixed
+- Paper and docs: corrected a fourth contradicted claim, raised by a review
+  panel and verified against the code before any text moved
+  (`ops/audits/panel-findings-verification-2026-08.md`, which also records the
+  three other panel findings and their verdicts). The paper's local-disk
+  requirement on `.oxymake/` was published as if the state directory could be
+  placed apart from the project tree — the book's SLURM chapter drew exactly
+  that split, `state.db` on local disk and `project/` on NFS/Lustre/GPFS. It
+  has no code path: `.oxymake` is a bare relative `PathBuf` at every state,
+  cache, log and event site (`crates/ox-cli/src/commands/run.rs:1018`, `:1101`,
+  `:1423`, `:1436`; `clean.rs:58`; `invalidate.rs:77`; `status.rs:84`;
+  `init.rs:56`), and a rule's inputs and outputs resolve against the same
+  working directory, so the two cannot be separated. `OXYMAKE_CACHE_DIR`,
+  `OXYMAKE_JOBS`, `OXYMAKE_EXECUTOR` and `OXYMAKE_LOG` were documented in the
+  book's configuration reference but appear in no `.rs` file, as does the
+  `.oxymake/config.toml` described there as the store of project defaults (only
+  `$XDG_CONFIG_HOME/oxymake/config.toml` is read, for `cache_validation` and
+  `open_dashboard`). The requirement stands and still discharges
+  `StateDbAtomicCommit`; the paper now states it as a constraint on the whole
+  workspace and names the missing relocation mechanism as a limitation.
+  Recorded in `docs/paper/ERRATUM.md` section D.
+- Book reference (`reference/format.md`): the environment section documented
+  `[env.NAME]` blocks with `type = "uv"` and a rule-level `env = "NAME"`.
+  `RawRule` carries no `deny_unknown_fields` (`crates/ox-format/src/parse.rs:239`),
+  so all three were parsed and silently discarded — a rule documented as
+  running under `uv` ran without it, and its cache key omitted the environment.
+  The supported spelling is `environment = { uv = "requirements.txt" }`, keyed
+  by backend (`parse.rs:1277`). Reference corrected, and the SLURM backend's
+  user-facing warning string, which advertised the same non-existent
+  `type = "apptainer"` form, corrected with it.
+- Book SLURM chapter and `README.md`: the chapter claimed OxyMake "automatically
+  falls back to Apptainer" on SLURM and showed `apptainer exec <image>` as the
+  generated command. `crates/ox-exec-slurm/src/job_script.rs:353,359` emits an
+  `OXYMAKE_CONTAINER_CMD="apptainer exec …"` assignment that nothing expands —
+  the rule command is appended verbatim (`job_script.rs:104-106`), so the job
+  runs uncontained while the cache key still records the container
+  (`crates/ox-cache/src/key.rs:185-220`). `nix` is an explicit no-op on SLURM
+  and `uv` emits `uv sync` without `uv run`; only `conda` takes effect. The
+  local executor wraps all five correctly
+  (`crates/ox-exec-local/src/executor.rs:376-441`). Documented as a known
+  limitation with a workaround; the backend defect is not fixed here.
+- Paper and docs: corrected three claims the repository contradicts, the same
+  class of error the CWL review (issue #1) found — this time about OxyMake
+  itself. (1) The MCP surface: the paper claimed an agent can call `run`,
+  `plan`, `status` and gate approval as tools; `crates/ox-mcp/src/tools.rs`
+  registers eight tools (`ox_status`, `ox_plan`, `ox_dag`, `ox_logs`,
+  `ox_history`, `ox_lint`, `ox_explain`, `ox_clean`) with no `ox_run` and no
+  gate tool — read-only inspection plus a destructive `ox_clean`. Corrected in
+  the paper, `AGENTS.md`/`CLAUDE.md`, `ox guide` and `ox-guide(1)`, plus a
+  stale `ox_run` hint in `ox-mcp` and a comment naming a nonexistent
+  `ox_subscribe` tool. (2) Snakemake translation: "All four translated without
+  manual intervention" contradicted `benchmark/snakemake-compat/RESULTS.md`,
+  which records 3–5 manual fixes per workflow and "All 4 workflows execute to
+  completion after manual fixes"; the paper now names the interventions, cites
+  the benchmark directory it actually evaluated, and calls `ox translate` a
+  migration aid rather than a drop-in transpiler. (3) The `tags` rule field:
+  documented as an array of strings, but `crates/ox-format/src/parse.rs:255`
+  declares `BTreeMap<String, String>`, making the array form a hard parse error
+  — so the flagship bioinformatics cookbook could not be loaded. All three are
+  recorded in `docs/paper/ERRATUM.md` (new section D).
+- Book: `concepts/tags.md` rewritten. It documented `ox run --tag`,
+  `ox run --exclude-tag` and `ox dag --group-by tag`; none select jobs (no such
+  `run` flags exist, and `dag`'s `--group-by` is accepted but unused). Tags are
+  now described as they behave: key/value labels surfaced in `ox plan --json`
+  and in `job_queued` events, filterable with `ox subscribe --where KEY=VALUE`.
+- Cookbooks: both workflows now lint and run to completion (22/22 and 40/40
+  jobs), verified end-to-end. Fixed an ambiguous producer between
+  `call_variants` and `merge_vcf`, two aggregation rules missing
+  `expand = "product"`, a `chromosomes` config key that cannot resolve a
+  `{chrom}` wildcard, TOML-escaped `\t`/`\n` breaking an embedded `awk`
+  program, a multi-line inline table (invalid TOML), and `asorti` — a GNU awk
+  extension absent from the BSD awk on macOS. Stale sample `ox plan`
+  transcripts replaced with real output.
 - Cache keys now name workflow inputs relative to the workflow root (the
   invocation directory), allowing identical checkouts at different absolute
   paths to reuse cache entries. Key format v4: relative paths are interpreted

@@ -20,8 +20,10 @@ file, so Claude Code and every other AGENTS.md-aware tool read the same source.
   [`docs/book/src/`](docs/book/src/), starting at `introduction.md`.
 - **Architecture decisions** → [`docs/adr/`](docs/adr/) (index in
   `docs/adr/README.md`); exploratory notes in [`docs/design/`](docs/design/).
-- **Agent / MCP access** → `ox serve --mcp` exposes the workflow engine over
-  the Model Context Protocol (stdio), so an agent can drive `ox` directly.
+- **Agent / MCP access** → `ox serve --mcp` exposes the workflow engine's
+  inspection commands over the Model Context Protocol (stdio), so an agent can
+  plan, inspect and explain a workflow. The MCP surface is read-only apart from
+  `ox_clean`: starting a run and approving a gate stay on the CLI.
 
 Everything above works from a fresh clone with only the `ox` binary — no extra
 tooling required.

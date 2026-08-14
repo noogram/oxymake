@@ -16,46 +16,52 @@ models = ["linear", "ridge"]
 
 These values drive wildcard resolution in rules.
 
-## Project Settings
+## Named Profiles
 
-The `.oxymake/config.toml` file (created by `ox init`) stores project-level
-defaults:
+Per-run defaults live in the Oxymakefile, as `[profile.NAME]` sections selected
+with `ox run --profile NAME`:
 
 ```toml
-[defaults]
-jobs = 4                    # Default -j value
-executor = "local"          # Default executor
-materialize = "always"      # Default materialization policy
+[profile.cluster]
+jobs = 32
+executor = "slurm"
+partition = "gpu"
+```
 
-[cache]
-dir = ".oxymake/cache"      # Cache directory location
-max_size_gb = 10            # Maximum cache size
+There is no project-level settings file. `ox init` creates `Oxymakefile.toml`
+and an empty `.oxymake/` directory; it does not write a `config.toml`, and no
+`.oxymake/config.toml` is read if you create one by hand.
 
-[state]
-dir = ".oxymake"            # State directory
+## User Global Config
+
+`$XDG_CONFIG_HOME/oxymake/config.toml` (or `~/.config/oxymake/config.toml`) is
+read for exactly two top-level keys:
+
+```toml
+cache_validation = "hash"   # default cache validation strategy
+open_dashboard = true       # open the web dashboard on `ox run`
 ```
 
 ## Environment Variables
 
-OxyMake respects the following environment variables:
+OxyMake reads the following environment variables:
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `OXYMAKE_JOBS` | Default parallelism | 1 |
-| `OXYMAKE_EXECUTOR` | Default executor | `local` |
-| `OXYMAKE_CACHE_DIR` | Cache directory | `.oxymake/cache` |
-| `OXYMAKE_LOG` | Log level | `warn` |
 | `OX_CACHE_VALIDATION` | Cache validation strategy (`mtime`, `mtime+hash`, `hash`) | `mtime+hash` |
+
+Everything else is set with a command-line flag or in the Oxymakefile.
 
 ## Configuration Precedence
 
-Settings are resolved in order (later overrides earlier):
+`cache_validation` — the one setting with a full resolution chain — is resolved
+in order (later overrides earlier):
 
-1. Built-in defaults
+1. Built-in default (`mtime+hash`)
 2. User global config (`~/.config/oxymake/config.toml`)
-3. `.oxymake/config.toml`
-4. Environment variables
-5. Command-line flags
+3. `cache_validation` under `[config]` in the Oxymakefile
+4. `OX_CACHE_VALIDATION`
+5. `--cache-validation` on the command line
 
 ## State Directory
 
@@ -65,11 +71,18 @@ The `.oxymake/` directory contains:
 .oxymake/
   state.db          # SQLite execution state + audit log
   cache/            # Content-addressable output cache
-  config.toml       # Project settings
+  logs/             # Per-rule stdout/stderr
+  events/           # NDJSON run event streams
 ```
 
-The state database (`state.db`) uses SQLite WAL mode for concurrent access.
-It must reside on local disk (not NFS/Lustre/GPFS).
+`.oxymake/` is created in the directory `ox` is invoked from. Its location is
+not configurable: no flag, config key, or environment variable relocates it.
+
+The state database (`state.db`) uses SQLite WAL mode for concurrent access, and
+must reside on local disk (not NFS/Lustre/GPFS). Because a rule's inputs and
+outputs are also resolved relative to the working directory, satisfying that
+requirement means running the whole workspace from local disk — the database
+cannot be kept local while the project tree lives on shared storage.
 
 ## Next Steps
 

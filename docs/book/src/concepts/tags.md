@@ -1,74 +1,79 @@
 # Tags and Filtering
 
-Tags let you organize rules into logical groups and selectively run subsets
-of your workflow.
+Tags are key/value labels you attach to a rule. They travel with every
+concrete job the rule produces, so you can group, filter and report on jobs
+without touching the workflow structure.
 
 ## Assigning Tags
 
-Add tags to any rule in your `Oxymakefile.toml`:
+`tags` is a **table of string keys to string values** — not an array. An array
+of strings is a parse error.
 
 ```toml
 [rule.align]
-input = ["data/{sample}.fastq"]
+input  = ["data/{sample}.fastq"]
 output = ["aligned/{sample}.bam"]
-shell = "bwa mem ref.fa {input} | samtools sort > {output}"
-tags = ["alignment", "compute-heavy"]
+shell  = "bwa mem ref.fa {input} | samtools sort > {output}"
+tags   = { stage = "align", cost = "heavy" }
 
 [rule.qc]
-input = ["aligned/{sample}.bam"]
+input  = ["aligned/{sample}.bam"]
 output = ["qc/{sample}_report.html"]
-shell = "fastqc {input} -o qc/"
-tags = ["qc", "fast"]
+shell  = "fastqc {input} -o qc/"
+tags   = { stage = "qc", speed = "fast" }
 ```
 
-## Filtering by Tag
+Pick your own keys. `stage`, `speed`, `cost` and `owner` are common, but
+nothing is reserved. Each job's resolved wildcard values are merged into its
+tag map too, so a job of `align` above carries
+`{ sample = "NA12878", stage = "align", cost = "heavy" }`.
 
-Run only jobs matching a tag:
+## Where Tags Show Up
+
+**In the plan.** `ox plan --json` carries each job's `tags` map, so a script or
+agent can select jobs by tag before deciding what to do:
 
 ```bash
-ox run --tag alignment        # Only alignment jobs
-ox run --tag qc               # Only QC jobs
-ox run --tag compute-heavy    # Only compute-heavy jobs
+ox plan --json | jq '.jobs[] | select(.tags.stage == "align") | .job_id'
 ```
 
-Exclude jobs by tag:
+**In the event stream.** The `job_queued` event carries the originating job's
+tags, and `ox subscribe` filters on them with `--where KEY=VALUE` (repeatable,
+AND logic):
 
 ```bash
-ox run --exclude-tag slow     # Skip slow jobs
+ox subscribe --where stage=align                 # only alignment jobs
+ox subscribe --where stage=align --where cost=heavy
 ```
 
-## Tag-Based DAG Views
+Events that carry no tags — everything other than `job_queued` — are dropped
+while a `--where` filter is active.
 
-Tags integrate with the DAG visualization:
+## What Tags Do Not Do
+
+Tags are a **labelling and observation** mechanism, not a job selector for
+execution. There is no `ox run --tag` or `ox run --exclude-tag`. To run a
+subset of the workflow, use the mechanisms that do exist:
 
 ```bash
-ox dag --group-by tag         # Group nodes by tag in the DAG view
-ox plan --tag alignment       # Show plan for alignment jobs only
+ox run results/report.txt      # explicit targets
+ox run --rule align            # a single rule
+ox run --until merge_vcf        # stop at a rule
+ox run --omit-from qc           # skip a subtree
 ```
 
-## Hierarchical Organization
-
-Use dotted tag names for hierarchy:
-
-```toml
-tags = ["pipeline.alignment", "resource.gpu"]
-```
-
-This enables filtering at different levels:
-
-```bash
-ox run --tag "pipeline.*"         # All pipeline stages
-ox run --tag "resource.gpu"       # Only GPU jobs
-```
+`ox status --group-by` accepts `rule` and `stage` (an alias for rule name); it
+does not group by tag.
 
 ## Use Cases
 
-- **Selective re-runs**: Re-run only QC after parameter changes
-- **Resource-based scheduling**: Tag GPU vs CPU jobs for different executors
-- **Stage grouping**: Organize large workflows into logical phases
-- **Development iteration**: Run only the stage you are working on
+- **Observability**: subscribe to just the GPU jobs and route their events
+  elsewhere.
+- **Reporting**: post-process `ox plan --json` to count work per stage.
+- **Downstream scheduling**: an agent reads tags to decide which executor or
+  queue a job belongs to.
 
 ## Next Steps
 
-- [The Three Graphs](./three-graphs.md) -- how tags affect DAG visualization
+- [The Three Graphs](./three-graphs.md) -- how the DAG is built and viewed
 - [Execution Modes](./execution-modes.md) -- how jobs are executed

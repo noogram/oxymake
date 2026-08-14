@@ -30,6 +30,31 @@ arbitrary commands by design. The content-addressable cache key includes the
 rule source, so tampering with a rule invalidates its cache entry rather than
 silently reusing a stale output.
 
+### Shell interpolation is a data/code boundary
+
+`shell` rules are expanded into one command string and run through the
+configured shell with `-c`. Placeholder values are inserted without shell
+escaping; `{input}` and `{output}` lists are joined with spaces. Consequently,
+an interpolated value is shell syntax, not a typed command-line argument.
+
+This matters even when the Oxymakefile is trusted. A file name from a checkout,
+archive, upload, shared directory, or another producer can become a concrete
+input path when a target or wildcard selects it. Wildcards can be supplied by
+the requested target or expanded from configuration. A config value can be
+third-party data when the operator imports or generates configuration from an
+external source, or passes an externally supplied `--set` value. Outputs and
+log paths derived from those values have the same property. By contrast,
+literal `shell` text, literal paths, rule `params`, and resource values in a
+trusted Oxymakefile are authored by the workflow author unless that author
+deliberately routes outside data into them.
+
+Do not interpolate untrusted values into `shell`. Validate or constrain them
+to a safe filename/value alphabet before invoking OxyMake, or use an execution
+mode and tool interface that accepts structured data rather than a shell
+command. Quoting placeholders in an existing shell template is not a general
+fix: it must be designed for the selected shell and the value's intended
+syntactic context.
+
 ## Cache integrity
 
 ### Validation strategies

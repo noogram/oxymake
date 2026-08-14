@@ -24,8 +24,11 @@ Create a directory and save this as `Oxymakefile.toml`:
 ox_version = "0.1"
 
 [config]
+# Wildcard value lists. The key must match the wildcard name, either exactly
+# or as its plural: `{sample}` resolves from `samples`, `{chrom}` from
+# `chroms`. A key like `chromosomes` would NOT resolve `{chrom}`.
 samples = ["NA12878", "NA12891", "NA12892"]
-chromosomes = ["chr1", "chr2", "chr3"]
+chroms  = ["chr1", "chr2", "chr3"]
 
 # ── Default target ──────────────────────────────────────────────
 [rule.all]
@@ -34,7 +37,7 @@ input = ["results/cohort_report.txt"]
 # ── Stage 1: Generate mock FASTQ reads ─────────────────────────
 [rule.simulate_reads]
 output = ["fastq/{sample}_R1.fastq", "fastq/{sample}_R2.fastq"]
-tags = ["stage.simulate", "fast"]
+tags = { stage = "simulate", speed = "fast" }
 shell = """
 mkdir -p fastq
 for i in $(seq 1 50); do
@@ -54,7 +57,7 @@ done
 [rule.align]
 input = { r1 = "fastq/{sample}_R1.fastq", r2 = "fastq/{sample}_R2.fastq" }
 output = ["aligned/{sample}.bam"]
-tags = ["stage.align", "compute-heavy"]
+tags = { stage = "align", cost = "heavy" }
 resources = { cpu = 4, mem = "8G" }
 shell = """
 mkdir -p aligned
@@ -69,7 +72,10 @@ echo "## EOF" >> {output}
 [rule.call_variants]
 input = { bam = "aligned/{sample}.bam" }
 output = ["vcf/{sample}_{chrom}.vcf"]
-tags = ["stage.call", "compute-heavy"]
+# Without this, `vcf/{sample}_merged.vcf` would also match this pattern
+# (chrom="merged") and collide with `merge_vcf`.
+wildcard_constraints = { chrom = "chr[0-9]+" }
+tags = { stage = "call", cost = "heavy" }
 resources = { cpu = 2, mem = "4G" }
 shell = """
 mkdir -p vcf
@@ -78,7 +84,7 @@ echo "##source=oxymake-cookbook" >> {output}
 echo "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO" >> {output}
 grep "{chrom}" {input.bam} | awk '{{
   split($2, a, ":");
-  printf "%s\t%s\t.\tA\tG\t30\tPASS\tDP=20\n", a[1], a[2]
+  printf "%s\\t%s\\t.\\tA\\tG\\t30\\tPASS\\tDP=20\\n", a[1], a[2]
 }}' >> {output}
 """
 
@@ -86,7 +92,10 @@ grep "{chrom}" {input.bam} | awk '{{
 [rule.merge_vcf]
 input = ["vcf/{sample}_{chrom}.vcf"]
 output = ["vcf/{sample}_merged.vcf"]
-tags = ["stage.merge"]
+# `{chrom}` appears in the input but not the output: this rule aggregates
+# over every chrom value, so it needs an explicit expand mode.
+expand = "product"
+tags = { stage = "merge" }
 shell = """
 echo "##fileformat=VCFv4.2" > {output}
 echo "##source=oxymake-merge" >> {output}
@@ -101,7 +110,7 @@ sort -k1,1 -k2,2n -o {output} {output}
 [rule.qc]
 input = { bam = "aligned/{sample}.bam", vcf = "vcf/{sample}_merged.vcf" }
 output = ["qc/{sample}_report.txt"]
-tags = ["stage.qc", "fast"]
+tags = { stage = "qc", speed = "fast" }
 shell = """
 mkdir -p qc
 echo "=== QC Report: {sample} ===" > {output}
@@ -114,7 +123,9 @@ echo "Chromosomes: $(grep -v "^#" {input.vcf} | cut -f1 | sort -u | tr '\n' ' ')
 [rule.cohort_report]
 input = ["qc/{sample}_report.txt"]
 output = ["results/cohort_report.txt"]
-tags = ["stage.report"]
+# Aggregates over every sample.
+expand = "product"
+tags = { stage = "report" }
 shell = """
 mkdir -p results
 echo "=============================" > {output}
@@ -148,14 +159,16 @@ ox plan
 ```
 
 ```
-Plan: 5 rules, 15 jobs, 3 source files
+Plan: 7 rules, 22 jobs, 0 source files
 Targets: results/cohort_report.txt
-  1. [simulate_reads-NA12878] rule=simulate_reads -> [fastq/NA12878_R1.fastq, fastq/NA12878_R2.fastq]
-  2. [simulate_reads-NA12891] rule=simulate_reads -> [fastq/NA12891_R1.fastq, fastq/NA12891_R2.fastq]
-  3. [align-NA12878] rule=align -> [aligned/NA12878.bam]
-  4. [call_variants-NA12878-chr1] rule=call_variants -> [vcf/NA12878_chr1.vcf]
+  1. [simulate_reads-NA12892] rule=simulate_reads -> [fastq/NA12892_R1.fastq, fastq/NA12892_R2.fastq]
+  2. [align-NA12892] rule=align -> [aligned/NA12892.bam]
+  3. [call_variants-chr3-NA12892] rule=call_variants -> [vcf/NA12892_chr3.vcf]
+  4. [call_variants-chr2-NA12892] rule=call_variants -> [vcf/NA12892_chr2.vcf]
+  5. [call_variants-chr1-NA12892] rule=call_variants -> [vcf/NA12892_chr1.vcf]
+  6. [merge_vcf-NA12892] rule=merge_vcf -> [vcf/NA12892_merged.vcf]
   ...
-  15. [cohort_report] rule=cohort_report -> [results/cohort_report.txt]
+  22. [cohort_report] rule=cohort_report -> [results/cohort_report.txt]
 ```
 
 ```bash
@@ -197,10 +210,11 @@ upstream outputs exist):
 ox run --rule qc
 ```
 
-View the DAG grouped by stage:
+Inspect the plan with the tags attached to each job (`ox dag` has no
+tag-grouping mode; the tags live in the plan JSON):
 
 ```bash
-ox dag --group-by tag
+ox plan --json | jq '.jobs[] | {job_id, tags}'
 ```
 
 ## Named Inputs
@@ -244,7 +258,7 @@ Replace the stand-in commands with real bioinformatics tools:
 [rule.align]
 input = { r1 = "fastq/{sample}_R1.fastq", r2 = "fastq/{sample}_R2.fastq" }
 output = ["aligned/{sample}.bam"]
-tags = ["stage.align", "compute-heavy"]
+tags = { stage = "align", cost = "heavy" }
 resources = { cpu = 8, mem = "32G" }
 shell = """
 bwa mem -t {resources.cpu} reference.fa {input.r1} {input.r2} \

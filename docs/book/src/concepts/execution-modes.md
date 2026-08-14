@@ -20,7 +20,10 @@ give up direct control over I/O.
 ## Mode 1: `shell` -- Command Line
 
 The most flexible mode. You write a shell command, and OxyMake interpolates
-file paths into it.
+file paths into its command string before passing that string to the configured
+shell. This is raw shell text, not typed argv passing: validate any
+third-party-derived path, wildcard, or configuration value before interpolating
+it. See [SECURITY.md](../../../SECURITY.md#shell-interpolation-is-a-datacode-boundary).
 
 ```toml
 [rule.align]

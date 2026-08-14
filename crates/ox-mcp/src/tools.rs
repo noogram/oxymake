@@ -181,7 +181,7 @@ fn handle_status(args: &serde_json::Value, workdir: &Path) -> Result<ToolCallRes
             "error": {
                 "code": "NO_STATE",
                 "message": "No OxyMake state found. Run 'ox run' first.",
-                "hint": "Execute a workflow with ox_run to create state."
+                "hint": "This server exposes no execution tool. Run 'ox run' from the CLI to create state."
             }
         })));
     }

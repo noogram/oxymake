@@ -373,7 +373,7 @@ fn diff_snapshots(left_name: &str, right_name: Option<&str>, json: bool) -> Resu
 
         println!(
             "  {:<4} {:<28} {:<14} {:<14} OUTPUTS",
-            "", "JOB", left_name, &right_label
+            "", "JOB", left_name, right_label
         );
         println!("  {}", "-".repeat(68));
 

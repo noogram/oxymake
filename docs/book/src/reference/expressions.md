@@ -78,6 +78,13 @@ interpolation:
 shell = "python process.py --input {input} --output {output} --sample {wildcards.sample}"
 ```
 
+> **Shell safety.** In a `shell` field, interpolation is raw text inserted
+> into the command passed to the configured shell with `-c`; it is not shell
+> escaped and `{input}`/`{output}` lists are space-joined. Never interpolate
+> third-party file names, wildcard values, or configuration values into
+> `shell` without validating them for the shell context. See
+> [SECURITY.md](../../../../SECURITY.md#shell-interpolation-is-a-datacode-boundary).
+
 Double braces `{{` and `}}` produce literal braces (useful in Python code):
 
 ```toml
