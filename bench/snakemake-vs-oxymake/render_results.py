@@ -76,7 +76,13 @@ def render_metric_table(rows: list[dict], jobs: int) -> str:
         return "*(no measurements found)*"
 
     lines: list[str] = []
-    lines.append(f"### Headline (at {largest:,} jobs, -j {jobs})")
+    lines.append(f"### Headline (at {largest:,} jobs, OxyMake `-j {jobs}` / Snakemake `--cores {jobs}`)")
+    lines.append("")
+    lines.append(
+        "OxyMake end-to-end rows run under `--cache-validation mtime+hash` "
+        "unless the row names another policy; Snakemake runs its default "
+        "rerun-triggers. DAG resolution exercises no cache validation."
+    )
     lines.append("")
     lines.append("| Metric | Snakemake | OxyMake | Δ |")
     lines.append("|---|---:|---:|---|")
@@ -97,15 +103,19 @@ def render_metric_table(rows: list[dict], jobs: int) -> str:
     # Warm re-run under full content-addressing (hash mode). Compared against
     # the same Snakemake warm number — this is the mode the correctness thesis
     # rests on, so the cost of hashing on a no-op rebuild is shown explicitly.
-    ox_warm_hash = best_at(rows, largest, "ox", "e2e-run", "warm-hash")
-    if ox_warm_hash:
-        sm_warm = best_at(rows, largest, "snakemake", "e2e-run", "warm")
-        sm_warm_t = sm_warm["wall_s"] if sm_warm else None
-        oxh_t = ox_warm_hash["wall_s"]
-        lines.append(
-            f"| End-to-end warm re-run (hash mode) | {fmt_time(sm_warm_t)} | "
-            f"{fmt_time(oxh_t)} | {fmt_delta(oxh_t, sm_warm_t)} |"
-        )
+    sm_warm = best_at(rows, largest, "snakemake", "e2e-run", "warm")
+    sm_warm_t = sm_warm["wall_s"] if sm_warm else None
+    for label, key in (
+        ("End-to-end warm re-run (`mtime` mode)", "warm-mtime"),
+        ("End-to-end warm re-run (`hash` mode)", "warm-hash"),
+    ):
+        ox_warm_alt = best_at(rows, largest, "ox", "e2e-run", key)
+        if ox_warm_alt:
+            oxh_t = ox_warm_alt["wall_s"]
+            lines.append(
+                f"| {label} | {fmt_time(sm_warm_t)} | "
+                f"{fmt_time(oxh_t)} | {fmt_delta(oxh_t, sm_warm_t)} |"
+            )
 
     # Job submission throughput = jobs / (e2e_cold - dag_resolve_cold)
     sm_e2e = best_at(rows, largest, "snakemake", "e2e-run", "cold")
@@ -475,7 +485,7 @@ def render_churn_table(churn_rows: list[dict], sm_version: str) -> str:
         "`process` + `finalize` + `merge` = `2·N + 1` jobs."
     )
     lines.append("")
-    lines.append(f"| Jobs | Snakemake {sm_version} | OxyMake (mtime, default) | OxyMake (`--cache-validation hash`) |")
+    lines.append(f"| Jobs | Snakemake {sm_version} | OxyMake (`--cache-validation mtime`) | OxyMake (`--cache-validation hash`) |")
     lines.append("|---:|---:|---:|---:|")
     for sz in sizes:
         lines.append(
@@ -496,16 +506,18 @@ def render_churn_table(churn_rows: list[dict], sm_version: str) -> str:
         "benchmarked version."
     )
     lines.append(
-        "- **OxyMake's mtime fast-path (the default) _is_ fooled** by the churn "
+        "- **OxyMake's pure `mtime` fast path _is_ fooled** by the churn "
         "— it re-runs the full `2·N + 1` radius, because the cheap path trusts "
-        "the timestamp it is named for."
+        "the timestamp it is named for. It is opt-in, not the shipped default: "
+        "the default is `mtime+hash`, which re-hashes a file whose metadata "
+        "moved and therefore re-runs zero jobs here."
     )
     lines.append(
         "- **`--cache-validation hash` restores correctness** — zero re-runs, "
         "because the BLAKE3 key hashes content, not time. This buys "
         "**parity with Snakemake's robustness plus cross-machine / cross-cache "
         "portability** (where mtimes are meaningless), and it protects "
-        "OxyMake's own mtime-default users. It does **not** demonstrate "
+        "OxyMake's own `mtime` users. It does **not** demonstrate "
         "superiority over Snakemake on this scenario for the benchmarked "
         "version."
     )
