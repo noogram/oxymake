@@ -402,11 +402,15 @@ added containerized execution, cloud integration, and module
 composition~\cite{molderSustainableDataAnalysis2021}. Snakemake rules
 embed Python, so the full job graph is known only after the workflow
 file is executed; static analysis and IDE support are correspondingly
-less complete than for an inert format, not absent. Its change detection
-has evolved from live mtime comparison to recorded per-output
-provenance in the 7.x line, which survives \code{git checkout} mtime
-churn unmoved (verified at every bench scale,
-\S\ref{sec:git-checkout-bench}); the record is bound to a single
+less complete than for an inert format, not absent. In the 7.x line its
+change detection adds a recorded per-output checksum to the live mtime
+comparison rather than replacing it: an input counts as updated only if
+it is newer than the oldest output \emph{and} its recorded SHA-256 no
+longer matches, and a checksum is recorded only for inputs smaller than
+100{,}000 bytes. Below that threshold the checksum decides, and the
+decision survives \code{git checkout} mtime churn unmoved (verified at
+every bench scale, \S\ref{sec:git-checkout-bench}); above it the mtime
+comparison alone decides. The record is bound to a single
 working tree and does not validate output content, so it
 is not valid on another machine and does not detect on-disk corruption.
 Snakemake also ships an opt-in between-workflow cache (\code{--cache},
@@ -427,8 +431,15 @@ occupy the combination claimed here
 rebuild decision without a daemon predates this work.
 
 Nextflow~\cite{diTommasoNextflowEnablesReproducible2017} takes a
-dataflow-oriented approach with channels connecting processes, offering
-strong containerization support but requiring a Groovy-based DSL.
+dataflow-oriented approach with channels connecting processes, with
+strong containerization support. Its \code{-resume} rebuild decision is
+an automatic per-task hash over the task script, the container, Conda or
+Spack specification, the task inputs and the variables the script
+references, computed with no daemon; input files enter that hash by
+name, size and last-modified timestamp by default, and by content under
+the \code{cache 'deep'} directive. The axis that separates it from
+OxyMake is therefore the Groovy DSL and the JVM runtime rather than the
+absence of a content key.
 
 The Common Workflow Language
 (CWL)~\cite{crusoeMethodsIncludedStandardizing2022} occupies a different
@@ -465,10 +476,17 @@ specification; Cromwell is backend-agnostic, with a pre-enabled Local
 backend as its default and pluggable HPC, TES and cloud-batch backends
 behind the same interface. One-shot \code{cromwell run} executes a
 workflow as a CLI process and exits; a server deployment is required
-only for its server-mode operations. The cost relative to OxyMake is
-therefore a separate execution engine and a
+only for its server-mode operations. Cromwell also offers a call cache,
+disabled by default, keyed on the task command, the task inputs (input
+files hashed by content, \code{md5} by default on a local filesystem)
+and the \code{docker}, \code{continueOnReturnCode} and
+\code{failOnStderr} runtime attributes, with a floating image tag
+resolved to its immutable digest; that reuse is bound to a persistent
+Cromwell database rather than to the workflow declaration. The cost
+relative to OxyMake is therefore a separate execution engine, a
 more verbose specification
-(\S\ref{sec:snakemake-compat}).
+(\S\ref{sec:snakemake-compat}), and a reuse scope tied to a database
+deployment.
 Pegasus~\cite{deelmanPegasusWorkflowManagement2015} targets
 large-scale distributed workflows but requires significant infrastructure.
 
@@ -506,13 +524,15 @@ patterns---are resolved statically by a backward-chaining resolver before
 the scheduler begins execution. The scheduler then computes a topological
 order over the fully materialised DAG and dispatches jobs whose upstream
 dependencies are satisfied, with no runtime dependency discovery or
-suspend/resume. This positions OxyMake close to
-Bazel~\cite{bazel} in scheduling strategy---Bazel's analysis phase
-likewise constructs an action graph before execution, and it likewise
-caches on content---though the analogy is not an identity: Bazel
-supports action-time input discovery (\emph{discovered inputs}), so its
-evaluation graph is not fixed before execution in the way an OxyMake
-JobGraph is. OxyMake replaces Bazel's Starlark~\cite{starlark}
+suspend/resume. On the scheduler axis this places OxyMake with Make,
+Ninja and Buck; the topological/verifying-traces cell it claims is the
+one Mokhov et al.\ assign to Ninja. Bazel~\cite{bazel} is not in that
+column: it is classified as restarting, because it supports action-time
+input discovery (\emph{discovered inputs}), so its evaluation graph is
+not fixed before execution in the way an OxyMake JobGraph is. The
+affinity with Bazel is elsewhere---its analysis phase likewise
+constructs an action graph before execution, and it likewise caches on
+content. OxyMake replaces Bazel's Starlark~\cite{starlark}
 configuration layer with declarative TOML and adds
 domain-specific features (wildcard expansion, environment management, gates)
 for scientific workflows.  Meta's Buck2~\cite{buck2} pushes this design further
@@ -528,11 +548,15 @@ expanded at resolution time---before the job graph is constructed---so the
 scheduler never needs to suspend a running task to discover new
 dependencies.
 
-Dolstra's Nix thesis~\cite[ch.~6]{dolstraPurelyFunctionalSoftware2006} introduced
-content-addressed storage for software deployment, where store paths encode
-cryptographic hashes of all build inputs. OxyMake adopts this principle for
+Dolstra's Nix thesis~\cite[ch.~5]{dolstraPurelyFunctionalSoftware2006} introduced
+the input-addressed store for software deployment, where store paths encode
+cryptographic hashes of all build inputs; ch.~6's intensional model extends
+content-addressing to derivation outputs themselves. OxyMake adopts the
+input-addressed principle for
 workflow outputs: the cache key is a BLAKE3 hash of the rule source, input
-content hashes, parameters, environment specification, and platform. One
+content hashes, parameters, environment specification, and platform. The
+key is input-addressed; the artefact store beneath it is content-addressed,
+blobs being named by the BLAKE3 hash of their own bytes. One
 distinction must be drawn: Dolstra's observation that ``if a build
 succeeds, we know that we have specified all the dependencies'' rests on
 Nix's build \emph{sandbox}, which hides undeclared inputs from the builder
@@ -667,12 +691,13 @@ reusable result key from the content of all declared file inputs:
 Airflow's graph is built by executing Python, so its structure is
 available only after the DAG file has been run, and Argo's
 YAML---declarative in form---names container images and command lines
-without hashing the data flowing between steps. Both do expose
-memoization or caching mechanisms whose keys are user-supplied, and a
-user may therefore construct a content-derived key by hand; the
-contrast is the absence of an automatic declared-file-content key, not
-an impossibility. In their normal model, the unit of reuse is a
-scheduled task instance rather than a content-addressed result.
+without hashing the data flowing between steps. Argo does expose a
+memoization mechanism (\code{memoize:}, since v2.10) whose key is
+user-supplied, so a user may construct a content-derived key by hand;
+there the contrast is the absence of an automatic
+declared-file-content key, not an impossibility. Airflow exposes no
+task-result memoization primitive at all: a scheduled task instance is
+executed.
 
 Frameworks like Ray~\cite{moritzRayDistributedFramework2018} and
 Dask~\cite{rocklinDaskParallelComputation2015} provide distributed
@@ -1804,8 +1829,8 @@ $333$, and $3333$, i.e.\ exactly 101, 1{,}001, and 10{,}001 jobs, and
 the tables label them by these exact counts. The same DAG and per-job work are declared once
 as \code{workflow.toml} (OxyMake) and once as \code{workflow.smk}
 (Snakemake~7.32.4); only the orchestrator changes between runs. We
-benchmark the Snakemake~7.x line because it is the version that replaced
-live mtime comparison with recorded provenance, and is therefore the
+benchmark the Snakemake~7.x line because it is the version that added
+recorded provenance to the mtime comparison, and is therefore the
 strongest change-detection comparator; the 8.x line changes the executor
 and deployment model but not the provenance-based rebuild decision this
 paper compares against. DAG resolution
@@ -1817,8 +1842,12 @@ any jobs. The resolution phase is sub-100\,ms, so we time it with
 end-to-end phase below is minutes-scale and timed with \code{/usr/bin/time}.
 One scope note applies to every head-to-head number in this section
 and the next, naming exactly which validation mode produced it. DAG
-resolution (\code{ox plan} versus \code{snakemake --dryrun}) exercises
-no cache validation at all. The cold and warm end-to-end rows run
+resolution is not symmetric on this point: \code{ox plan} exercises no
+cache validation, whereas building the DAG in \code{snakemake --dryrun}
+evaluates the rerun triggers for every job unconditionally, so the dry
+run stats inputs and outputs, reads \code{.snakemake/metadata} and
+checksums eligible inputs. The ratio therefore bounds rather than
+isolates the resolution difference. The cold and warm end-to-end rows run
 Snakemake under its default rerun-triggers (recorded per-output
 provenance) and OxyMake under \code{--cache-validation=mtime}, the
 metadata fast path (\S\ref{sec:content-addressable}); an additional
@@ -1983,10 +2012,15 @@ the two measured endpoints at 10{,}001 jobs, 372\,ms (metadata only) and
 698\,ms (re-hash everything); it was not measured as a separate
 condition.
 
-\textbf{Snakemake~7.32.4 re-runs zero jobs.} Its recorded per-output
-provenance ignores live timestamps: it re-ran zero jobs even with the
-input's mtime forced to the year 2030, under an explicit
-\code{--rerun-triggers mtime}. The phantom-re-run failure mode is real
+\textbf{Snakemake~7.32.4 re-runs zero jobs.} It re-ran zero jobs even
+with the input's mtime forced to the year 2030, under an explicit
+\code{--rerun-triggers mtime}. The mechanism is not that live
+timestamps are ignored---they are compared first---but that an input
+newer than the oldest output counts as updated only if its recorded
+SHA-256 also fails to match. The perturbed file is 638 bytes, below the
+100{,}000-byte threshold above which Snakemake records no checksum, so
+the checksum decides here; a larger shared input would leave the mtime
+comparison to decide alone. The phantom-re-run failure mode is real
 for GNU Make and for any engine's pure-mtime fast path, but the
 benchmarked Snakemake version does not exhibit it.
 
@@ -2326,7 +2360,8 @@ DVC                 & pipeline stages  & content hashes        & Python runtime 
 Nextflow            & channels (Groovy)& path/size/mtime       & JVM runtime       & partial \\
 cwltool + Arvados   & CWL standard     & content-sensitive cache & platform        & varies \\
 Bazel / Buck2       & build targets    & content-addressed     & daemon            & partial \\
-Airflow/Prefect/Dagster & DAG-as-code  & task-instance memo    & service           & yes \\
+Airflow             & DAG-as-code      & none (task re-runs)   & service           & yes \\
+Prefect / Dagster   & DAG-as-code      & inputs + code version & service           & yes \\
 Dask / Ray          & task/actor API   & (execution substrate) & runtime/cluster   & API \\
 \textbf{OxyMake}    & file rules (TOML)& content key + index   & single Rust binary & yes (NDJSON, MCP) \\
 \bottomrule
@@ -2384,8 +2419,9 @@ combines a \emph{topological scheduler} (task order fixed before execution
 from the dependency graph) with \emph{verifying traces} (skip a task when
 its recorded input/output hashes still match disk) augmented by
 content-addressing.  All dependencies are resolved statically before
-execution, placing OxyMake in the same scheduler column as Make and
-Bazel rather than the suspending column occupied by Shake.  Unlike
+execution, placing OxyMake in the same scheduler column as Make, Ninja
+and Buck rather than the restarting column that holds Bazel or the
+suspending column occupied by Shake.  Unlike
 Make, OxyMake replaces dirty-bit rebuilding (re-run whenever any input
 timestamp changes) with content-addressed verifying traces, and unlike
 Bazel, it targets scientific workflows with declarative TOML rules,
