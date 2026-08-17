@@ -230,20 +230,28 @@ for size in $SIZES; do
     read -r wall rss <<< "$(clean_resolve "$OX plan -f workflow.toml --json" "$dir" "$RUNS")"
     emit "$size" "ox" "dag-resolve" "cold" "$wall" "$rss"
 
+    # The cold/warm end-to-end rows pin the validation policy explicitly rather
+    # than inheriting the shipped default, so the row is attributable to a named
+    # policy even if the default changes. `mtime+hash` IS the current default
+    # (crates/ox-cache/src/strategy.rs); pinning it keeps these rows comparable
+    # with earlier runs while making the condition readable in the harness.
     clean_workload "$dir"
-    read -r wall rss <<< "$(measured_run "$OX run -f workflow.toml -j $JOBS" "$dir")"
+    read -r wall rss <<< "$(measured_run "$OX run -f workflow.toml -j $JOBS --cache-validation mtime+hash" "$dir")"
     emit "$size" "ox" "e2e-run" "cold" "$wall" "$rss"
 
     read -r wall rss <<< "$(clean_resolve "$OX plan -f workflow.toml --json" "$dir" "$RUNS")"
     emit "$size" "ox" "dag-resolve" "warm" "$wall" "$rss"
 
-    read -r wall rss <<< "$(measured_run "$OX run -f workflow.toml -j $JOBS" "$dir")"
+    read -r wall rss <<< "$(measured_run "$OX run -f workflow.toml -j $JOBS --cache-validation mtime+hash" "$dir")"
     emit "$size" "ox" "e2e-run" "warm" "$wall" "$rss"
 
-    # Warm re-run under full content-addressing (--cache-validation hash). This
-    # is the mode the paper's correctness thesis rests on; the default warm row
-    # above is the mtime fast-path. Measuring both shows what hashing costs on
-    # a no-op rebuild.
+    # Warm re-run under the other two policies, on the same populated cache.
+    # `mtime` is the metadata-only fast path (opt-in); `hash` is full content
+    # re-verification, the mode the correctness thesis rests on. Measuring all
+    # three shows what each validation policy costs on a no-op rebuild.
+    read -r wall rss <<< "$(measured_run "$OX run -f workflow.toml -j $JOBS --cache-validation mtime" "$dir")"
+    emit "$size" "ox" "e2e-run" "warm-mtime" "$wall" "$rss"
+
     read -r wall rss <<< "$(measured_run "$OX run -f workflow.toml -j $JOBS --cache-validation hash" "$dir")"
     emit "$size" "ox" "e2e-run" "warm-hash" "$wall" "$rss"
 
