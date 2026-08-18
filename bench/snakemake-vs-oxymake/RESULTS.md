@@ -1,6 +1,6 @@
 # OxyMake vs Snakemake — head-to-head bench
 
-_Generated 2026-06-10._
+_Generated 2026-08-18._
 
 > **This is the single benchmark of record** cited by the paper
 > (§6, `docs/paper/oxymake-paper.tex`) and the README. It is the
@@ -64,34 +64,37 @@ DAG and the same per-job work; only the orchestrator changes between runs.
 
 ## Results
 
-### Headline (at 10,000 jobs, -j 16)
+### Headline (at 10,000 jobs, OxyMake `-j 16` / Snakemake `--cores 16`)
+
+OxyMake end-to-end rows run under `--cache-validation mtime+hash` unless the row names another policy; Snakemake runs its default rerun-triggers. DAG resolution exercises no cache validation.
 
 | Metric | Snakemake | OxyMake | Δ |
 |---|---:|---:|---|
-| DAG resolution (cold) | 2.31 s | 69 ms | OxyMake 33.29× faster |
-| DAG resolution (warm) | 2.56 s | 27 ms | OxyMake 93.39× faster |
-| End-to-end wall time (cold) | 1.6 min | 2.4 min | Snakemake 1.44× faster |
-| End-to-end wall time (warm cache) | 2.81 s | 372 ms | OxyMake 7.54× faster |
-| End-to-end warm re-run (hash mode) | 2.81 s | 698 ms | OxyMake 4.02× faster |
-| Job submission throughput | 104 jobs/s | 71 jobs/s | Snakemake 1.47× faster |
-| Peak RSS (e2e cold) | 184.7 MiB | 90.7 MiB | OxyMake 2.04× smaller |
+| DAG resolution (cold) | 2.72 s | 118 ms | OxyMake 23.01× faster |
+| DAG resolution (warm) | 3.07 s | 39 ms | OxyMake 78.14× faster |
+| End-to-end wall time (cold) | 1.5 min | 3.3 min | Snakemake 2.13× faster |
+| End-to-end wall time (warm cache) | 3.48 s | 1.38 s | OxyMake 2.52× faster |
+| End-to-end warm re-run (`mtime` mode) | 3.48 s | 500 ms | OxyMake 6.95× faster |
+| End-to-end warm re-run (`hash` mode) | 3.48 s | 1.82 s | OxyMake 1.91× faster |
+| Job submission throughput | 111 jobs/s | 51 jobs/s | Snakemake 2.19× faster |
+| Peak RSS (e2e cold) | 184.5 MiB | 89.9 MiB | OxyMake 2.05× smaller |
 | Cache decision correctness | minimal-rebuild | minimal-rebuild | equal |
 
 ### Scaling (cold end-to-end wall time)
 
 | Jobs (target) | Snakemake | OxyMake | Speedup |
 |---:|---:|---:|---:|
-| 100 | 1.10 s | 1.37 s | 0.80× |
-| 1,000 | 4.31 s | 9.74 s | 0.44× |
-| 10,000 | 1.6 min | 2.4 min | 0.70× |
+| 100 | 1.62 s | 2.39 s | 0.68× |
+| 1,000 | 6.75 s | 17.37 s | 0.39× |
+| 10,000 | 1.5 min | 3.3 min | 0.47× |
 
 ### Scaling (cold DAG resolution)
 
 | Jobs (target) | Snakemake | OxyMake | Speedup |
 |---:|---:|---:|---:|
-| 100 | 418 ms | 4 ms | 101.88× |
-| 1,000 | 512 ms | 10 ms | 50.68× |
-| 10,000 | 2.31 s | 69 ms | 33.29× |
+| 100 | 595 ms | 6 ms | 100.86× |
+| 1,000 | 792 ms | 13 ms | 60.49× |
+| 10,000 | 2.72 s | 118 ms | 23.01× |
 
 ### Cache-decision correctness
 
@@ -100,17 +103,17 @@ Protocol: rebuild cleanly, then overwrite one Layer-1 input. Expected re-run sco
 | Jobs | System | Jobs re-run | Expected | Status |
 |---:|---|---:|---:|---|
 | 100 | snakemake | 3 | 3 | ✓ minimal |
-| 100 | ox | 3 | 3 | ✓ minimal |
+| 100 | ox | 4 | 3 | ⚠ delta=1 |
 | 1,000 | snakemake | 3 | 3 | ✓ minimal |
-| 1,000 | ox | 3 | 3 | ✓ minimal |
+| 1,000 | ox | 4 | 3 | ⚠ delta=1 |
 | 10,000 | snakemake | 3 | 3 | ✓ minimal |
-| 10,000 | ox | 3 | 3 | ✓ minimal |
+| 10,000 | ox | 4 | 3 | ⚠ delta=1 |
 
 ### Content-addressing under git-checkout (mtime churn)
 
 Protocol: build cleanly, then bump the mtime of the shared tracked input (`bench_lib.py`, the `lib` input of every `process` job) **without changing a byte** — exactly what `git checkout`, a tree copy, or a backup-restore does. A purely timestamp-based decision must re-run every job that reads the file; a content-addressed decision must re-run **zero**. Re-run radius if anything fires: `process` + `finalize` + `merge` = `2·N + 1` jobs.
 
-| Jobs | Snakemake 7.32.4 | OxyMake (mtime, default) | OxyMake (`--cache-validation hash`) |
+| Jobs | Snakemake 7.32.4 | OxyMake (`--cache-validation mtime`) | OxyMake (`--cache-validation hash`) |
 |---:|---:|---:|---:|
 | 100 | 0 | 67 | 0 |
 | 1,000 | 0 | 667 | 0 |
@@ -119,8 +122,8 @@ Protocol: build cleanly, then bump the mtime of the shared tracked input (`bench
 **What the measurement shows — read this before citing it.**
 
 - **Snakemake 7.32.4 does _not_ phantom-re-run on mtime churn.** Its default rerun-triggers record per-output provenance (code, params, input set, software-env) rather than comparing live input-vs-output mtimes; a `touch` — or a far-future timestamp — leaves it at zero re-runs. The "a git checkout re-runs the whole campaign" failure mode is **not** exhibited by this version. Treat any prose that asserts it is (including the paper introduction) as unverified against the benchmarked version.
-- **OxyMake's mtime fast-path (the default) _is_ fooled** by the churn — it re-runs the full `2·N + 1` radius, because the cheap path trusts the timestamp it is named for.
-- **`--cache-validation hash` restores correctness** — zero re-runs, because the BLAKE3 key hashes content, not time. This buys **parity with Snakemake's robustness plus cross-machine / cross-cache portability** (where mtimes are meaningless), and it protects OxyMake's own mtime-default users. It does **not** demonstrate superiority over Snakemake on this scenario for the benchmarked version.
+- **OxyMake's pure `mtime` fast path _is_ fooled** by the churn — it re-runs the full `2·N + 1` radius, because the cheap path trusts the timestamp it is named for. It is opt-in, not the shipped default: the default is `mtime+hash`, which re-hashes a file whose metadata moved and therefore re-runs zero jobs here.
+- **`--cache-validation hash` restores correctness** — zero re-runs, because the BLAKE3 key hashes content, not time. This buys **parity with Snakemake's robustness plus cross-machine / cross-cache portability** (where mtimes are meaningless), and it protects OxyMake's own `mtime` users. It does **not** demonstrate superiority over Snakemake on this scenario for the benchmarked version.
 
 ![Scaling](scaling.pdf)
 
