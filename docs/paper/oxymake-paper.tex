@@ -236,7 +236,7 @@ Snakemake.
 
 \paragraph{Results.}
 On a synthetic 10,001-job workflow on one machine, OxyMake resolves the
-job graph in 118\,ms against Snakemake~7.32.4's 2.72\,s, a 23.0$\times$
+job graph in 118.3\,ms against Snakemake~7.32.4's 2.72\,s, a 23.0$\times$
 difference on graph resolution (\S\ref{sec:perf-bench}). A cold
 end-to-end run is 1.47--2.57$\times$ slower, because the content-key
 bookkeeping is written on the cold path; a warm no-op re-run is faster
@@ -266,8 +266,11 @@ Snakemake's
 default decision reads a per-tree provenance record, and its opt-in
 between-workflow cache (\code{--cache}) grafts a content-derived key
 beside that record as a per-rule side channel rather than replacing
-the default (\S\ref{sec:file-based}); Bazel, Buck2, and Nix take the
-daemon or the store as an operating premise. (DVC is the acknowledged
+the default (\S\ref{sec:file-based}); Bazel and Buck2 take the build daemon as
+their standard operating mode, and Nix the store as an operating
+premise.  (Bazel documents a \code{--batch} startup option that runs
+the client without a server, but it is deprecated and loses incremental
+state~\cite{bazelCommandLine}.) (DVC is the acknowledged
 exception: its default \code{dvc repro} decision already reads content
 hashes with no daemon, over pipeline stages rather than wildcard file
 rules---\S\ref{sec:file-based}.) Making a key that is a pure function
@@ -623,10 +626,9 @@ useful for placing OxyMake in the existing landscape.
 \toprule
 \textbf{Layer} & \textbf{Witness} & \textbf{Tool examples} \\
 \midrule
-L1 -- Substrate    & Same input hash $\Rightarrow$ same binary   & Guix store, Nix store,
+L1 -- Substrate    & Same input hash $\Rightarrow$ same path$^{\dagger}$ & Guix store, Nix store,
                                                                  Docker digest \\
-L2 -- Orchestration & Same plan hash $\Rightarrow$ same DAG       & OxyMake \code{ox.lock},
-                                                                 Snakemake \code{report} \\
+L2 -- Orchestration & Same plan hash $\Rightarrow$ same DAG       & OxyMake \code{ox.lock} \\
 L3 -- Execution    & Same DAG $\Rightarrow$ same output hashes$^{*}$ & OxyMake content-cache,
                                                                  Bazel actions \\
 L4 -- Audit        & Run trace decoupled from code               & OxyMake NDJSON +
@@ -639,7 +641,10 @@ L4 -- Audit        & Run trace decoupled from code               & OxyMake NDJSO
   L2--L4 witnesses \emph{without} providing L1, provided it does not
   report the substrate's guarantees as its own.
   $^{*}$The L3 witness holds only for deterministic rules on a fixed
-  substrate.}
+  substrate. $^{\dagger}$An input-addressed store fixes the output
+  \emph{store path}; bit-identical output bytes additionally require
+  the build itself to be
+  deterministic~\cite{nixosReproducibleBuilds}.}
 \label{tab:fair-ladder}
 \end{table}
 
@@ -852,7 +857,8 @@ three strategies through the \code{--cache-validation} option:
   \code{.oxymake/}; recording a completed job still writes the cache
   entry to the state database in every mode. No-op run time scales
   with workflow size: 313\,ms at 101 jobs and 500\,ms at
-  10{,}001 jobs (\S\ref{sec:e2e-bench}). Content is never verified, so this
+  10{,}001 jobs (the harness's \code{warm-mtime} rows at those two
+  scales; the 10{,}001-job figure is quoted in \S\ref{sec:e2e-bench}). Content is never verified, so this
   mode is unsuitable for shared or multi-user caches.
 \item \code{hash} --- always compute BLAKE3 hashes, unconditionally
   re-reading every byte.  The policy to use for CI reproducibility
@@ -1875,7 +1881,9 @@ compatibility (Section~\ref{sec:snakemake-compat}), startup overhead
 (Section~\ref{sec:startup-bench}), binary footprint
 (Section~\ref{sec:binary-bench}), and FAIR compliance
 (Section~\ref{sec:fair-eval}). All experiments were run on a single Apple
-M4~Max (16-core, 128\,GB RAM) running Darwin~25.5.0 (arm64); no
+M4~Max (16-core, 128\,GB RAM, arm64); the head-to-head harness ran on
+2026-08-18 under Darwin~25.5.0 and the startup and binary-footprint
+micro-benchmarks on 2026-04-01 under Darwin~24.6.0. No
 Linux/x86\_64 measurements were taken, and no cross-architecture claim
 is made. The DAG-resolution
 and end-to-end head-to-head numbers (Tables~\ref{tab:dag-resolution}
@@ -1894,7 +1902,8 @@ names the OxyMake \code{--cache-validation} policy that produced it.
 Dispersion (IQR or confidence intervals) is not
 reported; the statistical limits of the evaluation are stated in
 \S\ref{sec:limitations}. The startup and binary-footprint
-micro-benchmarks were timed separately as noted in their subsections.
+micro-benchmarks were timed separately; their per-run samples are in
+\code{docs/paper/experiment-results.md} in the public repository.
 
 \subsection{DAG Resolution Performance}
 \label{sec:perf-bench}
@@ -1919,7 +1928,8 @@ paper compares against. DAG resolution
 time was measured using \code{ox plan} for OxyMake and
 \code{snakemake --dryrun} for Snakemake---both parse the workflow, resolve all
 wildcards, build the job graph, and report the execution plan without running
-any jobs. The resolution phase is sub-100\,ms, so we time it with
+any jobs. The resolution phase is millisecond-scale
+(5.9--118.3\,ms across the measured scales), so we time it with
 \code{hyperfine} (statistical warmup, no subprocess-wrapper overhead); the
 end-to-end phase below is minutes-scale and timed with \code{/usr/bin/time}.
 One scope note applies to every head-to-head number in this section
@@ -1939,8 +1949,8 @@ to \code{hash}, full content re-verification. All three warm policies
 are measured separately and every row below names the one that
 produced it. The
 measurements that back the content-addressing thesis are that
-\code{hash}-mode row and the \code{git checkout} scenario---every
-mtime perturbed, no content changed, count the jobs each engine
+\code{hash}-mode row and the \code{git checkout} scenario---one shared
+input's mtime perturbed, no content changed, count the jobs each engine
 re-runs---reported in \S\ref{sec:git-checkout-bench}.
 
 \begin{table}[htbp]
@@ -1949,31 +1959,34 @@ re-runs---reported in \S\ref{sec:git-checkout-bench}.
 \toprule
 \textbf{Jobs} & \textbf{OxyMake \code{ox plan}} & \textbf{Snakemake \code{--dryrun}} & \textbf{Speedup} \\
 \midrule
-101      &    6\,ms  &  595\,ms     & 100.86$\times$ \\
-1{,}001  &   13\,ms  &  792\,ms     & 60.49$\times$ \\
-10{,}001 &  118\,ms  & 2{,}720\,ms  & 23.01$\times$ \\
+101      &    5.9\,ms  &    595.1\,ms  & 100.86$\times$ \\
+1{,}001  &   13.1\,ms  &    792.4\,ms  & 60.49$\times$ \\
+10{,}001 &  118.3\,ms  & 2{,}721.7\,ms  & 23.01$\times$ \\
 \bottomrule
 \end{tabular}
 \caption{DAG-resolution wall-clock time, median over hyperfine runs
   (benchmark harness \code{bench/snakemake-vs-oxymake/}). Measured 2026-08-18,
   Apple M4~Max (Darwin~25.5.0, 16 cores); OxyMake \code{ox plan},
-  Snakemake~7.32.4 \code{snakemake --dryrun}. Speedups are computed from
-  the unrounded measurements; the times shown are rounded. Raw
+  Snakemake~7.32.4 \code{snakemake --dryrun}. Times are shown at the
+  harness's recorded precision (0.1\,ms), so each speedup is the
+  quotient of the two times printed in its row. Raw
   measurements and the reproducer are in
   \code{bench/snakemake-vs-oxymake/RESULTS.md} in the public repository.}
 \label{tab:dag-resolution}
 \end{table}
 
-\noindent OxyMake resolves a 10{,}001-job DAG in 118\,ms versus
-Snakemake's 2.72\,s, a 23.01$\times$ difference on DAG resolution. The ratio
-\emph{narrows} with scale (100.86$\times$ at 101 jobs to 23.01$\times$ at 10{,}001)
-because Snakemake amortises its fixed Python-interpreter startup over more jobs
-while OxyMake's resolution grows linearly. That fixed cost dominates
-the small rows: a hundredfold increase in job count, from 101 to
-1{,}001 to 10{,}001, moves \code{snakemake --dryrun} only from 595\,ms
-to 792\,ms to 2.72\,s, so most of the 101-job row's 595\,ms is fixed
-interpreter startup and import rather than resolution work, and the
-100.86$\times$ entry should not be read as one. The
+\noindent OxyMake resolves a 10{,}001-job DAG in 118.3\,ms versus
+Snakemake's 2{,}721.7\,ms, a 23.01$\times$ difference on DAG resolution. The ratio
+\emph{narrows} with scale (100.86$\times$ at 101 jobs to 23.01$\times$ at 10{,}001),
+which is consistent with a fixed per-invocation cost in the Snakemake
+run being amortised over more jobs while OxyMake's resolution grows
+with job count. A hundredfold increase in job count, from 101 to
+1{,}001 to 10{,}001, moves \code{snakemake --dryrun} only from 595.1\,ms
+to 792.4\,ms to 2{,}721.7\,ms, so the 101-job row is dominated by cost that
+does not scale with the graph. These aggregate timings do not allocate
+that fixed cost among interpreter startup, imports, metadata work and
+resolution---we ran no phase-level profile---so the
+100.86$\times$ entry should not be read as a resolution-only ratio. The
 marginal ratio at 10{,}001 jobs---derived from a linear fit through the
 two endpoints---is $\approx$19$\times$. From 101 to 10{,}001 jobs ($\approx$100$\times$
 more work) OxyMake adds $\approx$112\,ms, a marginal cost of $\approx$11\,$\mu$s/job,
@@ -1995,17 +2008,21 @@ every job---and here OxyMake is \emph{slower} than Snakemake on a cold run.
 \toprule
 \textbf{Jobs} & \textbf{Snakemake} & \textbf{OxyMake} & \textbf{OxyMake / Snakemake} \\
 \midrule
-101      &  1.62\,s  &   2.39\,s  & 1.47$\times$ (slower) \\
-1{,}001  &  6.75\,s  &  17.37\,s  & 2.57$\times$ (slower) \\
-10{,}001 & 92.67\,s  & 196.93\,s  & 2.13$\times$ (slower) \\
+101      &   1.623\,s  &    2.386\,s  & 1.47$\times$ (slower) \\
+1{,}001  &   6.747\,s  &   17.367\,s  & 2.57$\times$ (slower) \\
+10{,}001 &  92.666\,s  &  196.934\,s  & 2.13$\times$ (slower) \\
 \bottomrule
 \end{tabular}
 \caption{Cold end-to-end wall time (same benchmark harness, measured
   2026-08-18; OxyMake \code{-j 16}, Snakemake \code{--cores 16}).
   OxyMake runs
   $1.47$--$2.57\times$ slower than Snakemake on a cold execution across scales.
-  Ratios are computed from the unrounded measurements; the times shown
-  are rounded. Warm-cache re-run is the inverse (next paragraph).}
+  Times are shown at the harness's recorded precision (1\,ms), so each
+  ratio is the quotient of the two times printed in its row. The
+  benchmark's rendered summary (\code{RESULTS.md}) prints the
+  10{,}001-job row rounded to minutes scale;
+  the seconds here are the same samples unrounded.
+  Warm-cache re-run is the inverse (next paragraph).}
 \label{tab:e2e}
 \end{table}
 
@@ -2027,12 +2044,12 @@ show what that bookkeeping provides:
 \begin{itemize}
   \item \textbf{Warm-cache re-run} (the common inner-loop case): at 10{,}001 jobs,
     with both engines at 16-way parallelism, OxyMake completes a no-op
-    rebuild in 1.38\,s under the shipped \code{mtime+hash} default
-    versus Snakemake's 3.48\,s---2.52$\times$ faster. Pinning
+    rebuild in 1.378\,s under the shipped \code{mtime+hash} default
+    versus Snakemake's 3.478\,s---2.52$\times$ faster. Pinning
     \code{--cache-validation=mtime}, the metadata fast path, brings the
-    same no-op rebuild to 500\,ms---6.95$\times$ faster---and
+    same no-op rebuild to 500.1\,ms---6.95$\times$ faster---and
     \code{--cache-validation=hash}, which re-hashes every input and
-    output before deciding, to 1.82\,s---1.91$\times$ faster, with
+    output before deciding, to 1.821\,s---1.91$\times$ faster, with
     every byte verified. The default sits between the two, as its
     definition implies: it re-hashes any file whose metadata moved.
   \item \textbf{Rebuild scope}: rewriting the content of one
@@ -2066,7 +2083,8 @@ Section~\ref{sec:fair-eval}.
 \label{sec:git-checkout-bench}
 
 The scenario that separates timestamp-trusting from content-checking
-validation is mtime churn: every timestamp moves, no byte changes. The
+validation is mtime churn: a shared input's timestamp moves, no byte
+changes. The
 harness reproduces it by bumping the mtime of a shared tracked input
 (\code{bench\_lib.py}, a declared \code{lib} input of every
 \code{process} job) after a clean build. This models the mtime-only
@@ -2160,7 +2178,7 @@ substantially, since per-target regex compilation was the dominant cost
 at scale.  A hash-based prefix index that would give expected $O(P)$
 construction and $O(T)$ lookup is future work, not part of the measured
 system.  The scaling observed across
-$101 \to 10{,}001$ jobs in Table~\ref{tab:dag-resolution} (6\,ms~$\to$~13\,ms~$\to$~118\,ms:
+$101 \to 10{,}001$ jobs in Table~\ref{tab:dag-resolution} (5.9\,ms~$\to$~13.1\,ms~$\to$~118.3\,ms:
 $\approx$112\,ms added for a $\approx$100$\times$ increase in job count, $\approx$11\,$\mu$s/job)
 is near-linear in job count because the rule count---and hence the
 per-target scan cost---stays small and fixed while the job count grows;
@@ -2271,12 +2289,15 @@ We measured cold-start time for three commands of increasing complexity:
 \code{ox lint} (1{,}000 rules) & 7\,ms \\
 \bottomrule
 \end{tabular}
-\caption{Startup time (median of 3~runs).}
+\caption{Startup time (median of 5~runs; per-run samples in
+  \code{docs/paper/experiment-results.md}, measured 2026-04-01 on the
+  same host under Darwin~24.6.0).}
 \label{tab:startup}
 \end{table}
 
-\noindent Startup time is 6--7\,ms regardless of workflow size (median of
-3~runs), so TOML parse time is negligible relative to binary startup. The
+\noindent Startup time is 6--7\,ms across the three commands measured
+(median of 5~runs), so TOML parse time is negligible relative to binary
+startup. The
 native Rust binary carries no Python or JVM startup overhead. These
 numbers are a component measurement rather than a usability comparison.
 
@@ -2294,7 +2315,9 @@ Binary type & Mach-O 64-bit arm64 \\
 Full release build time & 71\,s \\
 \bottomrule
 \end{tabular}
-\caption{Binary footprint and build metrics.}
+\caption{Binary footprint and build metrics (measured 2026-04-01 on
+  the same host under Darwin~24.6.0; recorded in
+  \code{docs/paper/experiment-results.md}).}
 \label{tab:binary}
 \end{table}
 
@@ -2470,9 +2493,9 @@ appears in some neighbour.
 GNU Make            & file rules       & live mtime            & binary            & no \\
 Snakemake~7         & file rules (Py)  & per-tree provenance   & Python runtime    & partial \\
 DVC                 & pipeline stages  & content hashes        & Python runtime    & partial \\
-Nextflow            & channels (Groovy)& path/size/mtime       & JVM runtime       & partial \\
+Nextflow            & channels (Groovy)& task hash$^{\ddagger}$  & JVM runtime       & partial \\
 cwltool + Arvados   & CWL standard     & content-sensitive cache & platform        & varies \\
-Bazel / Buck2       & build targets    & content-addressed     & daemon            & partial \\
+Bazel / Buck2       & build targets    & content-addressed     & daemon (default)  & partial \\
 Airflow             & DAG-as-code      & none (task re-runs)   & service           & yes \\
 Prefect / Dagster   & DAG-as-code      & inputs + code version & service           & yes \\
 Dask / Ray          & task/actor API   & (execution substrate) & runtime/cluster   & API \\
@@ -2491,7 +2514,12 @@ Dask / Ray          & task/actor API   & (execution substrate) & runtime/cluster
   opt-in \code{--cache} adds a content-keyed between-workflow cache
   beside the per-tree record without changing the default rebuild
   decision (\S\ref{sec:file-based}); DVC versions pipeline stages
-  rather than expanding wildcard file rules (\S\ref{sec:file-based}).}
+  rather than expanding wildcard file rules (\S\ref{sec:file-based}).
+  $^{\ddagger}$Nextflow's task hash covers the task script and its
+  referenced variables, the task inputs, the container, environment
+  modules and Conda/Spack environment, and the session; in the default
+  caching mode file inputs enter it by path, size and last-modified
+  time~\cite{nextflowCacheResume}.}
 \label{tab:landscape}
 \end{table}
 
@@ -2652,8 +2680,10 @@ All measurements come from a single machine (Apple M4~Max, macOS,
 arm64); a Linux/x86-64 replication has not been performed, and no
 cross-platform claim is made. End-to-end times are medians of three
 runs and resolution times are \code{hyperfine} medians; dispersion
-(IQR or confidence intervals) is not reported, and the 10{,}001-job
-end-to-end times are rounded to minutes scale. The reported ratios
+(IQR or confidence intervals) is not reported. The benchmark's
+rendered summary prints the 10{,}001-job end-to-end times rounded to
+minutes scale; Table~\ref{tab:e2e} quotes the same samples in seconds.
+The reported ratios
 should be read with these limits in mind.
 
 \paragraph{Maturity.}
