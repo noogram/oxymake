@@ -78,7 +78,7 @@ OxyMake end-to-end rows run under `--cache-validation mtime+hash` unless the row
 | End-to-end warm re-run (`hash` mode) | 3.48 s | 1.82 s | OxyMake 1.91× faster |
 | Job submission throughput | 111 jobs/s | 51 jobs/s | Snakemake 2.19× faster |
 | Peak RSS (e2e cold) | 184.5 MiB | 89.9 MiB | OxyMake 2.05× smaller |
-| Cache decision correctness | minimal-rebuild | minimal-rebuild | equal |
+| Cache decision correctness | 3 jobs re-run (expected 3) | 4 jobs re-run (expected 3) | Snakemake minimal; OxyMake +1 |
 
 ### Scaling (cold end-to-end wall time)
 
