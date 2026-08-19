@@ -148,7 +148,10 @@ of which starts with nothing and recomputes what is already correct.
 OxyMake\footnote{Source code and project site:
 \url{https://github.com/noogram/oxymake}
 (\url{https://oxymake.noogram.dev}). Repository paths cited in this
-paper refer to tag \code{v0.1.0}.}
+paper refer to tag \code{v0.1.0}. The head-to-head measurements of
+\S\ref{sec:perf-bench}--\S\ref{sec:git-checkout-bench} were taken at
+commit \code{03864f8}, not at that tag; the build is stated in
+\S\ref{sec:evaluation}.}
 takes the opposite position, and takes it with no operational system
 behind it. \code{ox run} ensures the declared
 outputs exist, executing
@@ -233,13 +236,14 @@ Snakemake.
 
 \paragraph{Results.}
 On a synthetic 10,001-job workflow on one machine, OxyMake resolves the
-job graph in 69\,ms against Snakemake~7.32.4's 2.31\,s, a 33.3$\times$
+job graph in 118\,ms against Snakemake~7.32.4's 2.72\,s, a 23.0$\times$
 difference on graph resolution (\S\ref{sec:perf-bench}). A cold
-end-to-end run is 1.25--2.3$\times$ slower, because the content-key
-bookkeeping is written on the cold path; a warm no-op re-run is
-4.02--7.54$\times$ faster, depending on validation policy
-(7.54$\times$ under \code{mtime}, 4.02$\times$ under \code{hash};
-both engines at 16-way parallelism) (\S\ref{sec:e2e-bench}). Because concurrent \code{ox run} processes
+end-to-end run is 1.47--2.57$\times$ slower, because the content-key
+bookkeeping is written on the cold path; a warm no-op re-run is faster
+by a factor that depends on the validation policy: 2.52$\times$ under
+the shipped \code{mtime+hash} default, 6.95$\times$ under \code{mtime}
+and 1.91$\times$ under \code{hash} (both engines at 16-way
+parallelism) (\S\ref{sec:e2e-bench}). Because concurrent \code{ox run} processes
 create more interleavings than a test suite can sample, three TLA+
 specifications~\cite{lamportSpecifyingSystems2002} model-check bounded
 safety properties of the concurrent state protocol
@@ -847,7 +851,7 @@ three strategies through the \code{--cache-validation} option:
   stateless filesystem comparison with no dependency on
   \code{.oxymake/}; recording a completed job still writes the cache
   entry to the state database in every mode. No-op run time scales
-  with workflow size: sub-100\,ms on small workflows, 372\,ms at
+  with workflow size: 313\,ms at 101 jobs and 500\,ms at
   10{,}001 jobs (\S\ref{sec:e2e-bench}). Content is never verified, so this
   mode is unsuitable for shared or multi-user caches.
 \item \code{hash} --- always compute BLAKE3 hashes, unconditionally
@@ -1880,7 +1884,14 @@ and~\ref{tab:e2e}) come from a single head-to-head benchmark harness,
 sub-second resolution phase is
 timed with \code{hyperfine} (median over its statistical runs), and the
 minutes-scale end-to-end phase with \code{/usr/bin/time} as the median
-of three runs. Dispersion (IQR or confidence intervals) is not
+of three runs. The measured build is the in-tree
+\code{cargo build --release} binary at commit \code{03864f8} of the
+public repository (invoked as \code{target/release/ox}, not a binary
+resolved from \code{\$PATH}), against Snakemake~7.32.4 installed with
+\code{pip}; OxyMake ran at \code{-j 16} and Snakemake at
+\code{--cores 16} on an otherwise idle host, and every end-to-end row
+names the OxyMake \code{--cache-validation} policy that produced it.
+Dispersion (IQR or confidence intervals) is not
 reported; the statistical limits of the evaluation are stated in
 \S\ref{sec:limitations}. The startup and binary-footprint
 micro-benchmarks were timed separately as noted in their subsections.
@@ -1921,14 +1932,12 @@ checksums eligible inputs. The ratio therefore bounds rather than
 isolates the resolution difference. The cold and warm end-to-end rows run
 Snakemake under its default rerun-triggers (recorded per-output
 provenance) at \code{--cores 16}, and OxyMake at \code{-j 16} under
-\code{--cache-validation=mtime}, the
-metadata fast path (\S\ref{sec:content-addressable}); an additional
-warm run uses \code{--cache-validation=hash}, full content
-re-verification. The \code{mtime} rows were produced by the default in
-force at measurement time; the shipped default is now
-\code{mtime+hash}, which re-hashes a file whose metadata moved and so
-does not follow the metadata fast path on a warm re-run. The harness
-now pins the validation policy on each row. The
+the shipped \code{--cache-validation=mtime+hash} default
+(\S\ref{sec:content-addressable}); two additional warm runs pin
+\code{--cache-validation} to \code{mtime}, the metadata fast path, and
+to \code{hash}, full content re-verification. All three warm policies
+are measured separately and every row below names the one that
+produced it. The
 measurements that back the content-addressing thesis are that
 \code{hash}-mode row and the \code{git checkout} scenario---every
 mtime perturbed, no content changed, count the jobs each engine
@@ -1940,13 +1949,13 @@ re-runs---reported in \S\ref{sec:git-checkout-bench}.
 \toprule
 \textbf{Jobs} & \textbf{OxyMake \code{ox plan}} & \textbf{Snakemake \code{--dryrun}} & \textbf{Speedup} \\
 \midrule
-101      &   4\,ms  &  418\,ms     & 101.9$\times$ \\
-1{,}001  &  10\,ms  &  512\,ms     & 50.7$\times$ \\
-10{,}001 &  69\,ms  & 2{,}310\,ms  & 33.3$\times$ \\
+101      &    6\,ms  &  595\,ms     & 100.86$\times$ \\
+1{,}001  &   13\,ms  &  792\,ms     & 60.49$\times$ \\
+10{,}001 &  118\,ms  & 2{,}720\,ms  & 23.01$\times$ \\
 \bottomrule
 \end{tabular}
 \caption{DAG-resolution wall-clock time, median over hyperfine runs
-  (benchmark harness \code{bench/snakemake-vs-oxymake/}). Measured 2026-06-10,
+  (benchmark harness \code{bench/snakemake-vs-oxymake/}). Measured 2026-08-18,
   Apple M4~Max (Darwin~25.5.0, 16 cores); OxyMake \code{ox plan},
   Snakemake~7.32.4 \code{snakemake --dryrun}. Speedups are computed from
   the unrounded measurements; the times shown are rounded. Raw
@@ -1955,18 +1964,19 @@ re-runs---reported in \S\ref{sec:git-checkout-bench}.
 \label{tab:dag-resolution}
 \end{table}
 
-\noindent OxyMake resolves a 10{,}001-job DAG in 69\,ms versus
-Snakemake's 2.31\,s, a 33.3$\times$ difference on DAG resolution. The ratio
-\emph{narrows} with scale (101.9$\times$ at 101 jobs to 33.3$\times$ at 10{,}001)
+\noindent OxyMake resolves a 10{,}001-job DAG in 118\,ms versus
+Snakemake's 2.72\,s, a 23.01$\times$ difference on DAG resolution. The ratio
+\emph{narrows} with scale (100.86$\times$ at 101 jobs to 23.01$\times$ at 10{,}001)
 because Snakemake amortises its fixed Python-interpreter startup over more jobs
 while OxyMake's resolution grows linearly. That fixed cost dominates
-the small rows: \code{snakemake --dryrun} on a two-rule, one-job
-workflow on this host family takes 0.40--0.45\,s, so the 101-job row's
-418\,ms is essentially all interpreter startup and import, and the
-101.9$\times$ entry is not a measurement of resolution work. The
+the small rows: a hundredfold increase in job count, from 101 to
+1{,}001 to 10{,}001, moves \code{snakemake --dryrun} only from 595\,ms
+to 792\,ms to 2.72\,s, so most of the 101-job row's 595\,ms is fixed
+interpreter startup and import rather than resolution work, and the
+100.86$\times$ entry should not be read as one. The
 marginal ratio at 10{,}001 jobs---derived from a linear fit through the
-two endpoints---is $\approx$29$\times$. From 101 to 10{,}001 jobs ($\approx$100$\times$
-more work) OxyMake adds $\approx$65\,ms, a marginal cost of $\approx$6.6\,$\mu$s/job,
+two endpoints---is $\approx$19$\times$. From 101 to 10{,}001 jobs ($\approx$100$\times$
+more work) OxyMake adds $\approx$112\,ms, a marginal cost of $\approx$11\,$\mu$s/job,
 consistent with a per-target lookup whose cost is a handful of precompiled
 regex matches at this rule count (Section~\ref{sec:scale-study}).
 \textbf{This comparison is scoped to DAG resolution}; the end-to-end
@@ -1985,13 +1995,15 @@ every job---and here OxyMake is \emph{slower} than Snakemake on a cold run.
 \toprule
 \textbf{Jobs} & \textbf{Snakemake} & \textbf{OxyMake} & \textbf{OxyMake / Snakemake} \\
 \midrule
-101      & 1.10\,s  &  1.37\,s   & 1.25$\times$ (slower) \\
-1{,}001  & 4.31\,s  &  9.74\,s   & 2.26$\times$ (slower) \\
-10{,}001 & 1.6\,min &  2.4\,min  & 1.44$\times$ (slower) \\
+101      &  1.62\,s  &   2.39\,s  & 1.47$\times$ (slower) \\
+1{,}001  &  6.75\,s  &  17.37\,s  & 2.57$\times$ (slower) \\
+10{,}001 & 92.67\,s  & 196.93\,s  & 2.13$\times$ (slower) \\
 \bottomrule
 \end{tabular}
-\caption{Cold end-to-end wall time (same benchmark harness). OxyMake runs
-  $1.25$--$2.3\times$ slower than Snakemake on a cold execution across scales.
+\caption{Cold end-to-end wall time (same benchmark harness, measured
+  2026-08-18; OxyMake \code{-j 16}, Snakemake \code{--cores 16}).
+  OxyMake runs
+  $1.47$--$2.57\times$ slower than Snakemake on a cold execution across scales.
   Ratios are computed from the unrounded measurements; the times shown
   are rounded. Warm-cache re-run is the inverse (next paragraph).}
 \label{tab:e2e}
@@ -2015,32 +2027,36 @@ show what that bookkeeping provides:
 \begin{itemize}
   \item \textbf{Warm-cache re-run} (the common inner-loop case): at 10{,}001 jobs,
     with both engines at 16-way parallelism, OxyMake completes a no-op
-    rebuild in 372\,ms under \code{--cache-validation=mtime} versus
-    Snakemake's 2.81\,s---7.54$\times$ faster. Under
-    \code{--cache-validation=hash}, which
-    re-hashes every input and output before deciding, the same no-op
-    rebuild takes 698\,ms---still 4.02$\times$ faster than Snakemake, with
-    every byte verified. The shipped \code{mtime+hash} default sits
-    between the two and closer to \code{hash}, because it re-hashes any
-    file whose metadata moved.
-  \item \textbf{Minimal-rebuild correctness}: rewriting the content of one
-    Layer-1 input, both
-    systems re-run exactly the 3 affected jobs at every scale---OxyMake's
-    content-addressed decision is as tight as Snakemake's provenance
-    decision, and its computation key is identical on any machine of the
+    rebuild in 1.38\,s under the shipped \code{mtime+hash} default
+    versus Snakemake's 3.48\,s---2.52$\times$ faster. Pinning
+    \code{--cache-validation=mtime}, the metadata fast path, brings the
+    same no-op rebuild to 500\,ms---6.95$\times$ faster---and
+    \code{--cache-validation=hash}, which re-hashes every input and
+    output before deciding, to 1.82\,s---1.91$\times$ faster, with
+    every byte verified. The default sits between the two, as its
+    definition implies: it re-hashes any file whose metadata moved.
+  \item \textbf{Rebuild scope}: rewriting the content of one
+    Layer-1 input, the expected re-run scope is 3 jobs
+    (\code{process}, \code{finalize}, \code{merge}). Snakemake re-runs
+    exactly 3 at every scale; OxyMake re-runs 4, one more than the
+    minimum, at every scale. OxyMake's content-addressed decision is
+    therefore tight but not measured to be minimal on this workload;
+    the extra job is a scope overshoot we have not diagnosed. Its
+    computation key is identical on any machine of the
     same platform where a per-tree record is bound to one tree (the
     platform term in Eq.~\ref{eq:cache-key} scopes the key to one
     OS/arch pair; heterogeneous reuse is future work, and the
     rebuild-decision preconditions are stated in
     \S\ref{sec:introduction}).
   \item \textbf{Memory}: peak resident set of the orchestrator on the cold
-    10{,}001-job run is 90.7\,MiB for OxyMake versus 184.7\,MiB for
-    Snakemake---2.04$\times$ smaller.
+    10{,}001-job run is 89.9\,MiB for OxyMake versus 184.5\,MiB for
+    Snakemake---2.05$\times$ smaller.
 \end{itemize}
 
-\noindent In summary, on this workload OxyMake is 1.25--2.3$\times$
-slower on cold runs and 4.02--7.54$\times$ faster on warm no-op runs,
-depending on validation policy. These results should not be
+\noindent In summary, on this workload OxyMake is 1.47--2.57$\times$
+slower on cold runs and, on warm no-op runs at 10{,}001 jobs,
+2.52$\times$ faster under the shipped \code{mtime+hash} default,
+6.95$\times$ under \code{mtime} and 1.91$\times$ under \code{hash}. These results should not be
 generalized beyond the evaluated workload.
 Section~\ref{sec:scale-study} treats DAG-resolution scaling; the FAIR
 contract that the cold-path bookkeeping underwrites is evaluated in
@@ -2074,7 +2090,7 @@ in total; a decision that checks content must re-run zero.
 \bottomrule
 \end{tabular}
 \caption{Jobs re-run after bumping a shared input's mtime without
-  changing a byte (same benchmark harness, measured 2026-06-10).
+  changing a byte (same benchmark harness, measured 2026-08-18).
   Validation modes are explicit: Snakemake runs its default
   rerun-triggers (recorded provenance); the OxyMake columns pin
   \code{--cache-validation} to \code{mtime} and \code{hash}
@@ -2091,10 +2107,11 @@ policy re-runs the $N$ jobs that read the perturbed file, and the
 cascade carries their $N$ dependents and \code{merge} with them. The
 \code{mtime+hash} policy re-hashes a file whose metadata moved before
 deciding, so a churned tree re-runs zero jobs; the only cost is the
-re-hash of the perturbed files---a warm-run cost that falls between
-the two measured endpoints at 10{,}001 jobs, 372\,ms (metadata only) and
-698\,ms (re-hash everything); it was not measured as a separate
-condition.
+re-hash of the perturbed files. Its re-run count in this scenario was
+not measured as a separate column, but its warm no-op \emph{time} was:
+at 10{,}001 jobs it is 1.38\,s, between the 500\,ms of the
+metadata-only path and the 1.82\,s of re-hashing everything
+(\S\ref{sec:e2e-bench}).
 
 \textbf{Snakemake~7.32.4 re-runs zero jobs.} It re-ran zero jobs even
 with the input's mtime forced to the year 2030, under an explicit
@@ -2128,7 +2145,7 @@ middle column documents.
 \label{sec:scale-study}
 
 The measured resolution times in Table~\ref{tab:dag-resolution}
-($\leq$69\,ms at 10{,}001 jobs) are already small, but the naive
+($\leq$118\,ms at 10{,}001 jobs) are already small, but the naive
 backward-chaining algorithm parses and compiles every candidate output
 pattern for every target it resolves---$O(T \times P)$ pattern
 compilations to resolve $T$ targets against $P$ output patterns, with a
@@ -2143,13 +2160,13 @@ substantially, since per-target regex compilation was the dominant cost
 at scale.  A hash-based prefix index that would give expected $O(P)$
 construction and $O(T)$ lookup is future work, not part of the measured
 system.  The scaling observed across
-$101 \to 10{,}001$ jobs in Table~\ref{tab:dag-resolution} (4\,ms~$\to$~10\,ms~$\to$~69\,ms:
-$\approx$65\,ms added for a $\approx$100$\times$ increase in job count, $\approx$6.6\,$\mu$s/job)
+$101 \to 10{,}001$ jobs in Table~\ref{tab:dag-resolution} (6\,ms~$\to$~13\,ms~$\to$~118\,ms:
+$\approx$112\,ms added for a $\approx$100$\times$ increase in job count, $\approx$11\,$\mu$s/job)
 is near-linear in job count because the rule count---and hence the
 per-target scan cost---stays small and fixed while the job count grows;
 quadratic behaviour would surface only if rules and targets grew
 together.  Beyond the measured range we report only projections: extrapolating
-the slope suggests $\sim$0.3\,s at $5\times10^4$ jobs and sub-second at $10^5$
+the slope suggests $\sim$0.6\,s at $5\times10^4$ jobs and $\sim$1.1\,s at $10^5$
 jobs. \textbf{These are algorithmic-headroom projections, not measurements}---the
 harness was run to 10{,}001 jobs only; $5\times10^4$ and $10^5$
 were not measured.
@@ -2411,9 +2428,12 @@ broader bioinformatics and genomics ecosystems.
 \toprule
 \textbf{Benchmark} & \textbf{Result} \\
 \midrule
-DAG resolution @ 1{,}001 jobs   & 10\,ms \\
-DAG resolution @ 10{,}001 jobs  & 69\,ms \\
-DAG res. speedup @ 10{,}001 jobs & 33.3$\times$ \\
+DAG resolution @ 1{,}001 jobs   & 13\,ms \\
+DAG resolution @ 10{,}001 jobs  & 118\,ms \\
+DAG res. speedup @ 10{,}001 jobs & 23.01$\times$ \\
+Cold end-to-end @ 10{,}001 jobs & 2.13$\times$ slower \\
+Warm no-op @ 10{,}001 jobs (\code{mtime+hash}) & 2.52$\times$ faster \\
+Peak RSS, cold @ 10{,}001 jobs & 89.9\,MiB (2.05$\times$ smaller) \\
 Startup time (\code{ox --help}) & 6\,ms \\
 Binary size (default)      & 14.9\,MB \\
 Test suite                 & \metricTests~passing \\
@@ -2713,10 +2733,11 @@ program. \code{ox run} ensures the declared outputs exist, runs only
 the jobs that are missing or out of date, and is safe to repeat.
 
 The measured costs and benefits are bounded. On a
-synthetic 10,001-job workflow on one machine, DAG resolution takes 69\,ms
-against Snakemake~7.32.4's 2.31\,s; a cold end-to-end run is
-1.25--2.3$\times$ slower, and a warm no-op re-run is 4.02--7.54$\times$
-faster, depending on validation policy. Three TLA+ specifications
+synthetic 10,001-job workflow on one machine, DAG resolution takes 118\,ms
+against Snakemake~7.32.4's 2.72\,s; a cold end-to-end run is
+1.47--2.57$\times$ slower, and a warm no-op re-run is 2.52$\times$
+faster under the shipped \code{mtime+hash} default, 6.95$\times$ under
+\code{mtime} and 1.91$\times$ under \code{hash}. Three TLA+ specifications
 model-check bounded safety of the concurrent state protocol. The cache
 key is computed from the declared specification only, so an undeclared
 read can cause stale reuse; output re-verification depth is a policy;
