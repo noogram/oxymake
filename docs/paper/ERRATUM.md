@@ -456,5 +456,384 @@ directory) in `ops/audits/panel-findings-verification-2026-08.md`.
 
 ---
 
+## E. Claims corrected by the adversarial pre-mortem review (2026-08)
+
+Sections A–C came from an external review, section D from turning the check
+inward. This section records the outcome of a third pass: a two-seat
+adversarial pre-mortem double review of the paper (45 findings), a
+verification pass that established each finding against a primary source, a
+second referee round (15 further findings), and a regeneration of the
+benchmark of record on an idle host with the binary pinned to the tree. Only
+findings whose verdict was CONFIRMED or PARTIAL were acted on, and in every
+case the text was corrected against the code or the cited source, never the
+other way round.
+
+Entries appear here only when the false claim was published in v2. Several
+corrections landed on text that was written after v2 and so need no entry.
+
+### E.1 Characterisations of other systems
+
+**Snakemake 7 replaced timestamp comparison with a provenance record.**
+*v2 wording (introduction):* "since the 7.x line it records per-output
+provenance (code, parameters, input set, software environment) instead of
+comparing live input-versus-output timestamps." *v2 wording (related work):*
+"Its change detection has evolved from live mtime comparison to recorded
+per-output provenance in the 7.x line."
+
+The recorded checksum is additive, not a replacement. In Snakemake 7.32.4 an
+input is collected into `reason.updated_input` only when it exists, is newer
+than the oldest output, **and** its recorded SHA-256 no longer matches
+(`snakemake/dag.py:1141-1152`); the mtime test is the first conjunct. A
+checksum is recorded only for inputs smaller than 100,000 bytes
+(`snakemake/io.py:582-588`), and for a larger input the mtime comparison
+decides alone (`dag.py:1076-1083`). The benchmark's perturbed file is 638
+bytes, which is why the checksum decides there. v3 states the conjunction and
+the threshold, and no longer says that live timestamps are ignored.
+Source: Snakemake 7.32.4 as installed, files and lines above.
+
+**`snakemake --dryrun` exercises no cache validation.**
+*v2 wording:* "DAG resolution (`ox plan` versus `snakemake --dryrun`)
+exercises no cache validation at all."
+
+`DAG.init()` calls `update_needrun(create_inventory=True)` unconditionally
+(`snakemake/dag.py:248`), and `init()` is on the dry-run path
+(`workflow.py:895`). The dry run therefore stats inputs and outputs, builds an
+mtime inventory, reads `.snakemake/metadata` and checksums eligible inputs.
+`ox plan` does none of this: it never constructs a `CacheStore`. The
+comparison is not symmetric, so the ratio bounds rather than isolates the
+resolution difference. v3 says so.
+Source: `snakemake/dag.py:248`, `snakemake/workflow.py:895`;
+`crates/ox-cli/src/commands/plan.rs`.
+
+**Nix: chapter 6 introduced content-addressed storage.**
+*v2 wording:* "Dolstra's Nix thesis [ch. 6] introduced content-addressed
+storage for software deployment, where store paths encode cryptographic hashes
+of all build inputs."
+
+Chapter 5 is the extensional model — the input-addressed store, which is what
+the quoted sentence describes. Chapter 6 is the intensional model, which
+extends content-addressing to derivation outputs. v3 cites ch. 5 for the
+input-addressed store and names ch. 6 for what it actually contains, and adds
+that OxyMake's key is input-addressed while the artefact store beneath it is
+content-addressed.
+Source: [Eelco Dolstra, *The Purely Functional Software Deployment Model*,
+2006](https://edolstra.github.io/pubs/phd-thesis.pdf), chapters 1, 5 and 6.
+
+**Bazel placed in OxyMake's scheduler column.**
+*v2 wording:* "placing OxyMake in the same scheduler column as Make and Bazel
+rather than the suspending column occupied by Shake."
+
+Mokhov, Mitchell and Peyton Jones classify Bazel's scheduler as *restarting*,
+not topological, because it supports action-time input discovery; the
+topological × verifying-traces cell OxyMake claims is the one they assign to
+Ninja. v3 places OxyMake with Make, Ninja and Buck, and states that Bazel is
+in the restarting column. The affinity with Bazel that does hold — an analysis
+phase that builds an action graph before execution, and content-based caching
+— is stated as such.
+Source: Mokhov, Mitchell, Peyton Jones, *Build Systems à la Carte: Theory and
+Practice*, JFP 30 (2020), Tables 1 and 2.
+
+**Snakemake's `report` as a same-plan-hash witness.**
+*v2 wording:* the reproducibility-ladder table listed "OxyMake `ox.lock`,
+Snakemake `report`" as tool examples for the L2 witness "same plan hash ⇒ same
+DAG".
+
+A Snakemake report is a self-contained HTML/ZIP artefact carrying runtime
+statistics, provenance information and workflow topology. The documentation
+defines no plan hash and makes no DAG-identity claim from hash equality. v3
+lists `ox.lock` alone in that cell.
+Source: [Snakemake — reports](https://snakemake.readthedocs.io/en/stable/snakefiles/reporting.html).
+
+**"Same input hash ⇒ same binary" as the substrate witness.**
+*v2 wording:* the same table's L1 row read "Same input hash ⇒ same binary",
+with Guix, Nix and Docker digests as examples.
+
+An input-addressed store fixes the output *store path*; bit-identical output
+bytes additionally require the build itself to be deterministic. The Nix
+project states that deterministic references and sandboxing "alone [are] not
+sufficient: builds may still leak timestamps or have other nondeterminisms."
+v3 reads "same path" and carries the distinction in the caption. This is the
+same conflation section B corrects for Nix and Guix in prose; it survived in
+the table.
+Source: [reproducible.nixos.org](https://reproducible.nixos.org/).
+
+### E.2 OxyMake's own claims
+
+**"No hardcoded thresholds."**
+*v2 wording:* "The engine never interprets intent (no heuristics, no hardcoded
+thresholds)."
+
+The engine carries fixed operational constants. `ox clean` treats a session as
+stale at a heartbeat age of five minutes
+(`crates/ox-cli/src/commands/clean.rs:126`, `:275-277`, calling
+`find_stale_sessions(300)`). The defensible claim is that no threshold depends
+on the workload; v3 makes that claim and names the five-minute constant.
+Source: `crates/ox-cli/src/commands/clean.rs:126`;
+`crates/ox-state/src/session.rs:142`.
+
+**"Sub-100 ms no-op runs with no dependency on `.oxymake/`."**
+*v2 wording (`mtime` policy):* "delivers sub-100 ms no-op runs with no
+dependency on `.oxymake/`."
+
+Two errors. The independence holds for the *lookup* only: recording a
+completed job writes the cache entry to the state database in every mode
+(`crates/ox-cli/src/commands/run.rs:533-560`). And no-op run time scales with
+workflow size — the smallest measured `mtime` warm run is 313 ms at 101 jobs,
+and 500 ms at 10,001 jobs. v3 states both.
+Source: `crates/ox-cli/src/commands/run.rs:500-508`, `:533-560`;
+`bench/snakemake-vs-oxymake/data/measurements.tsv`.
+
+**"The resolution phase is sub-100 ms."**
+*v2 wording:* "The resolution phase is sub-100 ms, so we time it with
+`hyperfine`."
+
+The same subsection's own table reported 69 ms at the largest scale in v2 and
+118.3 ms in the re-measured run. v3 says "millisecond-scale (5.9–118.3 ms
+across the measured scales)".
+Source: `bench/snakemake-vs-oxymake/RESULTS.md`.
+
+**The three-argument cache-key guarantee.**
+*v2 wording:* "same inputs + same rule + same parameters ⇒ same cache key."
+
+The key equation has seven arguments: key-format version, rule source, input
+content hashes, parameters, environment specification, shell, and platform.
+Three of them are not optional refinements — an environment or shell change
+alone changes the key. v3 states the whole declared specification and its
+scope conditions.
+Source: the cache-key equation in v3; `crates/ox-cache/src/key.rs`.
+
+**The `output missing` cascade as a derived correctness property.**
+*v2 wording:* "The 'output missing' row addresses a subtle correctness
+property that timestamp-based systems miss."
+
+When a recorded output is missing, OxyMake re-executes its producer and,
+unconditionally, that producer's transitive dependents; it does not re-check
+whether a regenerated input's hash still matches
+(`crates/ox-cli/src/commands/run.rs:1194-1212`). That is a topologically
+propagated dirty bit — a conservative policy, not a property derived from
+content. v3 states it as a policy and names the behaviour.
+Source: `crates/ox-cli/src/commands/run.rs:1194-1212`.
+
+**`InMemory` outputs are promoted to `File`, so "the workflow runs correctly
+everywhere".**
+*v2 wording:* "the scheduler automatically promotes `InMemory` outputs to
+`File` — the workflow runs correctly everywhere, with degraded performance on
+backends that lack native object stores."
+
+Promotion is bounded by the configured serialization format: a value the
+format cannot represent does not survive it, and `materialize = "never"` means
+memory-only and not cached. Both limits are stated elsewhere in the paper. v3
+states the condition where the promotion is claimed.
+Source: v3 execution-spectrum and limitations sections.
+
+**"Adding rules never invalidates existing results."**
+*v2 wording:* "content-addressable incrementality (adding rules never
+invalidates existing results)."
+
+A new rule does not change the key of a job whose own declared specification
+is unchanged, but it can change which rule produces a path, or make resolution
+ambiguous: the resolver collects every matching producer and returns
+`AmbiguousProducer` when priorities do not separate them
+(`crates/ox-core/src/resolver.rs:227-260`). A workflow that resolved before can
+fail to resolve after. v3 states the narrower property and the residual hazard.
+Source: `crates/ox-core/src/resolver.rs:227-260`.
+
+**`Send + Sync` bounds enforce thread safety.**
+*v2 wording:* "`Send + Sync` bounds enforce thread safety for the concurrent
+scheduler"; elsewhere, "`Send + Sync` bounds make the concurrent scheduler
+thread-safe by construction."
+
+These bounds rule out data races on shared state at compile time. They do not
+cover the protocol-level hazards the paper's own TLA+ section exists for:
+deadlock, lost updates, and torn multi-step protocols across sessions. v3
+states what the bounds rule out and points at the specifications for the rest.
+Source: v3 implementation section and the section on named invariants.
+
+**`ox-core` never performs file I/O.**
+*v2 wording:* "Each crate has a strict boundary: `ox-core` never performs file
+I/O or network calls … These boundaries are enforced by Cargo dependency
+rules."
+
+`crates/ox-core/src/disk_writer.rs` is production code and performs
+`create_dir_all`, `File::create`, `rename` and a parent-directory fsync;
+`crates/ox-core/src/scheduler.rs` reads files on the scheduler path; and
+`ox-core`'s manifest enables tokio's `fs` feature. Nor does Cargo enforce the
+boundaries: it prevents a crate from calling a *workspace* crate it does not
+depend on, but `std::fs`, `std::net` and `std::process` are linked into every
+crate without appearing in any manifest, and "never decides whether a job
+should re-run" is a semantic property no dependency graph constrains. The
+no-network half of the claim holds. v3 states the intended boundaries, what
+Cargo actually enforces, and the one boundary not held today.
+Source: `crates/ox-core/src/disk_writer.rs`, `crates/ox-core/src/scheduler.rs`,
+`crates/ox-core/Cargo.toml`.
+
+**Audit metrics are "impossible to backfill".**
+*v2 wording:* "It is impossible to backfill if not collected from run 1."
+
+Metrics not recorded at the time of a run cannot be reconstructed afterwards,
+which is the true and weaker statement. The table is append-only by convention
+only: there is no hash chain, no signature and no tamper-evidence in
+`crates/ox-state/src`. v3 says both.
+Source: `crates/ox-state/src/db.rs:118`, `:1220`; `crates/ox-state/src/lib.rs:26`.
+
+**"Translation is bidirectional."**
+*v2 wording:* "Translation is **bidirectional** and supports multiple source
+formats"; "The bidirectional translator bridges both ecosystems: bioinformatics
+teams can import their existing WDL workflows into OxyMake … and export back to
+WDL."
+
+`ox translate` and `ox export` exist for both Snakemake and WDL, but only the
+Snakemake import direction is evaluated anywhere in the paper: the repository
+contains no `.wdl` file, and `benchmark/snakemake-compat/` holds four Snakemake
+workflows and no export-direction experiment. v3 keeps the commands and states
+that the export direction and WDL translation are described but not exercised.
+Source: `benchmark/snakemake-compat/`; absence of any `.wdl` file in the
+repository.
+
+**The resolution bound `O(R × P)`.**
+*v2 wording:* "in time O(R × P) in the rule count R and the output-pattern
+count P"; "the asymptotic complexity remains O(R × P)"; "a hash-based prefix
+index that would reduce lookup to amortized O(R + P)."
+
+`ProducerIndex::build` makes one pass over rules × output patterns, i.e. O(P)
+construction, and `find_producer` is a linear scan over the same P entries per
+target. Since `entries` already ranges over all rules, R does not multiply P;
+resolving T targets costs O(T × P). v3 states a one-time O(P) compilation plus
+O(T × P) lookup, and gives the future-work bound as expected O(P) construction
+and O(T) lookup.
+Source: `crates/ox-core/src/resolver.rs:207-221`, `:227-244`.
+
+**The FAIR indicator codes.**
+*v2 wording:* the FAIR table's column was headed "Indicator" and its rows were
+labelled F1–F3, A1–A2, I1–I3, R1–R3 against the cited FAIR-workflow
+literature.
+
+Wilkinson et al. (*Sci Data* 12:328, 2025) define the indicator set F1, F1.1,
+F1.2, F2, F3, F4 / A1, A1.1, A1.2, A2 / I1, I2, I3, I4 / R1, R1.1, R1.2, R1.3,
+R2, R3. Seven of the paper's eleven rows carried a code whose definition does
+not match the row: F3 there is "metadata explicitly include the workflow
+identifier", A2 is "metadata accessible even when the workflow is no longer
+available", R1 is "a plurality of accurate and relevant attributes", R2 is
+"qualified references to other workflows", and I1–I3 are likewise mismatched;
+F4 and I4 appear nowhere in the paper. Renumbering would have meant reassessing
+every row against a finer set, so v3 drops the codes, heads the column
+"Aspect", and states in the caption that the labels are this paper's own
+condensation and not the numbered indicators of Wilkinson et al. Section C's
+withdrawal of "native compliance on 9 of 11" stands; two further rows —
+provenance and reproducibility — are downgraded from Native to Partial on the
+paper's own grounds.
+Source: [Wilkinson et al., *Sci Data* 12:328 (2025)](https://www.nature.com/articles/s41597-025-04451-9), Table 1.
+
+**The scaling ladder "without modification".**
+*v2 wording:* "the same declarative workflow runs on a local machine (`-j N`),
+SLURM cluster (`--executor slurm`), or Kubernetes (`--executor k8s`) without
+modification."
+
+The workflow *file* is accepted unchanged, but neither distributed path is
+exercised in the evaluation, and both require the workspace — state database
+included — on storage visible to the submission and compute nodes, which the
+local-disk requirement of section D does not support. The Kubernetes executor
+is designed and not implemented. v3 says all three things.
+Source: v3 executor-backends and evaluation sections; section D above.
+
+**The BLAKE3 throughput figure.**
+*v2 wording:* "over 6.9 GiB/s single-threaded on modern x86-64 hardware."
+
+The figure is a Cascade Lake-SP measurement on a 16 KiB input, and the
+evaluated host is arm64, where BLAKE3 takes a different SIMD path. The hash
+phase was never profiled in this system. v3 names the platform of the published
+figure, states that the evaluated architecture is a different one, and keeps
+the concession that the expectation rests on published figures for another
+architecture rather than on a measurement of this system.
+Source: the BLAKE3 entry in `docs/paper/references.bib`.
+
+**Startup time "median of 3 runs".**
+*v2 wording:* "Startup time (median of 3 runs)."
+
+`docs/paper/experiment-results.md` records five runs per command and reports
+the median of five. The same file dates the startup and binary-footprint
+micro-benchmarks to 2026-04-01 under Darwin 24.6.0, whereas v2's evaluation
+preamble stated one Darwin version for all experiments. v3 corrects the run
+count and separates the two measurement dates and OS versions. The v2 gloss
+"regardless of workflow size" also generalised from three measured commands and
+is narrowed to them.
+Source: `docs/paper/experiment-results.md:3-5`, `:8`, `:35-46`.
+
+### E.3 The measured results
+
+**Every head-to-head number in v2 is superseded, not refined.**
+*v2 wording:* the DAG-resolution, end-to-end, warm-rerun and memory figures of
+the evaluation section.
+
+The benchmark of record was regenerated on an otherwise idle host with the
+`ox` binary built from the tree under measurement (`cargo build --release`,
+invoked as `target/release/ox` rather than resolved from `$PATH`) at commit
+`03864f8`, against Snakemake 7.32.4, both engines at 16-way parallelism. These
+are different samples from a different run, not a re-rounding of v2's, and they
+replace v2's throughout:
+
+| Quantity (10,001 jobs unless noted) | v2 | v3 |
+|---|---|---|
+| `ox plan` / `snakemake --dryrun` @ 101 | 4 ms / 418 ms | 5.9 ms / 595.1 ms |
+| `ox plan` / `snakemake --dryrun` @ 1,001 | 10 ms / 512 ms | 13.1 ms / 792.4 ms |
+| `ox plan` / `snakemake --dryrun` @ 10,001 | 69 ms / 2,310 ms | 118.3 ms / 2,721.7 ms |
+| Resolution speedups (101 / 1,001 / 10,001) | 101.9× / 50.7× / 33.3× | 100.86× / 60.49× / 23.01× |
+| Cold end-to-end, Snakemake / OxyMake | 1.6 min / 2.4 min | 92.666 s / 196.934 s |
+| Cold end-to-end ratio range across scales | 1.25–2.3× slower | 1.47–2.57× slower |
+| Warm no-op, Snakemake | 2.81 s | 3.478 s |
+| Warm no-op, OxyMake `mtime` | 372 ms (7.54×) | 500.1 ms (6.95×) |
+| Warm no-op, OxyMake `hash` | 698 ms (4.02×) | 1.821 s (1.91×) |
+| Warm no-op, OxyMake `mtime+hash` | not measured | 1.378 s (2.52×) |
+| Peak RSS, cold, OxyMake / Snakemake | 90.7 / 184.7 MiB | 89.9 / 184.5 MiB |
+
+v2 also carried the warm figures without naming the validation policy that
+produced them, and described the shipped `mtime+hash` default as following the
+same metadata fast path as `mtime` on an undisturbed tree. It does not: it
+re-hashes any file whose metadata moved, and the measured gap between the two
+is a factor of 2.8. Every warm figure in v3 names its policy, and the
+`mtime+hash` default is now measured rather than inferred.
+Source: `bench/snakemake-vs-oxymake/RESULTS.md` and
+`bench/snakemake-vs-oxymake/data/measurements.tsv`, regenerated at commit
+`03864f8`.
+
+**"Both systems re-run exactly the 3 affected jobs."**
+*v2 wording:* "**Minimal-rebuild correctness**: rewriting the content of one
+Layer-1 input, both systems re-run exactly the 3 affected jobs at every scale —
+OxyMake's content-addressed decision is as tight as Snakemake's provenance
+decision."
+
+The record contradicts this. The expected scope is 3 jobs; Snakemake re-runs 3
+at every scale and OxyMake re-runs 4. v3 reports both counts, renames the
+finding from "minimal-rebuild correctness" to "rebuild scope", and states that
+the decision is tight but not measured to be minimal on this workload, with the
+extra job named as an undiagnosed overshoot.
+Source: `bench/snakemake-vs-oxymake/RESULTS.md`, detailed rebuild-scope table.
+
+**An unprofiled causal explanation of the narrowing resolution ratio.**
+*v2 wording:* the ratio narrows with scale "because Snakemake amortises its
+fixed Python-interpreter startup over more jobs while OxyMake's resolution
+grows linearly … so most of the 101-job row is fixed interpreter startup and
+import rather than resolution work."
+
+The harness records aggregate wall time per (size, system, phase, cache) and
+nothing finer; no phase-level profile exists. The aggregate timings support the
+statement that the small rows are dominated by cost that does not scale with
+the graph, but not the allocation of that cost among interpreter startup,
+imports, metadata work and resolution. v3 states the observation and withholds
+the mechanism.
+Source: `bench/snakemake-vs-oxymake/run.sh` and its recorded columns.
+
+**"Every mtime perturbed."**
+*v2 wording:* "the `git checkout` scenario — every mtime perturbed, no content
+changed"; "mtime churn: every timestamp moves, no byte changes."
+
+The harness runs a single `touch` on one shared input, `bench_lib.py`, and its
+own comment says so. One file's mtime moves. The re-run counts are unaffected —
+the file is a declared input of every `process` job — but the scenario
+description overstated the perturbation. v3 says "one shared input's mtime".
+Source: `bench/snakemake-vs-oxymake/run.sh:292-300`, `:305`, `:312`, `:320`.
+
+---
+
 *Maintained by Noogram. Corrections and counterexamples are welcome as issues
 on `noogram/oxymake`.*
