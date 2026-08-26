@@ -833,6 +833,111 @@ the file is a declared input of every `process` job — but the scenario
 description overstated the perturbation. v3 says "one shared input's mtime".
 Source: `bench/snakemake-vs-oxymake/run.sh:292-300`, `:305`, `:312`, `:320`.
 
+### E.4 Corrections from the round-3 referee pass (2026-08-27)
+
+A third, two-seat referee round was run on the v3 draft before submission.
+Nine of its findings were confirmed against the paper, the repository, or a
+primary source. The seven below correct wording that was published in v2; the
+remainder landed on text written after v2.
+
+**"The local, SLURM, and Ray executors are fully implemented."**
+*v2 wording (limitations, "Distributed executors"):* "The local, SLURM, and Ray
+executors are fully implemented."
+
+Both distributed backends require the workspace — inputs, outputs and the
+state database — on storage visible to the submission and the compute nodes,
+while `.oxymake/` is created in the process working directory and cannot be
+relocated by any flag, config key or environment variable. The two
+requirements cannot be satisfied together, so neither backend has a supported
+deployment configuration in v0.1.0. v3 says that the local executor is the one
+exercised here and that the Slurm and Ray executors are implemented but have
+no supported deployment configuration, and it weakens the contribution and
+introduction claims from "runs the same workflow from a laptop to Slurm or
+Ray" to "accepts the same workflow file unmodified".
+Source: the paper's own §3.4 and §7.3 local-disk requirement.
+
+**Binary size, startup time and release build time were measured on a
+different tree from the one evaluated.**
+*v2 wording:* "a 14.9\,MB statically-linked executable"; "`ox --help` 6\,ms";
+"Full release build time 71\,s".
+
+Those three figures come from `docs/paper/experiment-results.md` dated
+2026-04-01, which records the tree it measured as 52,514 Rust SLOC, 23 crates
+and 1,330 tests. The paper describes and evaluates a tree of 64,596 SLOC, 25
+crates and 1,928 tests. All three were re-measured at commit `1a4f724` on
+2026-08-27, on the same host: the binary is 17,421,504 bytes (17.4 MB),
+`ox --help` has a `hyperfine -N` median of 2.21 ms over 200 runs (2.37 ms for
+`ox lint` on 10 rules, 5.85 ms on 1,000 rules), and a `cargo build --release`
+over the workspace after `cargo clean --release` takes 25.7 s. The startup
+figures are not directly comparable with the 2026-04-01 ones, which were taken
+through a Python `subprocess` harness that includes its own spawn cost; v3
+says so where it quotes them.
+Source: `docs/paper/experiment-results.md`, section "Re-measurement at commit
+`1a4f724`".
+
+**Pegasus "requires significant infrastructure".**
+*v2 wording (related work):* "Pegasus targets large-scale distributed
+workflows but requires significant infrastructure."
+
+Pegasus documents a localhost deployment scenario: "The simplest execution
+environment does not involve HTCondor. Pegasus is capable of planning small
+workflows for local execution using a shell planner." Significant
+infrastructure is a property of its distributed modes, not a requirement of
+the system. v3 states the range and locates the contrast in the distributed
+modes' execution and data-staging infrastructure.
+Source: Pegasus user guide, "Deployment Scenarios — Localhost"
+(<https://pegasus.isi.edu/documentation/user-guide/deployment-scenarios.html>).
+
+**"TOML parsing completes in microseconds."**
+*v2 wording (performance ceiling):* "TOML parsing completes in microseconds
+(versus Python import time of hundreds of milliseconds)."
+
+No measurement in the record isolates parse time. `experiment-results.md`
+measures whole-command elapsed time and cannot establish a microsecond figure
+for one phase inside it. v3 keeps the design distinction — the workflow format
+is inert, parsed as data rather than executed — and drops the timing.
+Source: `docs/paper/experiment-results.md`, experiment 3.
+
+**The year-2030 mtime and the explicit `--rerun-triggers mtime`.**
+*v2 wording (mtime-churn benchmark):* "it re-ran zero jobs even with the
+input's mtime forced to the year 2030, under an explicit
+`--rerun-triggers mtime`."
+
+The harness runs a plain `touch` on `bench_lib.py` and invokes Snakemake under
+its default rerun-triggers; neither the year 2030 nor an explicit
+`--rerun-triggers mtime` appears in it or in the recorded results. What the
+record supports is a `touch` and a far-future timestamp, both at zero re-runs,
+under the default triggers. v3 says that. The companion figure in the same
+paragraph — the perturbed file at 638 bytes — is correct: `bench_lib.py` is
+638 bytes.
+Source: `bench/snakemake-vs-oxymake/run.sh:292-330`,
+`bench/snakemake-vs-oxymake/RESULTS.md` (mtime-churn findings note),
+`bench/snakemake-vs-oxymake/bench_lib.py`.
+
+**"Heavy plugins (Kubernetes, S3) are opt-in features."**
+*v2 wording (plugin architecture):* "Heavy plugins (Kubernetes, S3) are opt-in
+features. This ensures the default binary remains small and fast to build."
+
+Neither backend is implemented, as the same subsection and the limitations
+section state, so there is nothing to opt into. v3 describes the feature-flag
+mechanism as where those plugins will be gated when implemented, and credits
+it today with excluding optional codecs and reporters.
+Source: the paper's own §4.5 "(planned)" markers, §6.8 and §7.3.
+
+**The build-system classification stated without its exception.**
+*v2 wording (build system theory):* "In this taxonomy, OxyMake combines a
+topological scheduler with a verifying-traces rebuilder augmented with
+content-addressing."
+
+The deleted-output cascade propagates staleness unconditionally: it does not
+re-check whether a regenerated input's hash still matches, so on that path the
+engine behaves as a topologically propagated dirty bit rather than as a
+verifying-traces rebuilder. v3 already disclosed this where the cascade is
+described; the disclosure is now also attached to the classification itself.
+Source: the paper's §4.6.
+
+---
+
 ---
 
 *Maintained by Noogram. Corrections and counterexamples are welcome as issues

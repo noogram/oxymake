@@ -168,11 +168,12 @@ packaging property: it is what lets the key be recomputed in a checkout
 nobody provisioned.
 The workflow is a declarative TOML file; a three-line rule with
 \code{input}, \code{output}, and \code{shell} is a valid workflow. It is
-executed by a single 14.9\,MB Rust binary that bundles no interpreter
-and needs no daemon; \code{ox --help} returns in 6\,ms
-(\S\ref{sec:startup-bench}, \S\ref{sec:binary-bench}). The same file
-runs sequentially, in parallel (\code{-j N}), or---by changing one
-flag---on a Slurm cluster or under Ray (\S\ref{sec:distributed-related}).
+executed by a single 17.4\,MB Rust binary that bundles no interpreter
+and needs no daemon; \code{ox --help} returns in 2.2\,ms
+(\S\ref{sec:startup-bench}, \S\ref{sec:binary-bench}). The same file is
+accepted sequentially, in parallel (\code{-j N}), and---by changing one
+flag---by the Slurm and Ray backends, neither of which has a supported
+deployment configuration in v0.1.0 (\S\ref{sec:distributed-related}).
 The evaluation in this paper is single-machine; no distributed
 performance is measured (\S\ref{sec:evaluation}).
 
@@ -239,8 +240,9 @@ Snakemake.
 On a synthetic 10,001-job workflow on one machine, OxyMake resolves the
 job graph in 118.3\,ms against Snakemake~7.32.4's 2.72\,s, a 23.0$\times$
 difference on graph resolution (\S\ref{sec:perf-bench}). A cold
-end-to-end run is 1.47--2.57$\times$ slower, because the content-key
-bookkeeping is written on the cold path; a warm no-op re-run is faster
+end-to-end run is 1.47--2.57$\times$ slower; the differential is
+consistent with content-key bookkeeping on the cold path, but was not
+phase-profiled; a warm no-op re-run is faster
 by a factor that depends on the validation policy: 2.52$\times$ under
 the shipped \code{mtime+hash} default, 6.95$\times$ under \code{mtime}
 and 1.91$\times$ under \code{hash} (both engines at 16-way
@@ -297,9 +299,13 @@ This paper contributes:
   shared jobs independently (\S\ref{sec:named-invariants}).
 \item \textbf{Single-binary implementation with pluggable executor
   backends.} A
-  14.9\,MB Rust binary with a backward-chaining resolver runs the same
-  workflow from a laptop to Slurm or Ray without editing the workflow
-  (\S\ref{sec:implementation}, \S\ref{sec:distributed-related}).
+  17.4\,MB Rust binary with a backward-chaining resolver accepts the
+  same workflow file unmodified on a laptop, on Slurm, and under Ray.
+  The Slurm and Ray backends are implemented but have no supported
+  deployment configuration in v0.1.0, because both need the workspace
+  visible to the compute nodes while \code{.oxymake/} must be on local
+  disk (\S\ref{sec:implementation},
+  \S\ref{sec:distributed-related}, \S\ref{sec:limitations}).
 \item \textbf{A machine-readable execution interface.} Structured
   NDJSON events and command-based gate approval let a program or agent
   consume and drive a run without scraping terminal output; an MCP
@@ -516,8 +522,11 @@ the \code{cache 'deep'} directive. The axis that separates it from
 OxyMake is therefore the Groovy DSL and the JVM runtime rather than the
 absence of a content key.
 
-Pegasus~\cite{deelmanPegasusWorkflowManagement2015} targets
-large-scale distributed workflows but requires significant infrastructure.
+Pegasus~\cite{deelmanPegasusWorkflowManagement2015} targets workflows
+from localhost execution---which its shell planner supports without
+HTCondor---to large distributed resources; its distributed modes
+introduce execution and data-staging infrastructure beyond OxyMake's
+local design point.
 
 \subsection{Build System Theory}
 \label{sec:build-theory}
@@ -540,7 +549,10 @@ Shake~\cite{mitchellShakeBuildSystem2012},
 Bazel~\cite{bazel}, Nix) occupy specific cells.
 
 In this taxonomy, OxyMake combines a \textbf{topological scheduler} with a
-\textbf{verifying-traces rebuilder} augmented with content-addressing. All
+\textbf{verifying-traces rebuilder} augmented with content-addressing,
+with one exception: the deleted-output cascade of
+\S\ref{sec:idempotent} propagates staleness unconditionally and is a
+dirty-bit path. All
 dependencies---including wildcard expansions and scatter/gather
 patterns---are resolved statically by a backward-chaining resolver before
 the scheduler begins execution. The scheduler then computes a topological
@@ -972,8 +984,8 @@ ox run results/all.vcf.gz -j 8 --json
 \subsection{Executor Backends}
 \label{sec:distributed}
 
-The same workflow file runs at every scale; moving from a laptop to a
-cluster changes one flag, not the workflow. Three executor backends are
+The same workflow file is accepted by every backend; moving from a
+laptop to a cluster changes one flag, not the workflow. Three executor backends are
 implemented---local, Slurm, and Ray---where the local backend runs
 sequentially by default and in parallel with \code{-j N}; the Kubernetes
 executor is designed but not yet
@@ -1002,8 +1014,12 @@ with the inputs and outputs resolved relative to it. On a cluster the
 scheduler runs on the submission node and holds the SQLite state there;
 compute nodes run jobs and never touch the database. Multi-node
 coordination across NFS, Lustre, or GPFS, and coordination across
-multiple submission nodes, are future work (\S\ref{sec:limitations}). The evaluation is single-machine; no Slurm or
-Ray run is measured (\S\ref{sec:evaluation}).
+multiple submission nodes, are future work (\S\ref{sec:limitations}).
+Because the Slurm and Ray backends need the workspace---inputs, outputs
+and state database---visible to the compute nodes, neither has a
+supported deployment configuration in v0.1.0. The evaluation is
+single-machine; no Slurm or Ray run is measured
+(\S\ref{sec:evaluation}).
 
 \subsection{Named Invariants and Formal Specifications}
 \label{sec:named-invariants}
@@ -1389,9 +1405,10 @@ only.
 
 Plugin selection is compile-time via Cargo feature flags. The minimal binary
 (local executor + local storage + system environment + terminal reporter +
-basic codecs) has minimal dependencies and compiles fast. Heavy plugins
-(Kubernetes, S3) are opt-in features. This ensures the default binary
-remains small and fast to build.
+basic codecs) has minimal dependencies and compiles fast. The feature-flag
+mechanism is where heavy plugins (Kubernetes, S3) will be gated when
+implemented; today it keeps the default binary small by excluding
+optional codecs and reporters.
 
 The \code{Executor} trait is the primary extension point:
 
@@ -1606,8 +1623,8 @@ bypasses this path.
 
 \paragraph{Performance ceiling.}
 Three properties bound the engine's speed. The workflow format is
-inert: TOML parsing takes microseconds, where a Python-DSL workflow incurs
-interpreter import time on every invocation. The graph algorithms
+inert: it is parsed as data rather than executed, where a Python-DSL
+workflow incurs interpreter import time on every invocation. The graph algorithms
 are asymptotically cheap: the \code{petgraph} library~\cite{petgraph}
 provides an $O(|V|+|E|)$ topological sort via Kahn's algorithm, and the
 \code{ProducerIndex} pays a one-time $O(P)$ pattern compilation in the
@@ -1682,7 +1699,8 @@ force decides how much of the path below it walks.
 Equation~\ref{eq:cache-key}---key-format version, rule source, the
 content hashes of the declared inputs, parameters, environment
 specification, shell, and platform---into one BLAKE3 digest. Under
-\code{--cache-validation=mtime} no key is computed at all.
+\code{--cache-validation=mtime} no key is computed \emph{on the lookup
+path}; it is still computed at registration.
 
 \paragraph{Lookup.}
 Under \code{mtime} the lookup is a stateless filesystem comparison:
@@ -1838,8 +1856,9 @@ that premise fails and the property is not claimed
 \section{Evaluation}
 \label{sec:evaluation}
 
-We evaluate OxyMake along seven axes: performance benchmarks on synthetic
-workflows (Section~\ref{sec:perf-bench}), the content-addressing
+We evaluate OxyMake along eight axes: performance benchmarks on synthetic
+workflows (Section~\ref{sec:perf-bench}), end-to-end execution
+(Section~\ref{sec:e2e-bench}), the content-addressing
 behaviour under mtime churn (Section~\ref{sec:git-checkout-bench}), a
 scalability study with
 algorithmic optimization (Section~\ref{sec:scale-study}), Snakemake
@@ -1849,7 +1868,8 @@ compatibility (Section~\ref{sec:snakemake-compat}), startup overhead
 (Section~\ref{sec:fair-eval}). All experiments were run on a single Apple
 M4~Max (16-core, 128\,GB RAM, arm64); the head-to-head harness ran on
 2026-08-18 under Darwin~25.5.0 and the startup and binary-footprint
-micro-benchmarks on 2026-04-01 under Darwin~24.6.0. No
+micro-benchmarks on 2026-08-27 at commit \code{1a4f724} under
+Darwin~25.5.0. No
 Linux/x86\_64 measurements were taken, and no cross-architecture claim
 is made. The DAG-resolution
 and end-to-end head-to-head numbers (Tables~\ref{tab:dag-resolution}
@@ -2097,9 +2117,9 @@ at 10{,}001 jobs it is 1.38\,s, between the 500\,ms of the
 metadata-only path and the 1.82\,s of re-hashing everything
 (\S\ref{sec:e2e-bench}).
 
-\textbf{Snakemake~7.32.4 re-runs zero jobs.} It re-ran zero jobs even
-with the input's mtime forced to the year 2030, under an explicit
-\code{--rerun-triggers mtime}. The mechanism is not that live
+\textbf{Snakemake~7.32.4 re-runs zero jobs.} Under its default
+rerun-triggers it re-ran zero jobs, both under a plain \code{touch} and
+with a far-future mtime. The mechanism is not that live
 timestamps are ignored---they are compared first---but that an input
 newer than the oldest output counts as updated only if its recorded
 SHA-256 also fails to match. The perturbed file is 638 bytes, below the
@@ -2175,10 +2195,11 @@ six-rule RNA-seq counting workflow over four samples driven by a
 five-rule multi-sample QC workflow over five samples. The workflows, their
 translated Oxymakefiles, and the full result log are in the public
 repository under \code{benchmark/snakemake-compat/} (see
-\code{RESULTS.md} there). The equivalence oracle is the output file tree:
-the translated Oxymakefile produced the same set of output paths as the
-Snakemake source. This checks structural translation, not byte-identical
-outputs of nondeterministic commands.
+\code{RESULTS.md} there). The recorded outcome is per-workflow
+translation, dry-run and execution status together with the number of
+manual fixes; the record contains no source-versus-translated comparison
+of the output file tree, so no output-equivalence result is claimed
+here.
 
 \textbf{None of the four ran unmodified.} All four executed to completion
 only \emph{after} manual fixes to the translated Oxymakefile, between
@@ -2250,20 +2271,24 @@ We measured cold-start time for three commands of increasing complexity:
 \toprule
 \textbf{Command} & \textbf{Wall-clock time} \\
 \midrule
-\code{ox --help}             & 6\,ms \\
-\code{ox lint} (10 rules)    & 7\,ms \\
-\code{ox lint} (1{,}000 rules) & 7\,ms \\
+\code{ox --help}             & 2.2\,ms \\
+\code{ox lint} (10 rules)    & 2.4\,ms \\
+\code{ox lint} (1{,}000 rules) & 5.9\,ms \\
 \bottomrule
 \end{tabular}
-\caption{Startup time (median of 5~runs; per-run samples in
-  \code{docs/paper/experiment-results.md}, measured 2026-04-01 on the
-  same host under Darwin~24.6.0).}
+\caption{Startup time (\code{hyperfine} median of 200~runs, shell
+  bypassed; measured 2026-08-27 at commit \code{1a4f724} on the same
+  host under Darwin~25.5.0 and recorded in
+  \code{docs/paper/experiment-results.md}).}
 \label{tab:startup}
 \end{table}
 
-\noindent Startup time is 6--7\,ms across the three commands measured
-(median of 5~runs), so TOML parse time is negligible relative to binary
-startup. The
+\noindent Startup time is 2.2--5.9\,ms across the three commands
+measured. An earlier run of these three commands (2026-04-01, on a
+52{,}514-SLOC tree) reported 6--7\,ms under a Python
+\code{subprocess} harness whose spawn overhead is included in the
+figure; the numbers above were re-measured at the evaluated build with
+\code{hyperfine -N}, so they are not directly comparable with it. The
 native Rust binary carries no Python or JVM startup overhead. These
 numbers are a component measurement rather than a usability comparison.
 
@@ -2276,18 +2301,21 @@ numbers are a component measurement rather than a usability comparison.
 \toprule
 \textbf{Metric} & \textbf{Value} \\
 \midrule
-Binary size (release, default features) & 14.9\,MB \\
+Binary size (release, default features) & 17.4\,MB \\
 Binary type & Mach-O 64-bit arm64 \\
-Full release build time & 71\,s \\
+Full release build time (clean tree) & 26\,s \\
 \bottomrule
 \end{tabular}
-\caption{Binary footprint and build metrics (measured 2026-04-01 on
-  the same host under Darwin~24.6.0; recorded in
+\caption{Binary footprint and build metrics (measured 2026-08-27 at
+  commit \code{1a4f724} on the same host under Darwin~25.5.0; the
+  binary is 17{,}421{,}504 bytes, and the build time is the wall clock
+  of \code{cargo build --release} after \code{cargo clean --release}
+  with the dependency sources already fetched. Recorded in
   \code{docs/paper/experiment-results.md}).}
 \label{tab:binary}
 \end{table}
 
-\noindent The 14.9\,MB binary includes all default-feature crates
+\noindent The 17.4\,MB binary includes all default-feature crates
 (among them the TUI monitor, web dashboard, and Snakemake/WDL translator). It is
 one self-contained executable that bundles no interpreter and needs no
 OxyMake daemon, linking only the host platform's system libraries;
@@ -2437,8 +2465,8 @@ DAG resolution           & ---               &  118.3\,ms & 2{,}721.7\,ms & 23.0
   plan} with \code{snakemake --dryrun}, which is not a symmetric
   comparison (\S\ref{sec:perf-bench}). The \code{mtime+hash} re-run
   count under mtime churn was not measured as a separate column
-  (Table~\ref{tab:mtime-churn}). Startup time (6\,ms), binary size
-  (14.9\,MB) and the \metricTests-test suite are separate
+  (Table~\ref{tab:mtime-churn}). Startup time (2.2\,ms), binary size
+  (17.4\,MB) and the \metricTests-test suite are separate
   micro-benchmarks, reported in
   \S\ref{sec:startup-bench}--\S\ref{sec:binary-bench}.}
 \label{tab:perf-summary}
@@ -2474,7 +2502,8 @@ Nextflow            & channels (Groovy)& task hash$^{\ddagger}$  & JVM runtime  
 cwltool + Arvados   & CWL standard     & content-sensitive cache & platform        & varies \\
 Bazel / Buck2       & build targets    & content-addressed     & daemon (default)  & partial \\
 Airflow             & DAG-as-code      & none (task re-runs)   & service           & yes \\
-Prefect / Dagster   & DAG-as-code      & inputs + code version & service           & yes \\
+Prefect             & DAG-as-code      & none by default$^{\S}$ & service           & yes \\
+Dagster             & asset graph (code)& data-version staleness$^{\S}$ & service      & yes \\
 Dask / Ray          & task/actor API   & (execution substrate) & runtime/cluster   & API \\
 \textbf{OxyMake}    & file rules (TOML)& content key + index   & single Rust binary & yes (NDJSON, MCP) \\
 \bottomrule
@@ -2496,7 +2525,16 @@ Dask / Ray          & task/actor API   & (execution substrate) & runtime/cluster
   referenced variables, the task inputs, the container, environment
   modules and Conda/Spack environment, and the session; in the default
   caching mode file inputs enter it by path, size and last-modified
-  time~\cite{nextflowCacheResume}.}
+  time~\cite{nextflowCacheResume}.
+  $^{\S}$Prefect does not persist results by default
+  (\code{results.persist\_by\_default} is false), so it has no default
+  cross-run reuse decision; its opt-in task cache keys on
+  \code{INPUTS + TASK\_SOURCE + RUN\_ID}, whose run-ID component
+  normally confines a hit to one parent run~\cite{prefectCaching}.
+  Dagster derives an asset's data version by hashing its code version
+  with the data versions of its inputs and reports the result as
+  staleness; it does not skip materialisation on that
+  basis~\cite{dagsterVersioning}.}
 \label{tab:landscape}
 \end{table}
 
@@ -2550,10 +2588,12 @@ wildcard expansion, and environment management.
 The design fits teams that already express computation as deterministic
 commands with files as artefact boundaries and want to avoid recomputation
 without deploying a service. Two grounds are the most credible first
-targets. Portable scientific and HPC pipelines have a documented pain: on
-shared filesystems the cache and \code{\$HOME} may be unwritable or
-carry inconsistent timestamps, and per-tree provenance does not survive a
-fresh checkout~\cite{diTommasoNextflowEnablesReproducible2017}. Small
+targets. Portable scientific pipelines have a documented pain:
+per-tree provenance does not survive a fresh checkout or a move to a
+second machine. HPC deployments on shared filesystems are \emph{not} a
+first target in v0.1.0: the local-disk requirement on \code{.oxymake/}
+(\S\ref{sec:limitations}) excludes them until the state directory is
+relocatable. Small
 data teams running a modest batch DAG face a deployment cost in the
 service-oriented alternatives, which are built around a persistent
 scheduler and its supporting services~\cite{airflow}; that
@@ -2636,7 +2676,12 @@ A \code{pickle} codec provides a fallback but sacrifices cross-language
 compatibility.
 
 \paragraph{Distributed executors.}
-The local, Slurm, and Ray executors are fully implemented. The Kubernetes
+The local executor is exercised throughout this evaluation. The Slurm
+and Ray executors are implemented but have no supported deployment
+configuration in v0.1.0, because both need the workspace visible to the
+compute nodes while \code{.oxymake/} must be on local disk
+(\S\ref{sec:distributed-related}); a relocatable state directory is the
+prerequisite. The Kubernetes
 executor is designed (Section~\ref{sec:plugins}) but not yet implemented.
 The \code{Executor} trait and capability negotiation are in place; what
 remains is the backend-specific job submission, status polling, and log
@@ -2732,7 +2777,7 @@ is not reuse; the rebuild decision a checkout takes also consults its
 local key-to-output index, its materialised outputs, and the selected
 validation policy (\S\ref{sec:content-addressable}). The workflow is
 a declarative TOML file
-executed by a single 14.9\,MB Rust binary with no daemon, and every
+executed by a single 17.4\,MB Rust binary with no daemon, and every
 command can emit structured NDJSON with \code{--json} for a human or a
 program. \code{ox run} ensures the declared outputs exist, runs only
 the jobs that are missing or out of date, and is safe to repeat.
