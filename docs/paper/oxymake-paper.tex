@@ -222,8 +222,9 @@ runners, and \code{hash} re-reads every byte
 experimental control: our benchmark bumps a shared input's
 mtime without changing a byte---what a \code{git checkout} does to a
 working tree---and counts re-runs. Two of the three outcomes are
-measured: Snakemake~7.32.4 re-runs zero jobs, because its recorded
-provenance ignores live timestamps, and a pure-mtime policy re-runs the
+measured: Snakemake~7.32.4 re-runs zero jobs, because the recorded
+checksum of the perturbed input still matches
+(\S\ref{sec:git-checkout-bench}), and a pure-mtime policy re-runs the
 full downstream radius. The third follows from the policy definition
 and was not measured as a separate condition: under the
 \code{mtime+hash} default a
@@ -395,6 +396,15 @@ throughout the paper.
 \subsection{File-Based Workflow Systems}
 \label{sec:file-based}
 
+OxyMake inherits Snakemake's core paradigm---backward-chaining DAG
+resolution with wildcard-driven genericity---and makes different
+trade-offs on three axes: a content-addressed cache key in place of
+per-tree provenance, a declarative TOML format in place of an embedded
+Python DSL, and a native Rust binary in place of a Python runtime. Each
+trade-off has a cost, stated where it is measured (\S\ref{sec:evaluation}).
+The systems below are grouped by the axis on which each chiefly
+differs from OxyMake.
+
 The lineage of file-based workflow systems begins with
 Make~\cite{feldmanMakeProgram1979}, which introduced the fundamental
 abstraction: rules declare outputs, inputs, and commands; the engine
@@ -406,6 +416,7 @@ freshness test that Make pairs it with is not. Several of the systems
 below adopt the former and reject the latter, and at least
 one---CWL---adopts neither.
 
+\paragraph{The rebuild decision.}
 Snakemake~\cite{kosterSnakemakeScalableBioinformatics2012} extended Make
 with Python-based rule definitions and multi-wildcard pattern matching,
 making it the most widely used workflow system in bioinformatics. Its 2021 update
@@ -441,17 +452,7 @@ occupy the combination claimed here
 (\S\ref{sec:discussion})---but it shows that a content-hash
 rebuild decision without a daemon predates this work.
 
-Nextflow~\cite{diTommasoNextflowEnablesReproducible2017} takes a
-dataflow-oriented approach with channels connecting processes, with
-strong containerization support. Its \code{-resume} rebuild decision is
-an automatic per-task hash over the task script, the container, Conda or
-Spack specification, the task inputs and the variables the script
-references, computed with no daemon; input files enter that hash by
-name, size and last-modified timestamp by default, and by content under
-the \code{cache 'deep'} directive. The axis that separates it from
-OxyMake is therefore the Groovy DSL and the JVM runtime rather than the
-absence of a content key.
-
+\paragraph{The specification format.}
 The Common Workflow Language
 (CWL)~\cite{crusoeMethodsIncludedStandardizing2022} occupies a different
 position in this list: it is a vendor-neutral standard for describing
@@ -475,12 +476,16 @@ latitude further, pairing CWL with content-addressed data
 management. CWL is therefore better read as a complementary layer to
 this work than as a competitor to it---a description language OxyMake
 could consume, rather than a change-detection policy it must
-correct. Galaxy~\cite{afganGalaxyPlatformAccessible2018}
+correct.
+
+Galaxy~\cite{afganGalaxyPlatformAccessible2018}
 leads with a web-based interface built for biologists; it also exposes
 a REST API and the BioBlend client library for programmatic use, while
 Planemo provides a command-line tool for developing and testing Galaxy
 tools and workflows---rather than
-the text-first authoring loop this paper assumes. The Workflow
+the text-first authoring loop this paper assumes.
+
+The Workflow
 Description Language (WDL)~\cite{vossWDLCromwell2017} and its reference
 engine Cromwell target genomics pipelines with a typed, portable
 specification; Cromwell is backend-agnostic, with a pre-enabled Local
@@ -498,15 +503,21 @@ relative to OxyMake is therefore a separate execution engine, a
 more verbose specification
 (\S\ref{sec:snakemake-compat}), and a reuse scope tied to a database
 deployment.
+
+\paragraph{The runtime and what it presupposes.}
+Nextflow~\cite{diTommasoNextflowEnablesReproducible2017} takes a
+dataflow-oriented approach with channels connecting processes, with
+strong containerization support. Its \code{-resume} rebuild decision is
+an automatic per-task hash over the task script, the container, Conda or
+Spack specification, the task inputs and the variables the script
+references, computed with no daemon; input files enter that hash by
+name, size and last-modified timestamp by default, and by content under
+the \code{cache 'deep'} directive. The axis that separates it from
+OxyMake is therefore the Groovy DSL and the JVM runtime rather than the
+absence of a content key.
+
 Pegasus~\cite{deelmanPegasusWorkflowManagement2015} targets
 large-scale distributed workflows but requires significant infrastructure.
-
-OxyMake inherits Snakemake's core paradigm---backward-chaining DAG
-resolution with wildcard-driven genericity---and makes different
-trade-offs on three axes: a content-addressed cache key in place of
-per-tree provenance, a declarative TOML format in place of an embedded
-Python DSL, and a native Rust binary in place of a Python runtime. Each
-trade-off has a cost, stated where it is measured (\S\ref{sec:evaluation}).
 
 \subsection{Build System Theory}
 \label{sec:build-theory}
@@ -576,6 +587,14 @@ content-addressed key but not the sandbox: rules run as ordinary
 processes, so the key is comprehensive over \emph{declared} inputs only,
 and input completeness remains the user's obligation
 (\S\ref{sec:undeclared-inputs}).
+
+Neither axis of this taxonomy classifies what a rebuild decision
+presupposes of its deployment, and among the systems compared here that
+is the dimension on which OxyMake's default decision differs: Bazel and
+Buck2 take a build daemon as their standard operating mode, Nix an
+external store, and GNU Make and Snakemake a record bound to one working
+tree, while OxyMake, like DVC, presupposes nothing beyond the checkout
+itself (\S\ref{sec:introduction}, \S\ref{sec:file-based}).
 
 \subsection{Reproducibility and FAIR Workflows}
 \label{sec:fair}
@@ -1208,35 +1227,13 @@ typed as \code{Produces}, \code{Consumes}, or \code{Blocks}. The
 JobGraph wraps a \code{petgraph::DiGraph}~\cite{petgraph} with typed
 node variants (\code{Job}, \code{Output}, \code{Gate}).
 
-One optimization pass is implemented for the JobGraph and five are
-proposed with their trait interface defined but no implementation. Cache
-pruning is the implemented pass; the five proposed passes are marked
-below:
-
-\begin{enumerate}
-\item \textbf{Cache pruning}: Mark jobs with up-to-date outputs as
-  \code{Skipped}, using the content-addressable cache (Equation~\ref{eq:cache-key}).
-\item \textbf{Task fusion} \emph{(planned)}: Merge sequential \code{call}-mode jobs into
-  a single process, eliminating intermediate serialization (analogous to
-  Spark stage fusion).
-\item \textbf{Materialization elimination} \emph{(planned)}: Remove disk writes between
-  consecutive \code{call}-mode jobs when the executor supports in-memory
-  passing (analogous to DataFusion pipelining).
-\item \textbf{Group scheduling} \emph{(planned)}: Bundle parallel jobs for batch submission
-  (e.g., one \code{sbatch} for $N$ Slurm jobs).
-\item \textbf{Critical path analysis} \emph{(planned)}: Identify the longest dependency
-  chain and prioritize those jobs for earliest dispatch.
-\item \textbf{Partition planning} \emph{(planned)}: Assign subgraphs to executors based on
-  resource requirements and executor capabilities.
-\end{enumerate}
-
-Each pass implements a \code{trait OptimizationPass} with a single
-method, enabling composable, testable transformations:
-
-{\small\code{optimize(\&self, \allowbreak JobGraph) \allowbreak -> \allowbreak Result<(JobGraph, \allowbreak PassResult), \allowbreak Box<dyn Error>{}>}}
-
-\noindent The \code{ox plan} command exposes each optimization stage,
-analogous to SQL's \code{EXPLAIN}.
+One optimization pass on the JobGraph is implemented: \emph{cache
+pruning}, which marks jobs with up-to-date outputs as \code{Skipped}
+using the content-addressable cache (Equation~\ref{eq:cache-key}). It is
+the pass the evaluation exercises. Five further passes---task fusion,
+materialization elimination, group scheduling, critical path analysis
+and partition planning---are designed against the same trait interface
+but not implemented (\S\ref{sec:limitations}).
 
 \paragraph{ExecGraph (runtime).}
 The JobGraph annotated with live execution state. Each node carries a status
@@ -1295,6 +1292,11 @@ flexibility to maximum optimizability:
 \code{call}   & Files or mem & Yes & Full \\
 \bottomrule
 \end{tabular}
+\caption{The four execution modes. The \textbf{Optimize} column rates
+  the headroom a mode affords, not work the engine performs today: of
+  the passes that would exploit it, only cache pruning is implemented
+  (\S\ref{sec:three-graphs}).}
+\label{tab:exec-spectrum}
 \end{table}
 
 The \code{call} mode is the most optimizable of the four. A rule
@@ -1581,6 +1583,7 @@ state database alongside each run's metrics.
 \label{sec:implementation}
 
 \subsection{Rust as Implementation Language}
+\label{sec:rust}
 
 Rust was chosen because its properties directly serve OxyMake's design goals.
 
@@ -1645,8 +1648,6 @@ testing stack is \code{cargo test} for unit and doc tests,
 property-based testing of DAG invariants and cache-key stability, and
 \code{insta} for snapshot testing of TOML parsing and CLI output.
 
-Implementation metrics are reported in Table~\ref{tab:crate-size}.
-
 \paragraph{Literate programming.}
 Public functions and types carry \code{///} doc comments with executable
 examples that compile and run as part of \code{cargo test}. The
@@ -1659,113 +1660,66 @@ Decision Records (ADRs) are not machine-checked. The project includes
 \metricDocFiles~documentation files covering concepts, command
 references, format specifications, and error indices.
 
-\subsection{Crate Architecture}
+\subsection{Crate Architecture and the Cache Control Path}
 \label{sec:crates}
 
 OxyMake is organized as a Cargo workspace of \metricCrates~crates (24
 workspace members plus \code{ox-metrics}, which is workspace-excluded
-for dependency isolation), each with a
-single, well-defined responsibility. Table~\ref{tab:crate-responsibility}
-summarizes the architectural decomposition, and Table~\ref{tab:crate-size}
-provides concrete implementation metrics collected from the codebase.
+for dependency isolation), each with a single, well-defined
+responsibility. The per-crate census and the dependency graph are in
+Appendix~\ref{app:crates}. This section instead follows the control path
+the paper's contribution rests on: what happens to one job between
+resolution and the audit record.
 
-\begin{table}[htbp]
-\centering\small
-\begin{tabular}{@{}lp{10cm}@{}}
-\toprule
-\textbf{Crate} & \textbf{Responsibility} \\
-\midrule
-\code{ox-core}    & DAG, scheduler, traits, types, events \\
-\code{ox-format}  & TOML parsing of Oxymakefile \\
-\code{ox-state}   & SQLite persistence \\
-\code{ox-cache}   & Content-addressable hashing (BLAKE3) \\
-\code{ox-plan}    & Optimization passes on JobGraph \\
-\code{ox-api}     & Public Rust API facade \emph{(scaffolding; see below)} \\
-\code{ox-exec-*}  & Executor backends (local, Slurm, Ray) \\
-\code{ox-cache-remote} & Remote cache backend (directory; S3/GCS planned) \\
-\code{ox-mcp}     & Model Context Protocol (MCP) server \\
-\code{ox-storage-*} & Storage backends (local; S3 planned) \\
-\code{ox-env-*}   & Environment providers (system, uv, conda, Docker) \\
-\code{ox-codec-*} & Format codecs (CSV, JSON, Parquet, columnar) \\
-\code{ox-report-*} & Reporters (terminal, NDJSON) \\
-\code{ox-lock}    & Reproducibility lockfile (BLAKE3) \\
-\code{ox-translate} & Multi-format workflow translator (Snakemake, WDL) \\
-\code{ox-dashboard} & Web dashboard server with DAG visualization \\
-\code{ox-monitor-tui} & Terminal UI monitor \\
-\code{ox-metrics}  & Prometheus metrics export \\
-\code{ox-render}  & Terminal styling and semantic color roles \\
-\code{ox-cli}     & CLI binary (clap wrapper over the engine crates) \\
-\bottomrule
-\end{tabular}
-\caption{Crate responsibilities in the OxyMake workspace.}
-\label{tab:crate-responsibility}
-\end{table}
+\code{ox run} opens \code{.oxymake/state.db}, begins a run record, and
+registers every job of the topological order against that record before
+the scheduler starts. The scheduler then consults the cache for each
+ready job through a single trait method, and the validation policy in
+force decides how much of the path below it walks.
 
-\begin{table}[htbp]
-\centering\small
-\begin{tabular}{@{}lrrr@{}}
-\toprule
-\textbf{Crate} & \textbf{Lines} & \textbf{Tests} & \textbf{Doc Tests} \\
-\midrule
-\code{ox-core}         & 15{,}568 & 550 & 29 \\
-\code{ox-cli}          & 11{,}392 & 211 &  0 \\
-\code{ox-translate}    &  6{,}170 & 162 &  2 \\
-\code{ox-exec-ray}     &  5{,}383 & 156 &  1 \\
-\code{ox-exec-local}   &  4{,}602 & 103 &  1 \\
-\code{ox-state}        &  3{,}862 &  70 & 10 \\
-\code{ox-format}       &  3{,}497 & 145 &  0 \\
-\code{ox-exec-slurm}   &  3{,}382 &  92 &  1 \\
-\code{ox-cache}        &  2{,}279 &  99 &  0 \\
-\code{ox-mcp}          &  1{,}901 &  85 &  0 \\
-\code{ox-dashboard}    &  1{,}154 &  32 &  1 \\
-\code{ox-monitor-tui}  &  1{,}049 &  23 &  3 \\
-\code{ox-report-term}  &     926 &  30 &  3 \\
-\code{ox-plan}         &     681 &  25 &  6 \\
-\code{ox-lock}         &     680 &  11 &  0 \\
-\code{ox-api}          &     473 &  10 &  2 \\
-\code{ox-cache-remote} &     455 &  15 &  0 \\
-\code{ox-report-json}  &     389 &  20 &  1 \\
-\code{ox-metrics}$^\dagger$ &     277 &   8 &  3 \\
-\code{ox-codec-core}   &     275 &  20 &  0 \\
-\code{ox-render}       &     176 &   6 &  0 \\
-Stub crates (\code{ox-env-*}, \code{ox-storage-local}) & 25 & 3 & 0 \\
-\code{oxymake} (name reservation) & 0 & 0 & 0 \\
-\midrule
-\textbf{Total}         & \textbf{\metricSLOC} & \textbf{1{,}876} & \textbf{\metricDocTests} \\
-\bottomrule
-\end{tabular}
-\caption{Crate architecture with implementation size and test counts.
-  Lines are Rust code lines (\code{tokei}); Tests are passing unit and
-  integration tests per crate (\code{cargo test}); doc tests are listed
-  separately. Columns sum to the Total row.
-  $^\dagger$\code{ox-metrics} is excluded from the Cargo workspace for
-  dependency isolation and is tested via its own manifest; the
-  workspace test run therefore reports \metricTests{} tests (the table
-  totals minus \code{ox-metrics}'s 8 tests and 3 doc tests).}
-\label{tab:crate-size}
-\end{table}
+\paragraph{Key computation.}
+\code{ox-cache} frames the seven components of
+Equation~\ref{eq:cache-key}---key-format version, rule source, the
+content hashes of the declared inputs, parameters, environment
+specification, shell, and platform---into one BLAKE3 digest. Under
+\code{--cache-validation=mtime} no key is computed at all.
 
-\noindent The size distribution reveals the expected concentration:
-\code{ox-\allowbreak{}core} contains 24\% of the codebase (DAG algorithms,
-scheduler, type system, event bus) and 29\% of the unit and integration
-tests. Three stub
-crates (\code{ox-\allowbreak{}env-\allowbreak{}system},
-\code{ox-\allowbreak{}env-\allowbreak{}uv}, \code{ox-\allowbreak{}storage-\allowbreak{}local})
-contain trait scaffolding only; the functionality they will host is
-implemented inline today (\S\ref{sec:plugins}).
-Figure~\ref{fig:crate-arch} illustrates the dependency relationships
-between crates.
+\paragraph{Lookup.}
+Under \code{mtime} the lookup is a stateless filesystem comparison:
+every declared output must exist and be newer than the newest declared
+input, with no key and no database read. Under \code{mtime+hash} and
+\code{hash} the key selects a row in \code{cache\_entries} and the
+recorded \code{output\_records} for that key; if a directory remote
+cache is configured, the outputs may first be restored from it by
+content hash.
 
-\begin{figure}[htbp]
-  \centering
-  \includegraphics[width=0.8\textwidth]{figures/crate-architecture.pdf}
-  \caption{Dependency graph of the principal crates in OxyMake's workspace.
-    \code{ox-cli} sits at the top as the entry point, delegating to
-    \code{ox-core} (engine), \code{ox-format} (TOML parser),
-    \code{ox-state} (SQLite persistence), and specialized crates for
-    execution, reporting, monitoring, and translation.}
-  \label{fig:crate-arch}
-\end{figure}
+\paragraph{Validation.}
+Each recorded output is then checked against the policy. A missing
+output invalidates the entry outright. \code{mtime} compares
+modification time and size only; \code{mtime+hash} trusts the recorded
+content hash when metadata match and re-hashes the file when they do
+not; \code{hash} re-hashes unconditionally. Any mismatch removes the
+entry, and the job is treated as a miss.
+
+\paragraph{Execution.}
+A miss dispatches the job to the selected executor
+(\S\ref{sec:distributed}); a hit marks it \code{Skipped} without running
+it.
+
+\paragraph{Registration.}
+On completion, and only if every declared output exists on disk, the
+key is recomputed together with its components and one SQLite
+transaction upserts the cache entry---completion time, reproducibility
+class, input hashes, job-specification hash---and replaces the output
+rows, storing each output's content hash, modification time and size.
+A configured remote cache then receives the output bytes under their
+own content hash.
+
+\paragraph{Audit commit.}
+After the scheduler returns, the per-job durations collected from the
+event stream are written to the history table and the run record is
+closed with its succeeded, failed and skipped counts
+(\S\ref{sec:state}).
 
 \noindent The intended boundaries are that \code{ox-\allowbreak{}core}
 makes no network calls; \code{ox-\allowbreak{}format} never
@@ -1832,6 +1786,7 @@ supply its own idempotency and approval. We report the interface as
 implemented and do not evaluate agent task performance over it.
 
 \subsection{State Management}
+\label{sec:state}
 
 Three logically separated state concerns share a physical SQLite database\linebreak
 (\code{.oxymake/\allowbreak{}state.db}):
@@ -1857,6 +1812,17 @@ Three logically separated state concerns share a physical SQLite database\linebr
   cannot be reconstructed afterwards; the table is append-only by
   convention, and the engine provides no tamper-evidence.
 \end{description}
+
+\paragraph{What does not travel.}
+The three concerns differ in what a second checkout inherits. Artefact
+bytes do: the directory remote cache stores them under their own content
+hash, and any checkout can fetch them. The index does not. In v0.1.0 the
+rows that map a computation key to its output paths and hashes stay
+local to each checkout, and a remote restore is attempted only for a key
+that checkout already holds an entry for---so a fresh checkout pointing
+at the same shared directory re-executes the job rather than restoring
+it. The audit trail is likewise per-workspace
+(\S\ref{sec:content-addressable}, \S\ref{sec:limitations}).
 
 Schema versioning uses \code{PRAGMA user\_version} with automatic
 migrations from the first release; a migration runs inside a
@@ -2439,31 +2405,42 @@ natively (open format), eight partially, one is not assessed
 largest gaps are the absence of a workflow
 registry for discovery and the fact that the TOML workflow format
 is not a community
-standard like CWL, though the \code{ox translate} command provides
-conversion in both directions with Snakemake and WDL as bridges to the
-broader bioinformatics and genomics ecosystems.
+standard like CWL. \code{ox translate} and \code{ox export} are
+intended as bridges to the broader bioinformatics and genomics
+ecosystems, but only the Snakemake import direction is exercised here
+(\S\ref{sec:snakemake-compat}).
 
 \subsection{Performance Summary}
 
 \begin{table}[htbp]
 \centering\small
-\begin{tabular}{@{}lr@{}}
+\begin{tabular}{@{}llrrr@{}}
 \toprule
-\textbf{Benchmark} & \textbf{Result} \\
+\textbf{Scenario} & \textbf{Policy} & \textbf{OxyMake} & \textbf{Snakemake} & \textbf{Ratio} \\
 \midrule
-DAG resolution @ 1{,}001 jobs   & 13\,ms \\
-DAG resolution @ 10{,}001 jobs  & 118\,ms \\
-DAG res. speedup @ 10{,}001 jobs & 23.01$\times$ \\
-Cold end-to-end @ 10{,}001 jobs & 2.13$\times$ slower \\
-Warm no-op @ 10{,}001 jobs (\code{mtime+hash}) & 2.52$\times$ faster \\
-Peak RSS, cold @ 10{,}001 jobs & 89.9\,MiB (2.05$\times$ smaller) \\
-Startup time (\code{ox --help}) & 6\,ms \\
-Binary size (default)      & 14.9\,MB \\
-Test suite                 & \metricTests~passing \\
+Cold end-to-end          & \code{mtime+hash} & 196.934\,s & 92.666\,s   & 2.13$\times$ slower \\
+Warm no-op re-run        & \code{mtime+hash} &   1.378\,s &  3.478\,s   & 2.52$\times$ faster \\
+Warm no-op re-run        & \code{mtime}      &  500.1\,ms &  3.478\,s   & 6.95$\times$ faster \\
+Warm no-op re-run        & \code{hash}       &   1.821\,s &  3.478\,s   & 1.91$\times$ faster \\
+mtime churn, jobs re-run & \code{mtime}      &  6{,}667   &  0          & --- \\
+mtime churn, jobs re-run & \code{hash}       &  0         &  0          & --- \\
+Peak RSS, cold run       & \code{mtime+hash} &  89.9\,MiB & 184.5\,MiB  & 2.05$\times$ smaller \\
+DAG resolution           & ---               &  118.3\,ms & 2{,}721.7\,ms & 23.01$\times$ faster \\
 \bottomrule
 \end{tabular}
-\caption{Summary of the measured results
-  (\S\ref{sec:perf-bench}--\S\ref{sec:binary-bench}).}
+\caption{Head-to-head results on the benchmark harness's synthetic
+  four-layer DAG at 10{,}001 jobs, both engines at 16-way parallelism
+  (\S\ref{sec:perf-bench}--\S\ref{sec:git-checkout-bench}). The
+  comparator is Snakemake~7.32.4 under its default rerun-triggers; the
+  \textbf{Policy} column names the OxyMake \code{--cache-validation}
+  setting that produced the row. The resolution row compares \code{ox
+  plan} with \code{snakemake --dryrun}, which is not a symmetric
+  comparison (\S\ref{sec:perf-bench}). The \code{mtime+hash} re-run
+  count under mtime churn was not measured as a separate column
+  (Table~\ref{tab:mtime-churn}). Startup time (6\,ms), binary size
+  (14.9\,MB) and the \metricTests-test suite are separate
+  micro-benchmarks, reported in
+  \S\ref{sec:startup-bench}--\S\ref{sec:binary-bench}.}
 \label{tab:perf-summary}
 \end{table}
 
@@ -2666,13 +2643,11 @@ remains is the backend-specific job submission, status polling, and log
 retrieval code for the Kubernetes backend.
 
 \paragraph{Optimization passes.}
-Of the six planned optimization passes (Section~\ref{sec:three-graphs}),
-only cache pruning is fully implemented. Task fusion, materialization
-elimination, group scheduling, critical path analysis, and partition
-planning are designed and have trait boundaries defined but await
-implementation. The current scheduler dispatches jobs in topological order
-without these optimizations; they will reduce execution time for
-\code{call}-mode workflows but do not affect correctness.
+Only cache pruning is implemented; the five further passes of
+Section~\ref{sec:three-graphs} are designed but await implementation.
+The current scheduler dispatches jobs in topological order without
+them; they would reduce execution time for \code{call}-mode workflows
+but do not affect correctness.
 
 \paragraph{Evaluation statistics.}
 The evaluation is limited in statistical depth as well as in scope.
@@ -2728,8 +2703,8 @@ OxyMake assigns each layer a language chosen for the layer's
 constraints, not for uniformity. The orchestration core is Rust:
 the type system encodes pipeline-state invariants
 (\code{Rule} vs \code{ConcreteJob}) at compile time, and \code{Send +
-Sync} bounds make the concurrent scheduler thread-safe by
-construction. The workflow specification is TOML: deliberately not
+Sync} bounds rule out data races on the scheduler's shared state at
+compile time (\S\ref{sec:rust}). The workflow specification is TOML: deliberately not
 Turing-complete, statically parseable in microseconds, and analysable
 without execution---a property Snakemake's Python DSL cannot offer.
 Rule bodies execute in Python, R, Julia, or shell, selected per rule
@@ -2801,6 +2776,76 @@ who takes full responsibility for the content.
 % APPENDIX
 % ============================================================================
 \appendix
+
+\section{Crate Census}
+\label{app:crates}
+
+\begin{table}[htbp]
+\centering\small
+\begin{tabular}{@{}lrrr@{}}
+\toprule
+\textbf{Crate} & \textbf{Lines} & \textbf{Tests} & \textbf{Doc Tests} \\
+\midrule
+\code{ox-core}         & 15{,}568 & 550 & 29 \\
+\code{ox-cli}          & 11{,}392 & 211 &  0 \\
+\code{ox-translate}    &  6{,}170 & 162 &  2 \\
+\code{ox-exec-ray}     &  5{,}383 & 156 &  1 \\
+\code{ox-exec-local}   &  4{,}602 & 103 &  1 \\
+\code{ox-state}        &  3{,}862 &  70 & 10 \\
+\code{ox-format}       &  3{,}497 & 145 &  0 \\
+\code{ox-exec-slurm}   &  3{,}382 &  92 &  1 \\
+\code{ox-cache}        &  2{,}279 &  99 &  0 \\
+\code{ox-mcp}          &  1{,}901 &  85 &  0 \\
+\code{ox-dashboard}    &  1{,}154 &  32 &  1 \\
+\code{ox-monitor-tui}  &  1{,}049 &  23 &  3 \\
+\code{ox-report-term}  &     926 &  30 &  3 \\
+\code{ox-plan}         &     681 &  25 &  6 \\
+\code{ox-lock}         &     680 &  11 &  0 \\
+\code{ox-api}          &     473 &  10 &  2 \\
+\code{ox-cache-remote} &     455 &  15 &  0 \\
+\code{ox-report-json}  &     389 &  20 &  1 \\
+\code{ox-metrics}$^\dagger$ &     277 &   8 &  3 \\
+\code{ox-codec-core}   &     275 &  20 &  0 \\
+\code{ox-render}       &     176 &   6 &  0 \\
+Stub crates (\code{ox-env-*}, \code{ox-storage-local}) & 25 & 3 & 0 \\
+\code{oxymake} (name reservation) & 0 & 0 & 0 \\
+\midrule
+\textbf{Total}         & \textbf{\metricSLOC} & \textbf{1{,}876} & \textbf{\metricDocTests} \\
+\bottomrule
+\end{tabular}
+\caption{Crate architecture with implementation size and test counts.
+  Lines are Rust code lines (\code{tokei}); Tests are passing unit and
+  integration tests per crate (\code{cargo test}); doc tests are listed
+  separately. Columns sum to the Total row.
+  $^\dagger$\code{ox-metrics} is excluded from the Cargo workspace for
+  dependency isolation and is tested via its own manifest; the
+  workspace test run therefore reports \metricTests{} tests (the table
+  totals minus \code{ox-metrics}'s 8 tests and 3 doc tests).}
+\label{tab:crate-size}
+\end{table}
+
+\noindent The size distribution reveals the expected concentration:
+\code{ox-\allowbreak{}core} contains 24\% of the codebase (DAG algorithms,
+scheduler, type system, event bus) and 29\% of the unit and integration
+tests. Three stub
+crates (\code{ox-\allowbreak{}env-\allowbreak{}system},
+\code{ox-\allowbreak{}env-\allowbreak{}uv}, \code{ox-\allowbreak{}storage-\allowbreak{}local})
+contain trait scaffolding only; the functionality they will host is
+implemented inline today (\S\ref{sec:plugins}).
+Figure~\ref{fig:crate-arch} illustrates the dependency relationships
+between crates.
+
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=0.8\textwidth]{figures/crate-architecture.pdf}
+  \caption{Dependency graph of the principal crates in OxyMake's workspace.
+    \code{ox-cli} sits at the top as the entry point, delegating to
+    \code{ox-core} (engine), \code{ox-format} (TOML parser),
+    \code{ox-state} (SQLite persistence), and specialized crates for
+    execution, reporting, monitoring, and translation.}
+  \label{fig:crate-arch}
+\end{figure}
+
 \section{TLA+ Specification Inventory}
 \label{app:reproducibility}
 
