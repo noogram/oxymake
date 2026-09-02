@@ -8,6 +8,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- Paper: applied the round-5 outside-seat review (a citation audit of every
+  `\cite` against its primary source, and a general referee read). Corrections
+  include a quotation that Goble et al. do not contain, the "Goble three-layer
+  model" now stated as our own reading of the four workflow forms they
+  describe, what the Newcombe et al. table actually reports, petgraph's
+  topological sort described as depth-first rather than Kahn's algorithm, the
+  Mokhov et al. (2020) section locator, PiGx no longer cited as a CWL
+  workflow, the cold-path work attributed to OxyMake alone, and end-to-end
+  times described as single runs rather than medians of three. Each is
+  recorded with its superseded wording in `docs/paper/ERRATUM.md` §F.
+  `bench/snakemake-vs-oxymake/RESULTS.md` now states the binary invocation and
+  commit actually used; no measured number changed.
 - Paper title finalized as "OxyMake: A Content-Addressed Workflow Engine"
   (dropping "Convergent," and "with Model-Checked State Protocols" from the
   intermediate title, and superseding the original "Formally-Specified,
