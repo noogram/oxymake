@@ -204,9 +204,9 @@ without it even when equivalent outputs have been restored from
 elsewhere---a consequence of the record's scope, not a scenario we
 benchmark. What a shared key buys is decidability rather than reuse.
 Whether two checkouts take the same \emph{rebuild decision} depends
-further on their live reuse state---the local key-to-output index, the
-outputs materialised on disk, and the selected validation
-policy---which \S\ref{sec:content-addressable} treats, along with what
+further on their live reuse state---the outputs materialised on disk,
+the selected validation policy, and, under the \code{mtime+hash} default
+and \code{hash}, the local key-to-output index---which \S\ref{sec:content-addressable} treats, along with what
 does and does not travel between checkouts in v0.1.0. What the shipped
 system establishes across checkouts is key identity.
 
@@ -281,8 +281,9 @@ of declared content---holding no per-tree state and requiring no
 external infrastructure---the \emph{default identity for cached
 computations} would in each case mean moving that boundary. That
 identity is not by itself the rebuild decision: as above, the decision
-also consults the local key-to-output index, the outputs materialised
-on disk, and the selected validation policy. We have not attempted
+also consults the outputs materialised on disk, the selected validation
+policy, and, under the \code{mtime+hash} default and \code{hash}, the
+local key-to-output index. We have not attempted
 those adaptations; building the engine around the key is a design
 choice, not an impossibility claim.
 
@@ -316,9 +317,12 @@ This paper contributes:
   BLAKE3 hash of rule source, declared input contents, parameters,
   environment, shell, and platform (Eq.~\ref{eq:cache-key}); the key is
   identical when that entire declared specification is identical.
-  Output content is checked at reuse time by a configurable validation
-  policy against the local key-to-output index, and reuse cascades on
-  deletion (\S\ref{sec:content-addressable}).
+  Under the shipped \code{mtime+hash} default and under \code{hash},
+  output content is checked at reuse time by the validation policy
+  against the local key-to-output index; the opt-in \code{mtime} policy
+  is a stateless metadata-only lookup that consults neither the key nor
+  the index and verifies no content.  Reuse cascades on deletion
+  (\S\ref{sec:content-addressable}).
 \item \textbf{Three-graph architecture} (RuleGraph $\to$ JobGraph
   $\to$ ExecGraph) separating rule definition, resolved-and-pruned
   plan, and per-run execution
@@ -604,8 +608,8 @@ Neither axis of this taxonomy classifies what a rebuild decision
 presupposes of its deployment, and among the systems compared here that
 is the dimension on which OxyMake's default decision differs: Bazel and
 Buck2 take a build daemon as their standard operating mode, Nix an
-external store, and GNU Make and Snakemake a record bound to one working
-tree, while OxyMake, like DVC, presupposes nothing beyond the checkout
+external store, GNU Make live timestamps in one working tree, and
+Snakemake a provenance record bound to one working tree, while OxyMake, like DVC, presupposes nothing beyond the checkout
 itself (\S\ref{sec:introduction}, \S\ref{sec:file-based}).
 
 \subsection{Reproducibility and FAIR Workflows}
@@ -1050,7 +1054,7 @@ corroborates a very small fraction of the state space.
 
 The structural reference is Newcombe et
 al.~\cite[pp.~66--73]{newcombeHowAmazonWebServices2015}, which reports
-seven bugs found by TLC in ten AWS systems---bugs that had been missed
+ten bugs found by TLC in ten AWS systems---bugs that had been missed
 by testing, code review, static analysis, stress testing, and fault
 injection. Those systems were orchestrated on deterministic
 components; the hazard class was concurrent, not adversarial. The
@@ -1064,10 +1068,8 @@ source: \code{Cache\allowbreak Consistency.tla} 201~L, \code{Cooperative\allowbr
 verify, and at what bounds, is stated in Table~\ref{tab:verified-vs-assumed}
 and Appendix~\ref{app:reproducibility}; that scope, not any line count,
 is the measure of the effort. Against \metricSLOC~SLOC of Rust workspace
-code the specifications are 0.96\% of the source, the same order of
-magnitude as the $\sim$1\% Newcombe et
-al.~\cite{newcombeHowAmazonWebServices2015} report; the figure is
-descriptive context, not a claim of comparable coverage. Post-crash
+code the specifications are 0.96\% of the source; the figure is
+descriptive context, not a claim of coverage. Post-crash
 recovery is outside the evaluated scope.
 
 \paragraph{Mapping invariants to specifications.}
@@ -1635,8 +1637,9 @@ The measured range extends to 10{,}001 jobs
 (Table~\ref{tab:dag-resolution}); extrapolating the observed near-linear
 slope to $5\times10^4$ and $10^5$ jobs is a projection, not a
 measurement (\S\ref{sec:scale-study}). We expect hashing not to
-be the bottleneck: BLAKE3~\cite{blake3,blake3spec} is reported at over
-6.9~GiB/s single-threaded on x86-64 (Cascade Lake-SP, 16~KiB input),
+be the bottleneck: BLAKE3~\cite{blake3,blake3spec} is reported at
+6{,}866~MiB/s ($\approx$6.7~GiB/s) single-threaded on x86-64
+(Cascade Lake-SP, 16~KiB input),
 above the I/O rate of the files a typical workflow reads. The evaluated
 host is arm64, where BLAKE3 takes a different SIMD path and the figure
 is untested. We have not
@@ -2122,7 +2125,8 @@ rerun-triggers it re-ran zero jobs, both under a plain \code{touch} and
 with a far-future mtime. The mechanism is not that live
 timestamps are ignored---they are compared first---but that an input
 newer than the oldest output counts as updated only if its recorded
-SHA-256 also fails to match. The perturbed file is 638 bytes, below the
+SHA-256 also fails to match. The perturbed file
+(\code{bench/snakemake-vs-oxymake/bench\_lib.py}) is 638 bytes, below the
 100{,}000-byte threshold above which Snakemake records no checksum, so
 the checksum decides here; a larger shared input would leave the mtime
 comparison to decide alone. The phantom-re-run failure mode is real
@@ -2153,15 +2157,17 @@ The measured resolution times in Table~\ref{tab:dag-resolution}
 backward-chaining algorithm parses and compiles every candidate output
 pattern for every target it resolves---$O(T \times P)$ pattern
 compilations to resolve $T$ targets against $P$ output patterns, with a
-large constant dominated by regex construction.
+large constant we attribute to regex construction (a design argument; we
+ran no phase-level profile).
 We implemented a \code{ProducerIndex}: all output patterns are parsed
 and compiled \emph{once}, up front, so each target lookup is a scan of
 precompiled regexes rather than a parse-and-compile cycle.  The
 asymptotic complexity is then a one-time $O(P)$ compilation plus
 $O(T \times P)$ lookup---each lookup is still a
-linear scan over the $P$ compiled patterns---but the constant drops
-substantially, since per-target regex compilation was the dominant cost
-at scale.  A hash-based prefix index that would give expected $O(P)$
+linear scan over the $P$ compiled patterns---but the constant is
+expected to drop, because per-target regex compilation is the term the
+index removes.  We did not measure the pre-index implementation, so the
+improvement is a design argument, not a measured speedup.  A hash-based prefix index that would give expected $O(P)$
 construction and $O(T)$ lookup is future work, not part of the measured
 system.  The scaling observed across
 $101 \to 10{,}001$ jobs in Table~\ref{tab:dag-resolution} (5.9\,ms~$\to$~13.1\,ms~$\to$~118.3\,ms:
@@ -2503,7 +2509,7 @@ cwltool + Arvados   & CWL standard     & content-sensitive cache & platform     
 Bazel / Buck2       & build targets    & content-addressed     & daemon (default)  & partial \\
 Airflow             & DAG-as-code      & none (task re-runs)   & service           & yes \\
 Prefect             & DAG-as-code      & none by default$^{\S}$ & service           & yes \\
-Dagster             & asset graph (code)& data-version staleness$^{\S}$ & service      & yes \\
+Dagster             & asset graph (code)& data-version memoisation$^{\S}$ & service      & yes \\
 Dask / Ray          & task/actor API   & (execution substrate) & runtime/cluster   & API \\
 \textbf{OxyMake}    & file rules (TOML)& content key + index   & single Rust binary & yes (NDJSON, MCP) \\
 \bottomrule
@@ -2511,9 +2517,11 @@ Dask / Ray          & task/actor API   & (execution substrate) & runtime/cluster
 \caption{Positioning on four axes. The rebuild-decision column names
   what each engine's default decision reads; for OxyMake the
   content-derived key is the checkout-independent identity of a
-  computation, and the decision additionally consults the local
-  key-to-output index, the materialised outputs, and the validation
-  policy (\S\ref{sec:content-addressable}). Slurm is not a row: it is an
+  computation, and the decision additionally consults the materialised
+  outputs, the validation policy, and---under the \code{mtime+hash}
+  default and \code{hash}, but not under the opt-in \code{mtime}
+  policy---the local key-to-output index
+  (\S\ref{sec:content-addressable}). Slurm is not a row: it is an
   execution substrate OxyMake targets (\code{--executor slurm}), not a
   competitor. Dask and Ray are likewise substrates the executor
   backends consume rather than engines OxyMake replaces. Snakemake's
@@ -2532,9 +2540,10 @@ Dask / Ray          & task/actor API   & (execution substrate) & runtime/cluster
   \code{INPUTS + TASK\_SOURCE + RUN\_ID}, whose run-ID component
   normally confines a hit to one parent run~\cite{prefectCaching}.
   Dagster derives an asset's data version by hashing its code version
-  with the data versions of its inputs and reports the result as
-  staleness; it does not skip materialisation on that
-  basis~\cite{dagsterVersioning}.}
+  with the data versions of its inputs, reports the result as staleness,
+  and can use those versions for a limited form of asset memoisation,
+  skipping redundant materialisations and returning the previously
+  computed value~\cite{dagsterVersioning}.}
 \label{tab:landscape}
 \end{table}
 
@@ -2574,7 +2583,8 @@ In the Mokhov et al.\ taxonomy~\cite[\S3]{mokhovBuildSystemsCarte2020}, OxyMake
 combines a \emph{topological scheduler} (task order fixed before execution
 from the dependency graph) with \emph{verifying traces} (skip a task when
 its recorded input/output hashes still match disk) augmented by
-content-addressing.  All dependencies are resolved statically before
+content-addressing, with the deleted-output cascade as the dirty-bit
+exception noted in \S\ref{sec:build-theory}.  All dependencies are resolved statically before
 execution, placing OxyMake in the same scheduler column as Make, Ninja
 and Buck rather than the restarting column that holds Bazel or the
 suspending column occupied by Shake.  Unlike
@@ -2774,8 +2784,10 @@ record: when the entire declared specification---rule source, inputs,
 parameters, environment, shell, platform---is unchanged, the key is
 identical in any checkout under the same key-format version. Identity
 is not reuse; the rebuild decision a checkout takes also consults its
-local key-to-output index, its materialised outputs, and the selected
-validation policy (\S\ref{sec:content-addressable}). The workflow is
+materialised outputs, the selected validation policy, and---under the
+\code{mtime+hash} default and \code{hash}---its local key-to-output
+index, which the opt-in \code{mtime} policy does not read
+(\S\ref{sec:content-addressable}). The workflow is
 a declarative TOML file
 executed by a single 17.4\,MB Rust binary with no daemon, and every
 command can emit structured NDJSON with \code{--json} for a human or a

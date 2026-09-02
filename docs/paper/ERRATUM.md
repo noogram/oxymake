@@ -936,6 +936,50 @@ verifying-traces rebuilder. v3 already disclosed this where the cascade is
 described; the disclosure is now also attached to the classification itself.
 Source: the paper's §4.6.
 
+### E.5 Corrections from the round-4 referee pass (2026-09-02)
+
+**"TLC found seven bugs."**
+*v2 wording (introduction):* "where TLC found seven bugs across ten systems
+that testing, code review, and fault injection had missed."
+*v2 wording (named invariants):* "which reports seven bugs found by TLC in ten
+AWS systems."
+
+The number seven in Newcombe et al. counts teams, not bugs: "Amazon now has
+seven teams using TLA+" (CACM 58(4):68). The article's table "Applying TLA+ to
+some of Amazon's more complex systems" reports two, one, three, three and one
+bugs across its six entries, which is ten, plus further bugs found in proposed
+fixes and optimizations. v3 says ten. The paper's accompanying list of
+techniques the bugs escaped is unchanged and correct: the article's own list is
+"deep design reviews, code reviews, static code analysis, stress testing, and
+fault-injection testing" (p. 66).
+Source: Newcombe et al., CACM 58(4):66-73, table on p. 69 and text on p. 68.
+
+**BLAKE3 "over 6.9 GiB/s".**
+*v2 wording (Rust as implementation language):* "BLAKE3 hashes at over
+6.9~GiB/s single-threaded on modern x86-64 hardware."
+
+The BLAKE3 project's own benchmark data for that configuration is 6,866 MiB/s,
+which is approximately 6.70 GiB/s, not over 6.9 GiB/s -- a unit conversion
+error that overstates the figure by about 3%. `bar_chart.py`, the script that
+generates the chart in the BLAKE3 README, hardcodes `("BLAKE3", 6866)` with the
+axis labelled "Speed (MiB/s)" and the title "Performance on AWS c5.metal, 16
+KiB input, 1 thread". v3 quotes 6,866 MiB/s with the GiB/s conversion, and the
+`blake3spec` bib note is corrected to match.
+Source: `BLAKE3-team/BLAKE3-specs`, `benchmarks/bar_chart.py`, lines 11, 28,
+71-72.
+
+**The ProducerIndex speedup stated as measured.**
+*v2 wording (scalability):* "the constant drops substantially, since
+per-target regex compilation was the dominant cost at scale."
+
+No before/after measurement of the pre-index implementation exists in the
+record, and no phase-level profile attributes cost to regex construction -- the
+paper states elsewhere that no such profile was run. v3 states the improvement
+as expected rather than measured, and marks the regex-construction attribution
+as a design argument.
+Source: `docs/paper/experiment-results.md`; the paper's own §5.1, §6.1
+and §6.2 profiling disclaimers.
+
 ---
 
 ---
