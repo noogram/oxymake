@@ -498,10 +498,11 @@ exercises no cache validation at all."
 `DAG.init()` calls `update_needrun(create_inventory=True)` unconditionally
 (`snakemake/dag.py:248`), and `init()` is on the dry-run path
 (`workflow.py:895`). The dry run therefore stats inputs and outputs, builds an
-mtime inventory, reads `.snakemake/metadata` and checksums eligible inputs.
-`ox plan` does none of this: it never constructs a `CacheStore`. The
-comparison is not symmetric, so the ratio bounds rather than isolates the
-resolution difference. v3 says so.
+mtime inventory and reads `.snakemake/metadata`. `ox plan` does none of this:
+it never constructs a `CacheStore`. The comparison is not symmetric, so the
+ratio bounds rather than isolates the resolution difference. v3 says so.
+*Superseded in part by F.9:* no input checksum is in fact computed on either
+measured row, and v3 no longer says one is.
 Source: `snakemake/dag.py:248`, `snakemake/workflow.py:895`;
 `crates/ox-cli/src/commands/plan.rs`.
 
@@ -948,11 +949,13 @@ The number seven in Newcombe et al. counts teams, not bugs: "Amazon now has
 seven teams using TLA+" (CACM 58(4):68). The article's table "Applying TLA+ to
 some of Amazon's more complex systems" reports two, one, three, three and one
 bugs across its six entries, which is ten, plus further bugs found in proposed
-fixes and optimizations. v3 says ten. The paper's accompanying list of
+fixes and optimizations. The paper's accompanying list of
 techniques the bugs escaped is unchanged and correct: the article's own list is
 "deep design reviews, code reviews, static code analysis, stress testing, and
 fault-injection testing" (p. 66).
 Source: Newcombe et al., CACM 58(4):66-73, table on p. 69 and text on p. 68.
+*Superseded by F.4:* the interim wording "ten bugs in ten systems" was itself
+wrong, and v3 now describes what the table supports.
 
 **BLAKE3 "over 6.9 GiB/s".**
 *v2 wording (Rust as implementation language):* "BLAKE3 hashes at over
@@ -979,6 +982,220 @@ as expected rather than measured, and marks the regex-construction attribution
 as a design argument.
 Source: `docs/paper/experiment-results.md`; the paper's own §5.1, §6.1
 and §6.2 profiling disclaimers.
+
+
+---
+
+## F. Claims corrected by the round-5 review (2026-09)
+
+A fourth pass added two independent outside seats: a citation audit that
+fetched the primary source behind every `\cite` in the paper, and a general
+referee read that recomputed every number from the evidence bundle. As in
+section E, only CONFIRMED findings were acted on, each was re-verified against
+the primary source before the edit, and the text was corrected against the
+source, never the other way round. Entries appear here when the false claim was
+published in v2; corrections landing on post-v2 text are listed at the end
+without a v2 quotation.
+
+### F.1 A quotation attributed to Goble et al. that they do not contain
+
+*v2 wording (§2, FAIR workflows):* "the observation that `a workflow that
+cannot be readily reused is like a scientific paper that cannot be read' is
+load-bearing: it is the principle that motivates OxyMake's three-graph
+architecture."
+
+That sentence does not appear in Goble et al. A full-text search of the article
+for "cannot be read", "scientific paper", "readily" and "paper that" returns
+nothing; the phrase "scientific paper" does not occur in it. v3 removes the
+quotation and quotes instead what the article does say: "Workflows are research
+products in their own right, encapsulating methodological know-how that is to
+be found and published, accessed and cited, exchanged and combined with others,
+and reused as well as adapted."
+Source: Goble et al., *FAIR Computational Workflows*, Data Intelligence
+2(1-2):108-121, doi:10.1162/dint_a_00033, §3 ("FAIR criteria for workflows as
+digital objects").
+
+### F.2 "The Goble three-layer model"
+
+*v2 wording:* "The Goble three-layer model. ... They identify three
+layers---*abstract workflow* ... *concrete workflow* ... and *execution
+trace*... Each layer requires independent FAIR compliance." The same
+attribution carried the three-graph contribution and the per-principle "Goble
+layer(s) A/C/T" annotations.
+
+Goble et al. §3 ("Forms") lists **four** forms, in different words: "A workflow
+can be a CWL specification with test or exemplar data; an implementation of
+that design in a WfMS; an instantiation of that implementation ready to be run
+with input data and parameters set and computational services spun up; a run
+result with intermediate and final data products and provenance logs", and it
+says each form "may have different FAIR criteria", not that each requires
+independent FAIR compliance. The labels *abstract* and *concrete workflow* are
+not theirs. The three-layer split is the paper's own reading, and the
+architecture does not depend on the attribution. v3 quotes the four forms,
+states the three-layer collapse as ours ("we adopt a three-layer reading"), and
+renames the derived headings accordingly.
+Source: Goble et al. §3, "Forms" paragraph.
+
+### F.3 "FAIR workflow indicators defined by Goble et al."
+
+*v2 wording (§7, FAIR compliance):* "We assess OxyMake against the FAIR
+workflow indicators defined by Goble et al. and operationalized by Wilkinson et
+al."
+
+Goble et al. define no indicators. Their conclusions state the opposite:
+"FAIR principles for data, and for software, are generally applicable, but need
+to be extended in order to address the processual nature of workflows.
+Consequently new FAIR indicators will also need to be developed." v3 assesses
+against the FAIR principles for workflows *argued for* by Goble et al. and made
+concrete as numbered entries by Wilkinson et al., and notes that Wilkinson et
+al. call those entries principles, not indicators.
+Source: Goble et al. §4 (Conclusions); Wilkinson et al., Sci Data 12:328,
+Table 1.
+
+### F.4 Newcombe et al.: what the table reports
+
+*v2 wording:* "which reports seven bugs found by TLC in ten AWS systems"; the
+E-section correction replaced this with "ten bugs found by TLC in ten AWS
+systems", which is also wrong.
+
+Ten is the number of systems TLA+ was applied to ("Amazon engineers have used
+TLA+ on 10 large complex real-world systems", p. 67), not a bug count. The
+table on p. 69 covers six components of four systems -- S3 (two rows),
+DynamoDB, EBS, and an internal distributed lock manager (two rows) -- and its
+entries read "Found two bugs, then others in proposed optimizations", "Found
+one bug, then another in the first proposed fix", "Found three bugs requiring
+traces of up to 35 steps", "Found three bugs", "Improved confidence though
+failed to find a liveness bug", and "Found one bug and verified an aggressive
+optimization"; no total is stated. The escaped-technique list is also stated of
+particular bugs ("The bug had passed unnoticed through extensive design
+reviews, code reviews, and testing"), not of every tabulated one. v3 states
+what the table supports and attributes the escaped-review claim to the cases
+the article describes.
+Source: Newcombe et al., CACM 58(4):66-73, p. 67 and the table on p. 69.
+
+### F.5 petgraph's topological sort is not Kahn's algorithm
+
+*v2 wording:* "The `petgraph` library provides $O(|V|+|E|)$ topological sort
+via Kahn's algorithm." The `petgraph` bib note said the same.
+
+`petgraph::algo::toposort` -- the function the engine calls
+(`crates/ox-core/src/dag.rs:61`, `job_graph.rs:62`) -- is a depth-first
+finish-order algorithm: the source carries the comment "based on kosaraju scc",
+builds a `finish_stack`, reverses it, and detects cycles with a reverse-graph
+pass. It keeps no in-degree counts and no ready queue, which is what defines
+Kahn's algorithm. The documented O(|V|+|E|) bound is correct; the mechanism is
+not. (petgraph does ship a Kahn-style walker, `visit::Topo`, but the engine does
+not use it and it documents no complexity bound.) v3 says depth-first and names
+the API.
+Source: petgraph 0.8.3, `src/algo/mod.rs`, `pub fn toposort`.
+
+### F.6 Wrong section locator for Mokhov et al. (2020)
+
+*v2 wording:* `\cite[\S3]{mokhovBuildSystemsCarte2020}`, in both the
+build-theory section and the related-work comparison.
+
+In the JFP version, §3 is "Build Systems, Abstractly"; the scheduler/rebuilder
+taxonomy is §4 ("Schedulers") and §5 ("Rebuilders"), with Table 2 at the end of
+§5. The 2018 locator "§3-4" is correct for the ICFP version. v3 cites §4-5 for
+the 2020 version at both sites.
+Source: Mokhov, Mitchell & Peyton Jones, *Build Systems à la Carte: Theory and
+Practice*, JFP 30:e11, section headings and Table 2.
+
+### F.7 PiGx cited as a guix-cwl workflow
+
+*v2 wording:* "The guix-cwl reference workflows [Prins 2018; Wurmus et al.
+2018] illustrate one such substrate-composition pattern---a CWL workflow run
+under a Guix-managed environment"; and "Compared to the guix-cwl stack [same
+two references]".
+
+PiGx is built on Snakemake, not CWL: the full text of Wurmus et al. contains no
+occurrence of "CWL" or "Common Workflow Language" and states "we used
+SnakeMake, which provides target-driven execution". Only the Prins repository
+supports the guix-cwl description. v3 cites Prins alone for guix-cwl and
+describes PiGx separately as the same substrate pattern with Snakemake as the
+orchestration layer.
+Source: Wurmus et al., GigaScience 7(12):giy123 (PMC6275446), full text.
+
+### F.8 Buck2's "fully content-addressed execution model"
+
+*v2 wording:* "Meta's Buck2 pushes this design further with a fully
+content-addressed execution model built on the Starlark configuration
+language."
+
+The cited source describes Starlark rules, a single incremental dependency
+graph, and remote execution over recursive digests; it makes no "fully
+content-addressed execution model" claim. v3 says "a content-hashed,
+remote-execution-oriented model".
+Source: the cited Buck2 announcement.
+
+### F.9 Corrections to text written after v2
+
+These landed on v3-only wording and carry no v2 quotation.
+
+- **The dry run does not checksum inputs.** The correction recorded in
+  section E wrote that
+  `snakemake --dryrun` "evaluates the rerun triggers for every job
+  unconditionally, so the dry run stats inputs and outputs, reads
+  `.snakemake/metadata` and checksums eligible inputs." In `dag.py`
+  (v7.32.4, L1141-1153) the checksum comparison sits behind
+  `f.exists and f.is_newer(output_mintime_)`, and the whole block behind
+  `if not reason`. On the cold row a missing output already sets the reason,
+  so the block is skipped; on the warm row every input predates its outputs,
+  so `is_newer` is false and the `and` short-circuits before
+  `is_same_checksum`. Nor is the evaluation unconditional: the
+  params/input/code/software-env triggers run only when no earlier reason
+  fired. v3 states what happens on each measured row.
+- **The measured binary's provenance.** §6 states that the measured build is
+  the in-tree `target/release/ox` at commit `03864f8`, while the benchmark of
+  record listed `ox: cargo install --path .` under "Binaries" and named no
+  commit. The paper is correct -- the run used `OX=$PWD/target/release/ox`
+  against a release build of that tree -- and the record's boilerplate was
+  never updated by the harness. Since the paper and the record must agree, the
+  record's prose is amended: `bench/snakemake-vs-oxymake/RESULTS.md` now states
+  the actual invocation and the commit. No number in it was touched.
+- **End-to-end times are single runs, not medians of three.** §6 and §7.3 said
+  the minutes-scale end-to-end phase was timed "as the median of three runs".
+  In `bench/snakemake-vs-oxymake/run.sh`, `measured_run()` executes the command
+  once per cell; the harness's `RUNS` variable (default 3) is consumed only by
+  `clean_resolve()`, the hyperfine-timed resolution phase. v3 says a single
+  timed run per cell and scopes `RUNS` to the resolution phase.
+- **The cold-path differential.** §6.2 said OxyMake "performs work Snakemake
+  does not: it hashes every rule's source, inputs, parameters, environment and
+  platform into a BLAKE3 cache key and writes a content-addressed store and an
+  `ox.lock` audit record." Snakemake 7.32.4 also records per-job provenance
+  and SHA-256 checksums of eligible inputs at every job completion
+  (`persistence.py:284-305`), so hashing is not the differential; and `ox run`
+  writes no `ox.lock` (only `ox lock generate` does) and copies no artefact
+  bytes into a blob store unless `--cache-remote` is set, which the harness
+  does not set. v3 names the shared work, then the OxyMake-only work: folding
+  the declaration into a single BLAKE3 key and hashing every output into the
+  local cache index.
+- **Smaller corrections.** Snakemake's launch paper carries no adoption claim,
+  so the superlative "the most widely used workflow system in bioinformatics"
+  is replaced by the 2021 article's own "one of the most widely used workflow
+  management systems in science"; BioBlend is not named in the cited 2018
+  Galaxy article, so the sentence now says "a REST API with language bindings";
+  Dolstra's "we know that we have specified all the dependencies" is located in
+  ch. 10 and rests on the build running in a temporary directory with only
+  store inputs visible, not on a namespace sandbox; Cromwell's `md5` is
+  described as one configurable local hashing strategy rather than the default;
+  Ray's Java and C++ surfaces are attributed to Ray as it stands rather than to
+  the OSDI'18 paper; Guix is called an input-addressed (functional) store, the
+  distinction the paper itself draws in §2.2; the abstract's "usually buy the
+  property with infrastructure" becomes "often", since the paper's own survey
+  splits evenly, and its identity claim now carries the in-root condition
+  stated in §1 and §3.1; the §3.3 sentence on distributed backends no longer
+  says compute nodes need the state database visible, since it also says they
+  never touch it; the §6.2 explanation of the `mtime+hash` gap now names key
+  computation and index lookup rather than re-hashing alone; §7.2's "documented
+  pain" is restated as a consequence of a per-tree record's scope rather than a
+  cited finding; and §7.3 now records that only the Snakemake 7.x line was
+  measured.
+
+**Deferred.** Two class-B findings are recorded rather than fixed: the
+benchmark record does not state the number of end-to-end samples per cell or
+the 638-byte size of the perturbed input (`bench_lib.py`), both of which belong
+in a regenerated `RESULTS.md` rather than in prose written around it.
 
 ---
 

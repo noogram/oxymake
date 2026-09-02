@@ -31,7 +31,9 @@ Default scales: `100 1000 10000`. Override with `SIZES="… …" RUNS=N JOBS=N`.
 
 Binaries:
 
-- ox: `cargo install --path .` (from repo root)
+- ox: in-tree release build of commit `03864f8`, `cargo build --release`
+  from the repo root, invoked as `OX=$PWD/target/release/ox` (not a binary
+  resolved from `$PATH`)
 - snakemake: `pip install snakemake` (7.x line; this run used 7.32.4)
 - python3: 3.11+
 
