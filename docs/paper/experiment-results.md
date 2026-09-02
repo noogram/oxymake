@@ -34,6 +34,11 @@ no execution).
 
 ## Experiment 3: Startup Time
 
+> **Superseded on 2026-08-27** by "Re-measurement at commit `1a4f724`"
+> below. The table in this section was taken on the 52,514-SLOC,
+> 23-crate tree of 2026-04-01 under a Python `subprocess` harness whose
+> spawn overhead is included in each sample.
+
 | Command                  | Median (ms) | Run 1 | Run 2 | Run 3 | Run 4 | Run 5 |
 |--------------------------|-------------|-------|-------|-------|-------|-------|
 | `ox --help`              | 6           | 5.6   | 7.5   | 7.3   | 5.9   | 6.3   |
@@ -49,6 +54,9 @@ no execution).
 ---
 
 ## Experiment 4: Binary Size
+
+> **Superseded on 2026-08-27** by "Re-measurement at commit `1a4f724`"
+> below; the figures here describe the 2026-04-01 tree.
 
 | Metric              | Value               |
 |---------------------|---------------------|
@@ -112,3 +120,56 @@ no execution).
 | Binary size                  | 14.9 MB    | < 20 MB         | PASS   |
 | Test suite                   | 1,330 pass | —               | PASS   |
 | Feature pass rate (CLI)      | 10/10      | —               | PASS   |
+
+---
+
+## Re-measurement at commit `1a4f724` (2026-08-27)
+
+**Date**: 2026-08-27
+**Commit**: `1a4f724998eba2b133b24540a1ca828daf1a1477`
+**Hardware**: Apple M4 Max, 128 GB RAM, 16 cores
+**OS**: macOS (Darwin 25.5.0, arm64)
+**Tree measured**: 64,596 Rust SLOC, 25 crates, 1,928 tests (`metrics.tex`)
+**Toolchain**: stable `cargo build --release`, default features
+
+Experiments 3 and 4 above were taken on 2026-04-01, on a 52,514-SLOC,
+23-crate tree with 1,330 tests — a materially different tree from the one
+this paper describes and evaluates. All three figures (startup, binary
+size, release build time) were therefore re-measured at the current HEAD.
+
+### Startup time
+
+Method: `hyperfine -N --warmup 10 --runs 200` (shell bypassed, so no
+`sh -c` spawn is included). Medians:
+
+| Command                  | Median (ms) | Mean ± σ (ms) | Min (ms) |
+|--------------------------|-------------|---------------|----------|
+| `ox --help`              | 2.21        | 2.2 ± 0.1     | 1.92     |
+| `ox lint` (10 rules)     | 2.37        | 2.4 ± 0.3     | 1.96     |
+| `ox lint` (1,000 rules)  | 5.85        | 6.1 ± 1.8     | 5.50     |
+
+The two `ox lint` fixtures are synthetic Oxymakefiles of 10 and 1,000
+single-input/single-output copy rules, linted via `ox lint -f <path>`.
+
+The change relative to the 6–7 ms of 2026-04-01 is not attributable to
+the engine alone: the earlier harness measured `time.perf_counter`
+around a Python `subprocess` call and includes its spawn cost. The two
+methods are not directly comparable; the numbers above are the ones the
+paper quotes.
+
+### Binary size and build time
+
+| Metric                                    | Value                     |
+|-------------------------------------------|---------------------------|
+| Binary size (release, default features)   | 17,421,504 bytes (17.4 MB / 16.6 MiB) |
+| Binary type                               | Mach-O 64-bit executable arm64 |
+| Full release build time (clean tree)      | 25.7 s                    |
+
+Build time is the wall clock (`/usr/bin/time -p`) of `cargo build
+--release` over the workspace immediately after `cargo clean --release`,
+with the dependency sources already present in the Cargo registry cache;
+it excludes network fetch. `cargo build --release --bin ox` alone, under
+the same conditions, took 27.4 s. The paper quotes 26 s.
+
+The 2026-04-01 figure of 71 s was recorded without a stated method on a
+smaller tree and is not comparable.
