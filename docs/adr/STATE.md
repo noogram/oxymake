@@ -23,6 +23,6 @@ Status is the first non-empty line under each ADR's `## Status` section, verbati
 | ADR-015 | Named Invariants and TLA+ Scope | Accepted (revised from the D2 scope decision by a follow-up design panel; | — | — | cancel, session, sqlite, state_db |
 | ADR-016 | Metrics as Single Source of Truth | Accepted (drafted from the metrics deliberation §3 T2 + §5 / Task 1 sibling ADR ; | ADR-015 | — | sqlite |
 | ADR-017 | Artifact Residence Topology (Topology B) | Accepted (release-readiness review). | — | — | — |
-| ADR-018 | Differentiation After the CWL Review — Envelope, Not Primitive | Proposed | — | — | cache_validation, mtime |
+| ADR-018 | Differentiation After the CWL Review — Envelope, Not Primitive | Proposed | — | — | cache_validation, mtime, sqlite |
 
 *18 ADRs scanned. Regenerate after every ADR edit.*
