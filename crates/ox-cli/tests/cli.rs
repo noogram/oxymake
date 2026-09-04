@@ -244,6 +244,73 @@ fn lint_json_missing_file_outputs_json() {
     assert!(parsed["errors"].as_array().unwrap().len() > 0);
 }
 
+/// `ox lint` warns when a `[gate.*]` section is present, because gate
+/// enforcement is not wired into the run path (issue #2): the warning must
+/// not fail the lint (a gate is valid TOML) and must name the gate and the
+/// rule(s) it guards.
+#[test]
+fn lint_warns_on_unenforced_gate() {
+    let dir = TempDir::new().unwrap();
+    let file = dir.path().join("Oxymakefile.toml");
+    fs::write(
+        &file,
+        r#"ox_version = "0.1"
+format_version = "1"
+
+[gate.approval]
+after = []
+before = ["guarded"]
+message = "Should block until approved."
+
+[rule.guarded]
+input = []
+output = ["out.txt"]
+shell = "echo RAN > out.txt"
+"#,
+    )
+    .unwrap();
+
+    ox().args(["lint", "-f", file.to_str().unwrap()])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains(
+            "gate `approval` guards rule(s) `guarded`, but gate enforcement is not wired in this version: guarded rules run without approval (see issue #2)",
+        ));
+
+    let output = ox()
+        .args(["lint", "--json", "-f", file.to_str().unwrap()])
+        .output()
+        .expect("command should run");
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: serde_json::Value =
+        serde_json::from_str(&stdout).expect("stdout should be valid JSON");
+    assert_eq!(parsed["valid"], true);
+    let warnings = parsed["warnings"].as_array().unwrap();
+    assert_eq!(warnings.len(), 1);
+    assert!(
+        warnings[0]
+            .as_str()
+            .unwrap()
+            .contains("gate `approval` guards rule(s) `guarded`")
+    );
+}
+
+/// An Oxymakefile without any `[gate.*]` section produces no gate-related
+/// warnings.
+#[test]
+fn lint_no_gate_warning_without_gates() {
+    let output = ox()
+        .args(["lint", "--json", "-f", &simple_fixture()])
+        .output()
+        .expect("command should run");
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: serde_json::Value =
+        serde_json::from_str(&stdout).expect("stdout should be valid JSON");
+    assert!(parsed["warnings"].as_array().unwrap().is_empty());
+}
+
 #[test]
 fn lint_json_invalid_toml_outputs_json() {
     let dir = TempDir::new().unwrap();
