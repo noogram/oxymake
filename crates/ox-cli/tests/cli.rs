@@ -1251,7 +1251,7 @@ fn clean_state_removes_corrupt_state_db() {
 
     // The next open regenerates a fully usable DB at the latest schema.
     let db = ox_state::db::StateDb::open(&oxdir.join("state.db")).unwrap();
-    assert_eq!(db.schema_version().unwrap(), 9);
+    assert_eq!(db.schema_version().unwrap(), 10);
 }
 
 /// A corrupt state.db hit by the normal clean path (which opens the DB)

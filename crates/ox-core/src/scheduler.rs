@@ -538,12 +538,24 @@ pub async fn run_scheduler_with_cache<E: Executor + 'static>(
     let mut join_set: JoinSet<Result<CompletionMsg, OxError>> = JoinSet::new();
     let mut in_flight = HashSet::<JobId>::new();
     let mut terminate_requested = false;
+    // Gates this run has already registered with the checker and announced
+    // via `GateReached`; the poll loop revisits pending gates every
+    // GATE_POLL_INTERVAL and must not re-register or re-announce them.
+    let mut gates_seen = GatesSeen::default();
 
     loop {
         // 1. Find newly ready jobs and dispatch them (unless terminating).
         let mut skipped_this_iter = false;
         if !terminate_requested {
-            let ready = find_ready_jobs(&state, graph, &gate_checker, event_bus).await;
+            let ready = find_ready_jobs(
+                &state,
+                graph,
+                &gate_checker,
+                event_bus,
+                Some(ctx.run_id.as_str()),
+                &mut gates_seen,
+            )
+            .await;
             for (idx, job_id) in ready.iter().enumerate() {
                 let job = match graph.get_job(job_id) {
                     Some(j) => j.clone(),
@@ -1759,6 +1771,14 @@ fn check_root_cause(recent: &[(u64, JobId)], threshold: usize) -> Option<Vec<Job
     }
 }
 
+/// Per-run memory of which gates the scheduler has already registered with
+/// the [`GateCheck`] and announced through [`Event::GateReached`].
+#[derive(Debug, Default)]
+struct GatesSeen {
+    registered: HashSet<GateId>,
+    announced: HashSet<GateId>,
+}
+
 /// Find jobs that are ready to execute: all upstream dependencies are
 /// Succeeded or Skipped, and the job is still Pending, and all blocking
 /// gates are approved.
@@ -1768,11 +1788,19 @@ fn check_root_cause(recent: &[(u64, JobId)], threshold: usize) -> Option<Vec<Job
 /// O(pending × deps) to O(frontier_size).
 ///
 /// Ready jobs are sorted by descending priority (higher runs first).
+///
+/// Gates blocking a job are registered with the checker (as pending, for
+/// `run_id`) the first time they are encountered, before their status is
+/// read, so a persistent checker such as the one backed by `state.db` has
+/// a record for `ox gate list` / `ox gate approve` to act on.
+/// `gates_seen` carries that first-encounter memory across polls.
 async fn find_ready_jobs(
     state: &Arc<Mutex<Frontier>>,
     graph: &JobGraph,
     gate_checker: &Option<Arc<dyn GateCheck>>,
     event_bus: &EventBus,
+    run_id: Option<&str>,
+    gates_seen: &mut GatesSeen,
 ) -> Vec<JobId> {
     // Drain the ready frontier and flip ungated jobs to Ready in a SINGLE
     // lock acquisition (H6: the previous drain/flip split-lock left a window
@@ -1814,18 +1842,24 @@ async fn find_ready_jobs(
             let mut any_rejected = false;
 
             for gate_id in &gates {
+                if gates_seen.registered.insert(gate_id.clone()) {
+                    checker.register_gate(gate_id, run_id).await;
+                }
                 match checker.check_gate(gate_id).await {
                     GateStatus::Approved | GateStatus::NotFound => {}
                     GateStatus::Pending => {
                         all_approved = false;
-                        // Emit gate reached event (only on first encounter).
-                        event_bus.emit(Event::GateReached {
-                            gate_id: gate_id.clone(),
-                            message: format!(
-                                "Waiting for approval to proceed with {}",
-                                job_id.as_str()
-                            ),
-                        });
+                        // Emit gate reached event only on first encounter —
+                        // the poll loop re-checks every GATE_POLL_INTERVAL.
+                        if gates_seen.announced.insert(gate_id.clone()) {
+                            event_bus.emit(Event::GateReached {
+                                gate_id: gate_id.clone(),
+                                message: format!(
+                                    "Waiting for approval to proceed with {}",
+                                    job_id.as_str()
+                                ),
+                            });
+                        }
                     }
                     GateStatus::Rejected => {
                         any_rejected = true;
@@ -3887,6 +3921,109 @@ mod tests {
         }
     }
 
+    /// A gate checker that records every `register_gate` call (with its
+    /// run id) and stays Pending for a fixed number of checks.
+    #[derive(Debug, Default)]
+    struct RecordingGateChecker {
+        registrations: std::sync::Mutex<Vec<(GateId, Option<String>)>>,
+        checks: AtomicUsize,
+        pending_for: usize,
+    }
+
+    impl GateCheck for RecordingGateChecker {
+        fn check_gate<'a>(
+            &'a self,
+            _gate_id: &'a GateId,
+        ) -> Pin<Box<dyn Future<Output = GateStatus> + Send + 'a>> {
+            Box::pin(async move {
+                let call = self.checks.fetch_add(1, Ordering::SeqCst);
+                if call < self.pending_for {
+                    GateStatus::Pending
+                } else {
+                    GateStatus::Approved
+                }
+            })
+        }
+
+        fn register_gate<'a>(
+            &'a self,
+            gate_id: &'a GateId,
+            run_id: Option<&'a str>,
+        ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
+            Box::pin(async move {
+                assert_eq!(
+                    self.checks.load(Ordering::SeqCst),
+                    0,
+                    "register_gate must precede the first check_gate"
+                );
+                self.registrations
+                    .lock()
+                    .unwrap()
+                    .push((gate_id.clone(), run_id.map(str::to_owned)));
+            })
+        }
+    }
+
+    /// The scheduler registers a gate with the checker exactly once, under
+    /// the run's id and before checking it, and announces `GateReached`
+    /// once even though the gate stays pending across several polls.
+    #[tokio::test(start_paused = true)]
+    async fn gate_is_registered_once_and_announced_once() {
+        let jobs = vec![make_job("gated", "build", vec![], vec!["out.txt"])];
+        let mut graph = JobGraph::build(jobs).unwrap();
+        let gate_id = GateId::from("approval");
+        graph.add_gate(&gate_id, &JobId::from("gated"));
+
+        let checker = Arc::new(RecordingGateChecker {
+            pending_for: 4,
+            ..Default::default()
+        });
+        let executor = Arc::new(MockExecutor::new());
+        let config = SchedulerConfig::default();
+        let bus = EventBus::new();
+        let mut rx = bus.subscribe();
+        let ctx = default_ctx();
+
+        let result = run_scheduler_with_cache(
+            &graph,
+            executor,
+            &config,
+            &bus,
+            &ctx,
+            None,
+            Some(checker.clone() as Arc<dyn GateCheck>),
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(result.succeeded, 1);
+
+        let registrations = checker.registrations.lock().unwrap().clone();
+        assert_eq!(
+            registrations,
+            vec![(gate_id.clone(), Some(ctx.run_id.clone()))],
+            "one registration, carrying the run id"
+        );
+        assert!(
+            checker.checks.load(Ordering::SeqCst) >= 5,
+            "the gate was polled until approved"
+        );
+
+        let mut reached = 0;
+        let mut approved = 0;
+        while let Ok(event) = rx.try_recv() {
+            match event {
+                Event::GateReached { gate_id: g, .. } if g == gate_id => reached += 1,
+                Event::GateApproved { gate_id: g, .. } if g == gate_id => approved += 1,
+                _ => {}
+            }
+        }
+        assert_eq!(reached, 1, "GateReached is emitted once, not once per poll");
+        assert_eq!(approved, 1);
+    }
+
     /// Regression test for ox-hm7: when gates are pending and no jobs are
     /// in-flight, the scheduler must sleep between poll iterations instead of
     /// busy-polling via `yield_now()`. With `start_paused = true`, tokio's
@@ -4552,7 +4689,8 @@ mod tests {
         let bus = EventBus::new();
 
         // Initially both are Pending; A has no upstream so it should be ready.
-        let ready = find_ready_jobs(&state, &graph, &None, &bus).await;
+        let ready =
+            find_ready_jobs(&state, &graph, &None, &bus, None, &mut GatesSeen::default()).await;
         assert_eq!(ready.len(), 1);
         assert_eq!(ready[0].as_str(), "A");
 
@@ -4562,12 +4700,14 @@ mod tests {
             s.set_status(JobId::from("A"), JobLifecycle::Succeeded);
             s.promote_downstream(&JobId::from("A"), &graph);
         }
-        let ready = find_ready_jobs(&state, &graph, &None, &bus).await;
+        let ready =
+            find_ready_jobs(&state, &graph, &None, &bus, None, &mut GatesSeen::default()).await;
         assert_eq!(ready.len(), 1);
         assert_eq!(ready[0].as_str(), "B");
 
         // No more pending jobs — should return empty.
-        let ready = find_ready_jobs(&state, &graph, &None, &bus).await;
+        let ready =
+            find_ready_jobs(&state, &graph, &None, &bus, None, &mut GatesSeen::default()).await;
         assert!(ready.is_empty());
     }
 
@@ -6441,7 +6581,15 @@ mod tests {
             target: JobId::from("gated"),
         }));
 
-        let ready = find_ready_jobs(&state, &graph, &checker, &bus).await;
+        let ready = find_ready_jobs(
+            &state,
+            &graph,
+            &checker,
+            &bus,
+            None,
+            &mut GatesSeen::default(),
+        )
+        .await;
         assert!(
             ready.is_empty(),
             "job cancelled during gate check must not be returned as ready, got {ready:?}"

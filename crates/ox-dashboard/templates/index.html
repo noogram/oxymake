@@ -1162,8 +1162,8 @@
                     <table>
                         <thead>
                             <tr>
-                                <th>Rule</th>
-                                <th>Job</th>
+                                <th>Gate</th>
+                                <th>Run</th>
                                 <th>Status</th>
                                 <th>Actions</th>
                             </tr>
@@ -2152,8 +2152,8 @@
                           + '</div>'
                         : '<span class="badge ' + g.status + '">' + g.status + '</span>';
                     return '<tr>'
-                        + '<td>' + esc(g.rule_name) + '</td>'
-                        + '<td title="' + esc(g.job_id) + '">' + esc(g.job_id.substring(0, 12)) + '</td>'
+                        + '<td>' + esc(g.name) + '</td>'
+                        + '<td title="' + esc(g.run_id) + '">' + esc(g.run_id) + '</td>'
                         + '<td><span class="badge ' + g.status + '">' + g.status + '</span></td>'
                         + '<td>' + actions + '</td>'
                         + '</tr>';

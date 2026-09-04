@@ -335,8 +335,8 @@ ox run --json | while read -r event; do
   echo "$event" | jq .event
 done
 
-# Approve a gate programmatically
-ox gate approve 1 --approver "agent:qc-bot"
+# Approve a gate programmatically (by its [gate.<name>] key)
+ox gate approve qc_check --approver "agent:qc-bot"
 ```
 
 The MCP server lives in the [`ox-mcp` crate](crates/ox-mcp): it speaks the

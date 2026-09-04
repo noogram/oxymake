@@ -126,11 +126,45 @@ ox history --json           # Structured history
 
 Manage gates (human-in-the-loop checkpoints).
 
-```bash
-ox gate list                              # Show pending gates
-ox gate approve qc_check                  # Approve a gate
-ox gate approve qc_check --reason "ok"    # Approve with reason
+A gate is declared in the Oxymakefile and names the rules it guards:
+
+```toml
+[gate.qc_check]
+after = ["align"]            # informational: the rules whose results you review
+before = ["publish"]         # every job of these rules waits for the gate
+message = "Check alignment QC before publishing."
 ```
+
+When `ox run` reaches a job of a rule listed in `before`, it registers the
+gate as *pending* in `.oxymake/state.db`, prints the message and waits,
+polling the gate until a decision is recorded:
+
+```bash
+ox gate list                              # All gates: id, name, status, run
+ox gate approve qc_check                  # Approve by name — the run resumes
+ox gate approve qc_check --reason "ok" --approver alice
+ox gate reject qc_check --reason "bad"    # Reject — the guarded jobs are cancelled
+ox gate approve 3                         # By id (shown by `ox gate list`)
+```
+
+Rules of the gate ledger:
+
+- **One record per gate and run.** A decision belongs to the `ox run` that
+  asked for it; the next run that reaches the gate registers a fresh pending
+  record and waits again. Runs whose guarded outputs are already up to date
+  never reach the gate.
+- **Names first, ids as a fallback.** `approve`/`reject` match the gate name
+  against pending records; with a single run waiting there is exactly one.
+  If two runs wait on the same gate, the name is ambiguous and the command
+  lists the ids to use instead.
+- **`after` adds no dependency edge.** A gate is evaluated once a guarded
+  job's own inputs are ready, so list in `after` rules that are upstream of
+  the `before` rules through the DAG.
+- **Local executor only.** Gates are enforced by the scheduler; `--executor
+  slurm` and `--executor ray` submit the DAG without it, so a gated workflow
+  is refused on those executors.
+- **The ledger is the enforcement.** If `.oxymake/state.db` cannot be
+  opened, a gated run fails instead of running the guarded rules unapproved.
 
 ### `ox snapshot`
 

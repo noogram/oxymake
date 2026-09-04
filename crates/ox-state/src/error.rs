@@ -53,4 +53,9 @@ pub enum StateError {
     /// An I/O error occurred (e.g., creating the database file).
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
+
+    /// A gate could not be resolved or decided (unknown name, ambiguous
+    /// name, or the gate is no longer pending).
+    #[error("gate error: {0}")]
+    Gate(String),
 }

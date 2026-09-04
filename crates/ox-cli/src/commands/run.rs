@@ -20,7 +20,7 @@ use ox_core::event::EventBus;
 use ox_core::hashing::{hash_kv_map, update_field, update_opt_field};
 use ox_core::job_graph::JobGraph;
 use ox_core::model::{
-    ConcreteJob, ContentHash, Event, ExecutionBlock, JobId, OutputRef, RunReason,
+    ConcreteJob, ContentHash, Event, ExecutionBlock, GateId, JobId, OutputRef, RunReason,
 };
 use ox_core::resolver::{self, ResolveRequest};
 use ox_core::scheduler::{self, FailedJobDetail, SchedulerConfig};
@@ -616,6 +616,35 @@ impl BenchmarkSink for FsBenchmarkSink {
 }
 
 /// Find the job that produces the given target (file path or job ID).
+/// Attach the workflow's `[gate.<name>]` declarations to the job graph.
+///
+/// For every gate, each job whose rule is listed in the gate's `before`
+/// gets a blocking gate node (see [`JobGraph::add_gate`]); the scheduler
+/// then holds those jobs until the gate is approved. `after` adds no edge:
+/// a gate is evaluated only once a guarded job's own inputs are ready, so
+/// rules listed in `after` must be upstream of the `before` rules through
+/// the DAG (which is the case whenever they produce the guarded inputs).
+///
+/// Returns the number of (gate, job) blocks attached.
+fn attach_gates(job_graph: &mut JobGraph, gates: &[ox_format::parse::Gate]) -> usize {
+    let mut blocks: Vec<(GateId, JobId)> = Vec::new();
+    for gate in gates {
+        let gate_id = GateId::from(gate.name.as_str());
+        for job_id in job_graph.job_ids() {
+            let Some(job) = job_graph.get_job(job_id) else {
+                continue;
+            };
+            if gate.before.iter().any(|rule| rule == job.rule.as_str()) {
+                blocks.push((gate_id.clone(), job_id.clone()));
+            }
+        }
+    }
+    for (gate_id, job_id) in &blocks {
+        job_graph.add_gate(gate_id, job_id);
+    }
+    blocks.len()
+}
+
 fn find_target_job(job_graph: &JobGraph, target: &str) -> Result<JobId> {
     // Try matching by job ID directly.
     let target_id = JobId::from(target);
@@ -897,7 +926,10 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
     }
 
     // Build the JobGraph.
-    let job_graph = JobGraph::build(resolve_result.jobs).context("failed to build JobGraph")?;
+    let mut job_graph = JobGraph::build(resolve_result.jobs).context("failed to build JobGraph")?;
+    // Attach `[gate.<name>]` nodes: every job of a rule listed in a gate's
+    // `before` is blocked until the gate is approved (issue #2).
+    let gated_jobs = attach_gates(&mut job_graph, &workflow.gates);
     timer.mark("resolve_and_build");
 
     // -----------------------------------------------------------------------
@@ -1389,6 +1421,21 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
     }
 
     // Execute via the scheduler.
+    //
+    // Gates are enforced by the scheduler's GateCheck. The slurm and ray
+    // branches below bypass the scheduler (`submit_dag`), so a gated
+    // workflow would run unguarded there: refuse instead of silently
+    // dropping the approval step.
+    if gated_jobs > 0 && args.executor != "local" {
+        bail!(
+            "this workflow declares {} gate(s) but `--executor {}` submits the DAG \
+             without the scheduler, so gates cannot block jobs there; run with \
+             `--executor local` or remove the [gate.*] tables",
+            workflow.gates.len(),
+            args.executor
+        );
+    }
+
     let memory_budget_bytes =
         common::parse_human_size(&args.memory_budget).context("invalid --memory-budget value")?;
 
@@ -1492,6 +1539,29 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
     }
 
     timer.mark("state_db_register");
+
+    // Gate checker: only when the workflow declares gates. Without gates
+    // the graph has no gate nodes and the checker would never be consulted,
+    // so `None` is equivalent and saves a second state.db connection. With
+    // gates, a missing state.db is fatal: the gate ledger *is* the
+    // enforcement (`ox gate approve` writes to it), so running without it
+    // would execute guarded rules unapproved.
+    let gate_checker: Option<Arc<dyn ox_core::traits::gate::GateCheck>> = if gated_jobs > 0 {
+        if state_db.is_none() {
+            bail!(
+                "this workflow declares gates, which are enforced through .oxymake/state.db, \
+                 but the state database could not be opened (see warning above)"
+            );
+        }
+        let db = ox_state::db::StateDb::open(&state_db_path)
+            .context("failed to open state database for gate enforcement")?;
+        Some(Arc::new(ox_state::gate::StateGateChecker::new(
+            db,
+            Some(run_id.clone()),
+        )))
+    } else {
+        None
+    };
 
     // Build the cache checker for the scheduler (dynamic cache checking).
     // Keep a typed reference for saving the manifest after the run.
@@ -1771,7 +1841,7 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
                     &event_bus,
                     &ctx,
                     scheduler_cache.clone(),
-                    None,
+                    gate_checker.clone(),
                     bench_sink,
                     Some(shutdown.clone()),
                     disk_writer_handle.clone(),

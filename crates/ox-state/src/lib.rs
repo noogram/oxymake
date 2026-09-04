@@ -72,6 +72,7 @@
 pub mod backend;
 pub mod db;
 pub mod error;
+pub mod gate;
 pub mod migration;
 pub mod session;
 
