@@ -28,6 +28,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   crates.io name-reservation crate), and the rebuilt PDF and arXiv tarball.
 
 ### Added
+- `ox lint` now warns (without failing) when an Oxymakefile declares one or
+  more `[gate.*]` sections: gate enforcement is not wired into the run path
+  in this version, so guarded rules currently execute without approval (see
+  issue #2). The warning appears in human output and, as `warnings`, in
+  `--json` output.
 - `docs/paper/ERRATUM.md` — an append-only record of every paper claim
   corrected after publication, with the superseded wording and the primary
   source for each correction. The paper carries a matching "Revision note
