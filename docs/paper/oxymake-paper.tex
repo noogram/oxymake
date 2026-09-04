@@ -179,9 +179,12 @@ performance is measured (\S\ref{sec:evaluation}).
 
 \paragraph{A machine-readable command interface.}
 Every command accepts \code{--json}; when it is given, output is
-newline-delimited JSON (NDJSON). Gate approval is a command rather than a terminal prompt,
-so a script or an AI agent drives the same operations a human does
-(\S\ref{sec:agent-api}). An MCP server (\code{ox serve --mcp}) exposes an
+newline-delimited JSON (NDJSON). Gate approval is a command
+(\code{ox gate approve}) rather than a terminal prompt, so a script or an
+AI agent drives the same operations a human does; in v0.1.0, however, the
+scheduler does not consult gate state, so a declared gate is recorded and
+managed but does not block execution (\S\ref{sec:agent-api},
+\S\ref{sec:limitations}). An MCP server (\code{ox serve --mcp}) exposes an
 inspection subset of the engine over the Model Context Protocol: eight
 tools, seven read-only plus \code{ox\_clean}, which removes cached
 artifacts and state. This is an
@@ -308,8 +311,9 @@ This paper contributes:
   disk (\S\ref{sec:implementation},
   \S\ref{sec:distributed-related}, \S\ref{sec:limitations}).
 \item \textbf{A machine-readable execution interface.} Structured
-  NDJSON events and command-based gate approval let a program or agent
-  consume and drive a run without scraping terminal output; an MCP
+  NDJSON events let a program or agent consume a run without scraping
+  terminal output, and gate decisions are commands rather than prompts
+  (recorded but not yet enforced by the scheduler, \S\ref{sec:agent-api}); an MCP
   server exposes an inspection subset of these operations---seven
   read-only tools plus \code{ox\_clean}
   (\S\ref{sec:agent-api}).
@@ -1802,14 +1806,28 @@ stdout:
  "message":"Review QC metrics"}
 \end{lstlisting}
 
-A downstream tool reads line-by-line, reacting to typed events. Gate approval is
-programmatic:
+A downstream tool reads line-by-line, reacting to typed events. Gate
+decisions are commands; \code{ox gate list} prints pending gates with a
+numeric identifier, which \code{approve} and \code{reject} take:
 
 \begin{lstlisting}[style=shell]
-ox gate approve qc_check \
+ox gate approve 3 \
   --approver "ci:qc-runner" \
   --reason "metrics within threshold"
 \end{lstlisting}
+
+\paragraph{Enforcement status.}
+In v0.1.0 the run path constructs the scheduler without a gate checker:
+\code{[gate.*]} declarations are parsed, \code{ox gate} records and
+lists decisions, and the scheduler's blocking logic and the
+\code{gate.reached} event exist and are exercised by tests, but no
+shipped command supplies the checker that would connect them. A rule
+guarded by a gate therefore runs without approval, and \code{ox gate
+list} reports no pending gate, because nothing registers one during a
+run. Wiring a checker backed by the state database, and a \code{lint}
+warning until it lands, are tracked as issue~\#2 of the repository. The
+event stream and the approval commands described above are real; the
+checkpoint they are meant to implement is not yet in force.
 
 For Rust embedding, the scheduler exposes a typed
 \code{tokio::\allowbreak{}broadcast} channel of \code{Event}
@@ -2391,7 +2409,7 @@ Three-graph architecture         & Rule $\to$ Job $\to$ Exec \\
 Cache-pruning optimization pass  & Skips up-to-date jobs \\
 Four execution modes             & shell, run, script, call \\
 NDJSON event API (\code{--json}) & All commands \\
-Gate approval                    & \code{ox gate approve/reject} \\
+Gate approval                    & \code{ox gate approve/reject}; declarations parsed and decisions recorded, not yet enforced by the scheduler (\S\ref{sec:agent-api}) \\
 Idempotent convergent execution  & SQLite state; claim protocol implemented but not yet the scheduling gate (\S\ref{sec:daemon-free}) \\
 Tags and \code{--where} filter & Implicit + explicit tags \\
 Conditional guards (\code{when}) & DAG-time evaluation \\
@@ -2406,7 +2424,7 @@ Ray executor                     & \code{--executor ray} \\
 Directory remote cache           & \code{--cache-remote}, blob store (\S\ref{sec:content-addressable}) \\
 \bottomrule
 \end{tabular}
-\caption{Implementation matrix. All rows are implemented; the benchmark
+\caption{Implementation matrix. All rows are implemented, with the two exceptions the notes column states (gate enforcement and the claim gate); the benchmark
   harness exercises TOML parsing, DAG resolution, content-addressable
   caching, cache pruning, and the \code{shell} execution mode on the
   local executor (its Python and file-copy work is launched through
@@ -2618,9 +2636,10 @@ maps onto---OxyMake's wildcards expand \emph{output filenames} into
 per-path jobs rather than selecting build targets; its environment
 declarations name a scientific runtime (conda YAML, \code{uv.lock}, an
 image) hashed by content into the job key rather than a toolchain
-resolved by constraint; and its gates are run-time human or agent
-approval checkpoints inside a workflow, not analysis-time policy
-checks.
+resolved by constraint; and its gates are declared as run-time human or agent
+approval checkpoints inside a workflow rather than analysis-time policy
+checks (declared and managed in v0.1.0, not yet enforced;
+\S\ref{sec:agent-api}).
 
 In the Mokhov et al.\ taxonomy~\cite[\S4--5]{mokhovBuildSystemsCarte2020}, OxyMake
 combines a \emph{topological scheduler} (task order fixed before execution
@@ -2661,6 +2680,18 @@ engine's contract, not adoption results.
 
 \subsection{Limitations and Future Work}
 \label{sec:limitations}
+
+\paragraph{Gate enforcement.}
+Gates are declared in the Oxymakefile, listed and decided with
+\code{ox gate}, and the scheduler carries the logic to hold a guarded
+job until its gate is approved; but in v0.1.0 no shipped command passes a
+gate checker to the scheduler, so a guarded rule runs without approval
+and no pending gate is ever registered (\S\ref{sec:agent-api}). An
+operator who declares a gate as a network or overwrite checkpoint gets
+neither protection nor a signal that the gate is inert. The fix is a
+checker backed by the state database, keyed by gate name rather than by
+the numeric record identifier the current table uses, plus a \code{lint}
+warning while enforcement is unwired (issue~\#2).
 
 \paragraph{TOML expressiveness.}
 The decision to use TOML rather than a Turing-complete DSL limits the

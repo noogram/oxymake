@@ -1203,3 +1203,33 @@ in a regenerated `RESULTS.md` rather than in prose written around it.
 
 *Maintained by Noogram. Corrections and counterexamples are welcome as issues
 on `noogram/oxymake`.*
+
+## G. Gate enforcement (2026-09-05, issue #2)
+
+**"Gate approval is programmatic" / "Gate approval — Full — `ox gate approve/reject`".**
+*v2 wording (agent API):* "Gate approval is programmatic: `ox gate approve qc_check --approver "ci:qc-runner" --reason "metrics within threshold"`."
+*v2 wording (implementation matrix):* "Gate approval | Full | `ox gate approve/reject`", under a caption stating that all rows are implemented.
+*v2 wording (positioning):* "its gates are run-time human or agent approval checkpoints inside a workflow".
+
+The checkpoint does not exist at run time in v0.1.0. `[gate.*]` declarations
+are parsed (`ox-format::Gate`), `ox gate list/approve/reject` read and write
+the `gates` table, and the scheduler carries the blocking logic behind a
+`GateCheck` trait — but the only production call to the scheduler
+(`crates/ox-cli/src/commands/run.rs`, the `run_scheduler_with_cache` call)
+passes `None` for the checker, the only `GateCheck` implementations are the
+permissive `NoGates` and two test doubles, and `Db::create_gate` is called by
+no run-path code. A guarded rule therefore runs without approval and
+`ox gate list` reports no pending gate. The v2 example command is also not the
+shipped interface: `ox gate approve` takes the numeric record identifier
+printed by `ox gate list`, not a gate name. Reported as
+https://github.com/noogram/oxymake/issues/2 (2026-09-03), which reproduces it
+on macOS arm64 and Linux x86_64.
+
+v3 states at each site that gates are declared and managed but not yet
+enforced, gives the shipped `approve <id>` form, and adds a "Gate
+enforcement" paragraph to the limitations. The code is unchanged by this
+correction; enforcement is tracked in the issue.
+Source: `crates/ox-core/src/traits/gate.rs` (module doc: "gates are not
+enforced unless a concrete implementation is provided"); `run.rs` call site;
+`ox-state/src/db.rs` `create_gate` and its single test-only caller.
+
