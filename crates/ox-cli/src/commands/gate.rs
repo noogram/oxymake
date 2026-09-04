@@ -1,20 +1,29 @@
 //! `ox gate` — Manual approval gates in workflows.
 //!
-//! Gates allow human-in-the-loop approval points in automated pipelines.
-//! When a rule has a gate, the scheduler pauses and waits for explicit
-//! approval via `ox gate approve`.
+//! A `[gate.<name>]` table in the Oxymakefile blocks every rule listed in
+//! its `before` until the gate is approved. When `ox run` reaches such a
+//! rule it registers the gate as pending in `.oxymake/state.db`, prints the
+//! gate message and waits; `ox gate approve <name>` lets the run continue,
+//! `ox gate reject <name>` cancels the guarded jobs. Gates are addressed by
+//! their name (the `[gate.<name>]` key); the numeric id shown by `ox gate
+//! list` is accepted too and disambiguates when several runs wait on the
+//! same gate.
 
 use anyhow::{Context, Result};
 use std::path::PathBuf;
 
 /// Arguments for `ox gate`.
 #[derive(clap::Args)]
+#[command(
+    after_help = "EXAMPLES:\n    ox gate list\n    ox gate approve qc_check --approver alice --reason \"metrics look good\"\n    ox gate reject qc_check --reason \"coverage too low\"\n    ox gate approve 3                      # by id, when two runs wait on the same gate"
+)]
 pub struct GateArgs {
     /// Subcommand: list (default), approve, reject
     pub action: Option<String>,
 
-    /// Gate ID to approve/reject
-    pub gate_id: Option<String>,
+    /// Gate to approve/reject: its name (the `[gate.<name>]` key) or the
+    /// numeric id shown by `ox gate list`
+    pub gate: Option<String>,
 
     /// Approver identity
     #[arg(long)]
@@ -46,51 +55,80 @@ pub fn cmd_gate(args: GateArgs) -> Result<()> {
     match action {
         "list" => {
             let gates = db.list_gates()?;
-            if gates.is_empty() {
-                println!("No pending gates.");
+            if args.json {
+                let rows: Vec<serde_json::Value> = gates
+                    .iter()
+                    .map(|g| {
+                        serde_json::json!({
+                            "id": g.id,
+                            "name": g.name,
+                            "run_id": g.run_id,
+                            "status": g.status,
+                            "created_at": g.created_at,
+                            "decided_at": g.decided_at,
+                            "decided_by": g.decided_by,
+                            "reason": g.reason,
+                        })
+                    })
+                    .collect();
+                println!("{}", serde_json::to_string(&rows)?);
                 return Ok(());
             }
-            if args.json {
-                for g in &gates {
-                    println!(
-                        "{{\"id\":{},\"rule\":\"{}\",\"job_id\":\"{}\",\"status\":\"{}\",\"created_at\":{}}}",
-                        g.id, g.rule_name, g.job_id, g.status, g.created_at
-                    );
-                }
-            } else {
-                println!("{:<6} {:<20} {:<30} {:<10}", "ID", "Rule", "Job", "Status");
-                println!("{}", "-".repeat(70));
-                for g in &gates {
-                    println!(
-                        "{:<6} {:<20} {:<30} {:<10}",
-                        g.id, g.rule_name, g.job_id, g.status
-                    );
-                }
+            if gates.is_empty() {
+                println!("No gates.");
+                return Ok(());
+            }
+            println!(
+                "{:<6} {:<24} {:<10} {:<20} Decided by",
+                "ID", "Gate", "Status", "Run"
+            );
+            println!("{}", "-".repeat(76));
+            for g in &gates {
+                println!(
+                    "{:<6} {:<24} {:<10} {:<20} {}",
+                    g.id,
+                    g.name,
+                    g.status,
+                    g.run_id.as_deref().unwrap_or("-"),
+                    g.decided_by.as_deref().unwrap_or("-"),
+                );
+            }
+            if gates.iter().any(|g| g.status == "pending") {
+                println!();
+                println!(
+                    "Approve with `ox gate approve <name>`; reject with `ox gate reject <name>`."
+                );
             }
         }
-        "approve" => {
-            let gate_id: i64 = args
-                .gate_id
+        "approve" | "reject" => {
+            let gate = args
+                .gate
                 .as_deref()
-                .context("Gate ID required for approve")?
-                .parse()
-                .context("Gate ID must be a number")?;
+                .with_context(|| format!("Gate name (or id) required for {action}"))?;
+            let gate_id = db.resolve_pending_gate(gate)?;
             let approver = args.approver.as_deref().unwrap_or("unknown");
             let reason = args.reason.as_deref().unwrap_or("");
-            db.approve_gate(gate_id, approver, reason)?;
-            println!("Gate {} approved by {}", gate_id, approver);
-        }
-        "reject" => {
-            let gate_id: i64 = args
-                .gate_id
-                .as_deref()
-                .context("Gate ID required for reject")?
-                .parse()
-                .context("Gate ID must be a number")?;
-            let approver = args.approver.as_deref().unwrap_or("unknown");
-            let reason = args.reason.as_deref().unwrap_or("");
-            db.reject_gate(gate_id, approver, reason)?;
-            println!("Gate {} rejected by {}", gate_id, approver);
+            if action == "approve" {
+                db.approve_gate(gate_id, approver, reason)?;
+            } else {
+                db.reject_gate(gate_id, approver, reason)?;
+            }
+            let record = db.list_gates()?.into_iter().find(|g| g.id == gate_id);
+            let name = record.map(|g| g.name).unwrap_or_else(|| gate.to_string());
+            if args.json {
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "id": gate_id,
+                        "name": name,
+                        "status": if action == "approve" { "approved" } else { "rejected" },
+                        "decided_by": approver,
+                        "reason": reason,
+                    })
+                );
+            } else {
+                println!("Gate '{name}' (id {gate_id}) {action}d by {approver}");
+            }
         }
         other => {
             anyhow::bail!(

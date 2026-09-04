@@ -157,8 +157,14 @@ pub struct RuleStats {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct GateInfo {
     pub id: i64,
-    pub rule_name: String,
-    pub job_id: String,
+    /// The `[gate.<name>]` key — what `ox gate approve <name>` accepts.
+    pub name: String,
+    /// The `ox run` invocation that reached the gate.
+    pub run_id: Option<String>,
+    /// Pre-v10 rows only.
+    pub rule_name: Option<String>,
+    /// Pre-v10 rows only.
+    pub job_id: Option<String>,
     pub status: String,
     pub created_at: u64,
     pub decided_at: Option<u64>,
@@ -411,6 +417,8 @@ pub async fn api_gates(
             .into_iter()
             .map(|g| GateInfo {
                 id: g.id,
+                name: g.name,
+                run_id: g.run_id,
                 rule_name: g.rule_name,
                 job_id: g.job_id,
                 status: g.status,
@@ -674,7 +682,7 @@ mod tests {
         db.end_run("run-1", 1, 0, 0).unwrap();
 
         // Seed a gate.
-        db.create_gate("deploy", "build-A").unwrap();
+        db.register_gate("deploy", Some("run-1")).unwrap();
 
         drop(db);
 
@@ -947,8 +955,8 @@ mod tests {
         let gates: Vec<GateInfo> = serde_json::from_slice(&body).unwrap();
 
         assert_eq!(gates.len(), 1);
-        assert_eq!(gates[0].rule_name, "deploy");
-        assert_eq!(gates[0].job_id, "build-A");
+        assert_eq!(gates[0].name, "deploy");
+        assert_eq!(gates[0].run_id.as_deref(), Some("run-1"));
         assert_eq!(gates[0].status, "pending");
     }
 
@@ -1071,8 +1079,10 @@ mod tests {
     fn gate_info_roundtrips() {
         let gate = GateInfo {
             id: 1,
-            rule_name: "deploy".into(),
-            job_id: "build-A".into(),
+            name: "deploy".into(),
+            run_id: Some("run-1".into()),
+            rule_name: None,
+            job_id: None,
             status: "approved".into(),
             created_at: 1000,
             decided_at: Some(2000),
@@ -1089,8 +1099,10 @@ mod tests {
     fn gate_info_pending_has_no_decision() {
         let gate = GateInfo {
             id: 2,
-            rule_name: "review".into(),
-            job_id: "test-B".into(),
+            name: "review".into(),
+            run_id: None,
+            rule_name: Some("review".into()),
+            job_id: Some("test-B".into()),
             status: "pending".into(),
             created_at: 500,
             decided_at: None,

@@ -4,7 +4,7 @@
 .SH NAME
 ox\-gate \- Manage gates
 .SH SYNOPSIS
-\fBox\-gate\fR [\fB\-\-approver\fR] [\fB\-\-reason\fR] [\fB\-\-json\fR] [\fB\-f\fR|\fB\-\-file\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fIACTION\fR] [\fIGATE_ID\fR] 
+\fBox\-gate\fR [\fB\-\-approver\fR] [\fB\-\-reason\fR] [\fB\-\-json\fR] [\fB\-f\fR|\fB\-\-file\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fIACTION\fR] [\fIGATE\fR] 
 .SH DESCRIPTION
 Manage gates
 .SH OPTIONS
@@ -27,5 +27,11 @@ Print help
 [\fIACTION\fR]
 Subcommand: list (default), approve, reject
 .TP
-[\fIGATE_ID\fR]
-Gate ID to approve/reject
+[\fIGATE\fR]
+Gate to approve/reject: its name (the `[gate.<name>]` key) or the numeric id shown by `ox gate list`
+.SH EXTRA
+EXAMPLES:
+    ox gate list
+    ox gate approve qc_check \-\-approver alice \-\-reason "metrics look good"
+    ox gate reject qc_check \-\-reason "coverage too low"
+    ox gate approve 3                      # by id, when two runs wait on the same gate

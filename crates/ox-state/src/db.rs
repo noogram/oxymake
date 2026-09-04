@@ -354,13 +354,23 @@ pub struct JobWithLog {
 }
 
 /// A gate record representing a manual approval point.
+///
+/// One record exists per `(name, run_id)`: the scheduler registers the
+/// `[gate.<name>]` the first time a run reaches it, and `ox gate
+/// approve <name>` decides the pending record with that name.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GateRecord {
     /// Auto-incremented gate ID.
     pub id: i64,
-    /// Rule that triggered the gate.
-    pub rule_name: String,
-    /// Job that is waiting for approval.
-    pub job_id: String,
+    /// Gate name — the `[gate.<name>]` key, i.e. the scheduler's `GateId`.
+    pub name: String,
+    /// The `ox run` invocation that reached the gate (`None` for rows
+    /// written by the pre-v10 schema).
+    pub run_id: Option<String>,
+    /// Rule that triggered the gate (pre-v10 rows only).
+    pub rule_name: Option<String>,
+    /// Job that was waiting for approval (pre-v10 rows only).
+    pub job_id: Option<String>,
     /// Gate status: pending, approved, rejected.
     pub status: String,
     /// UNIX timestamp when the gate was created.
@@ -400,7 +410,7 @@ pub struct GateRecord {
 /// let db = StateDb::open(tmp.path()).unwrap();
 ///
 /// // Database is at schema version 1 after open.
-/// assert_eq!(db.schema_version().unwrap(), 9);
+/// assert_eq!(db.schema_version().unwrap(), 10);
 ///
 /// db.close().unwrap();
 /// ```
@@ -1673,70 +1683,144 @@ impl StateDb {
     // Gate operations
     // -----------------------------------------------------------------
 
-    /// Create a new pending gate for a job.
-    pub fn create_gate(&self, rule_name: &str, job_id: &str) -> Result<i64, StateError> {
+    /// Register the gate `name` as pending for `run_id` unless a record for
+    /// that `(name, run_id)` already exists.
+    ///
+    /// Returns `Some(id)` when a new pending record was inserted and `None`
+    /// when the gate was already registered for this run (whatever its
+    /// status).  This is the idempotent primitive behind
+    /// [`GateCheck::register_gate`](ox_core::traits::gate::GateCheck::register_gate):
+    /// the scheduler may call it on every poll.
+    pub fn register_gate(
+        &self,
+        name: &str,
+        run_id: Option<&str>,
+    ) -> Result<Option<i64>, StateError> {
+        if self.gate_status(name, run_id)?.is_some() {
+            return Ok(None);
+        }
         let now = unix_now();
         self.conn.execute(
-            "INSERT INTO gates (rule_name, job_id, status, created_at) VALUES (?1, ?2, 'pending', ?3)",
-            rusqlite::params![rule_name, job_id, now],
+            "INSERT INTO gates (name, run_id, status, created_at) VALUES (?1, ?2, 'pending', ?3)",
+            rusqlite::params![name, run_id, now],
         )?;
-        Ok(self.conn.last_insert_rowid())
+        Ok(Some(self.conn.last_insert_rowid()))
     }
 
-    /// List all gates, optionally filtered by status.
+    /// Status (`pending`, `approved`, `rejected`) of the gate `name` for
+    /// `run_id`, or `None` when the gate was never registered for that run.
+    pub fn gate_status(
+        &self,
+        name: &str,
+        run_id: Option<&str>,
+    ) -> Result<Option<String>, StateError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT status FROM gates WHERE name = ?1 AND run_id IS ?2 ORDER BY id DESC LIMIT 1",
+        )?;
+        let mut rows = stmt.query(rusqlite::params![name, run_id])?;
+        match rows.next()? {
+            Some(row) => Ok(Some(row.get(0)?)),
+            None => Ok(None),
+        }
+    }
+
+    /// List all gates (every run, every status), oldest first.
     pub fn list_gates(&self) -> Result<Vec<GateRecord>, StateError> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, rule_name, job_id, status, created_at, decided_at, decided_by, reason FROM gates ORDER BY id",
+            "SELECT id, name, run_id, rule_name, job_id, status, created_at, decided_at, decided_by, reason FROM gates ORDER BY id",
         )?;
         let gates = stmt
             .query_map([], |row| {
                 Ok(GateRecord {
                     id: row.get(0)?,
-                    rule_name: row.get(1)?,
-                    job_id: row.get(2)?,
-                    status: row.get(3)?,
-                    created_at: row.get(4)?,
-                    decided_at: row.get(5)?,
-                    decided_by: row.get(6)?,
-                    reason: row.get(7)?,
+                    name: row.get(1)?,
+                    run_id: row.get(2)?,
+                    rule_name: row.get(3)?,
+                    job_id: row.get(4)?,
+                    status: row.get(5)?,
+                    created_at: row.get(6)?,
+                    decided_at: row.get(7)?,
+                    decided_by: row.get(8)?,
+                    reason: row.get(9)?,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
         Ok(gates)
     }
 
-    /// Approve a pending gate.
+    /// Resolve a gate given on the command line to the id of a **pending**
+    /// record.
+    ///
+    /// `gate` is first matched against gate names: if exactly one pending
+    /// gate has that name its id is returned; several pending gates with
+    /// that name (two runs waiting on the same gate) is an error listing
+    /// their ids so the caller can disambiguate numerically.  When no
+    /// pending gate has that name and `gate` parses as an integer, it is
+    /// taken as a gate id.
+    pub fn resolve_pending_gate(&self, gate: &str) -> Result<i64, StateError> {
+        let pending: Vec<GateRecord> = self
+            .list_gates()?
+            .into_iter()
+            .filter(|g| g.status == "pending")
+            .collect();
+        let by_name: Vec<&GateRecord> = pending.iter().filter(|g| g.name == gate).collect();
+        match by_name.as_slice() {
+            [one] => return Ok(one.id),
+            [] => {}
+            many => {
+                let ids: Vec<String> = many.iter().map(|g| g.id.to_string()).collect();
+                return Err(StateError::Gate(format!(
+                    "{} pending gates are named '{gate}' (ids {}); approve or reject by id",
+                    many.len(),
+                    ids.join(", ")
+                )));
+            }
+        }
+        if let Ok(id) = gate.parse::<i64>() {
+            if pending.iter().any(|g| g.id == id) {
+                return Ok(id);
+            }
+            return Err(StateError::Gate(format!("no pending gate with id {id}")));
+        }
+        Err(StateError::Gate(format!("no pending gate named '{gate}'")))
+    }
+
+    /// Approve a pending gate by id.
     pub fn approve_gate(
         &self,
         gate_id: i64,
         approver: &str,
         reason: &str,
     ) -> Result<(), StateError> {
-        let now = unix_now();
-        let updated = self.conn.execute(
-            "UPDATE gates SET status = 'approved', decided_at = ?1, decided_by = ?2, reason = ?3 WHERE id = ?4 AND status = 'pending'",
-            rusqlite::params![now, approver, reason, gate_id],
-        )?;
-        if updated == 0 {
-            return Err(StateError::Db(rusqlite::Error::QueryReturnedNoRows));
-        }
-        Ok(())
+        self.decide_gate(gate_id, "approved", approver, reason)
     }
 
-    /// Reject a pending gate.
+    /// Reject a pending gate by id.
     pub fn reject_gate(
         &self,
         gate_id: i64,
         approver: &str,
         reason: &str,
     ) -> Result<(), StateError> {
+        self.decide_gate(gate_id, "rejected", approver, reason)
+    }
+
+    fn decide_gate(
+        &self,
+        gate_id: i64,
+        status: &str,
+        approver: &str,
+        reason: &str,
+    ) -> Result<(), StateError> {
         let now = unix_now();
         let updated = self.conn.execute(
-            "UPDATE gates SET status = 'rejected', decided_at = ?1, decided_by = ?2, reason = ?3 WHERE id = ?4 AND status = 'pending'",
-            rusqlite::params![now, approver, reason, gate_id],
+            "UPDATE gates SET status = ?1, decided_at = ?2, decided_by = ?3, reason = ?4 WHERE id = ?5 AND status = 'pending'",
+            rusqlite::params![status, now, approver, reason, gate_id],
         )?;
         if updated == 0 {
-            return Err(StateError::Db(rusqlite::Error::QueryReturnedNoRows));
+            return Err(StateError::Gate(format!(
+                "no pending gate with id {gate_id}"
+            )));
         }
         Ok(())
     }
@@ -2088,7 +2172,7 @@ mod tests {
     #[test]
     fn open_creates_schema() {
         let (_tmp, db) = temp_db();
-        assert_eq!(db.schema_version().unwrap(), 9);
+        assert_eq!(db.schema_version().unwrap(), 10);
     }
 
     #[test]
@@ -2716,7 +2800,7 @@ mod tests {
         let (_tmp, db) = temp_db();
         let backend: &dyn StateBackend = &db;
 
-        assert_eq!(backend.schema_version().unwrap(), 9);
+        assert_eq!(backend.schema_version().unwrap(), 10);
 
         let sid = backend.create_session(1, "localhost", None).unwrap();
 
@@ -2869,27 +2953,21 @@ mod tests {
         // on clock anomalies. They should use unix_now() (unwrap_or_default)
         // instead of raw .unwrap() on duration_since(UNIX_EPOCH).
         let (_tmp, db) = temp_db();
-        let jobs = vec![JobRecord {
-            id: "g1".into(),
-            rule_name: "deploy".into(),
-            wildcards: "{}".into(),
-            cache_key: None,
-            run_id: None,
-        }];
-        db.register_jobs(&jobs).unwrap();
 
-        // create_gate should succeed and return a valid id
-        let gate_id = db.create_gate("deploy", "g1").unwrap();
+        // register_gate should succeed and return a valid id
+        let gate_id = db.register_gate("deploy", Some("run-1")).unwrap().unwrap();
         assert!(gate_id > 0);
 
         // list_gates should show the pending gate with a non-zero timestamp
         let gates = db.list_gates().unwrap();
         assert_eq!(gates.len(), 1);
+        assert_eq!(gates[0].name, "deploy");
+        assert_eq!(gates[0].run_id.as_deref(), Some("run-1"));
         assert_eq!(gates[0].status, "pending");
         assert!(gates[0].created_at > 0);
 
         // approve_gate should succeed
-        let gate_id2 = db.create_gate("deploy", "g1").unwrap();
+        let gate_id2 = db.register_gate("deploy", Some("run-2")).unwrap().unwrap();
         db.approve_gate(gate_id2, "admin", "looks good").unwrap();
         let gates = db.list_gates().unwrap();
         let approved = gates.iter().find(|g| g.id == gate_id2).unwrap();
@@ -2897,12 +2975,89 @@ mod tests {
         assert!(approved.decided_at.unwrap() > 0);
 
         // reject_gate should succeed
-        let gate_id3 = db.create_gate("deploy", "g1").unwrap();
+        let gate_id3 = db.register_gate("deploy", Some("run-3")).unwrap().unwrap();
         db.reject_gate(gate_id3, "admin", "not ready").unwrap();
         let gates = db.list_gates().unwrap();
         let rejected = gates.iter().find(|g| g.id == gate_id3).unwrap();
         assert_eq!(rejected.status, "rejected");
         assert!(rejected.decided_at.unwrap() > 0);
+    }
+
+    #[test]
+    fn register_gate_is_idempotent_per_name_and_run() {
+        let (_tmp, db) = temp_db();
+
+        assert_eq!(db.gate_status("qc", Some("run-1")).unwrap(), None);
+        let first = db.register_gate("qc", Some("run-1")).unwrap();
+        assert!(first.is_some());
+        // Second registration for the same run: no new record.
+        assert_eq!(db.register_gate("qc", Some("run-1")).unwrap(), None);
+        assert_eq!(
+            db.gate_status("qc", Some("run-1")).unwrap().as_deref(),
+            Some("pending")
+        );
+
+        // A decision sticks and still blocks re-registration for that run.
+        db.approve_gate(first.unwrap(), "alice", "").unwrap();
+        assert_eq!(db.register_gate("qc", Some("run-1")).unwrap(), None);
+        assert_eq!(
+            db.gate_status("qc", Some("run-1")).unwrap().as_deref(),
+            Some("approved")
+        );
+
+        // Another run re-asks: a fresh pending record.
+        assert!(db.register_gate("qc", Some("run-2")).unwrap().is_some());
+        assert_eq!(
+            db.gate_status("qc", Some("run-2")).unwrap().as_deref(),
+            Some("pending")
+        );
+        assert_eq!(db.list_gates().unwrap().len(), 2);
+
+        // Runless registration (run_id = None) is idempotent too.
+        assert!(db.register_gate("qc", None).unwrap().is_some());
+        assert_eq!(db.register_gate("qc", None).unwrap(), None);
+    }
+
+    #[test]
+    fn resolve_pending_gate_accepts_name_or_id() {
+        let (_tmp, db) = temp_db();
+        let id = db
+            .register_gate("qc_check", Some("run-1"))
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(db.resolve_pending_gate("qc_check").unwrap(), id);
+        assert_eq!(db.resolve_pending_gate(&id.to_string()).unwrap(), id);
+
+        let err = db.resolve_pending_gate("nope").unwrap_err().to_string();
+        assert!(err.contains("no pending gate named 'nope'"), "{err}");
+        let err = db.resolve_pending_gate("9999").unwrap_err().to_string();
+        assert!(err.contains("no pending gate with id 9999"), "{err}");
+
+        // Once decided, the gate is no longer resolvable (nothing to decide).
+        db.approve_gate(id, "a", "").unwrap();
+        assert!(db.resolve_pending_gate("qc_check").is_err());
+        assert!(
+            db.approve_gate(id, "a", "").is_err(),
+            "double decision refused"
+        );
+
+        // Two runs waiting on the same gate: the name is ambiguous, ids work.
+        let a = db
+            .register_gate("qc_check", Some("run-2"))
+            .unwrap()
+            .unwrap();
+        let b = db
+            .register_gate("qc_check", Some("run-3"))
+            .unwrap()
+            .unwrap();
+        let err = db.resolve_pending_gate("qc_check").unwrap_err().to_string();
+        assert!(err.contains("2 pending gates"), "{err}");
+        assert!(
+            err.contains(&a.to_string()) && err.contains(&b.to_string()),
+            "{err}"
+        );
+        assert_eq!(db.resolve_pending_gate(&b.to_string()).unwrap(), b);
     }
 
     #[test]

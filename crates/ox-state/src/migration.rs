@@ -21,7 +21,7 @@ use rusqlite::Connection;
 use crate::error::StateError;
 
 /// The latest schema version.  Bump this when adding a migration.
-const LATEST_VERSION: u32 = 9;
+const LATEST_VERSION: u32 = 10;
 
 /// Run all pending migrations, bringing the database up to
 /// `LATEST_VERSION`.
@@ -55,6 +55,7 @@ pub fn migrate(conn: &Connection) -> Result<(), StateError> {
             6 => migrate_v6_to_v7(conn)?,
             7 => migrate_v7_to_v8(conn)?,
             8 => migrate_v8_to_v9(conn)?,
+            9 => migrate_v9_to_v10(conn)?,
             _ => {
                 return Err(StateError::Migration {
                     from: v,
@@ -443,6 +444,71 @@ fn migrate_v8_to_v9(conn: &Connection) -> Result<(), StateError> {
     Ok(())
 }
 
+/// Migration from version 9 to version 10.
+///
+/// Gates become **named** records so the scheduler's `GateCheck`
+/// (which identifies gates by `GateId`, the `[gate.<name>]` key) and
+/// `ox gate approve <name>` can address them.  The table is recreated
+/// because `rule_name` / `job_id` were `NOT NULL` and a gate registered
+/// by the scheduler blocks a *set* of jobs, not one job.
+///
+/// New shape:
+/// - `name TEXT NOT NULL` — the `[gate.<name>]` key.
+/// - `run_id TEXT` — the `ox run` invocation that reached the gate.
+/// - `rule_name` / `job_id` — kept nullable for rows written by the
+///   pre-v10 API; the run path no longer fills them.
+/// - `UNIQUE (name, run_id)` (partial, `run_id IS NOT NULL`) — one record
+///   per gate per run.  A pending gate is therefore identified
+///   unambiguously by name whenever a single run is waiting on it.
+///
+/// Existing rows are backfilled with `name = rule_name` and `run_id = NULL`.
+fn migrate_v9_to_v10(conn: &Connection) -> Result<(), StateError> {
+    conn.execute_batch(
+        "
+        BEGIN;
+
+        CREATE TABLE gates_v10 (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            run_id TEXT,
+            rule_name TEXT,
+            job_id TEXT,
+            status TEXT NOT NULL CHECK(status IN ('pending', 'approved', 'rejected')) DEFAULT 'pending',
+            created_at INTEGER NOT NULL,
+            decided_at INTEGER,
+            decided_by TEXT,
+            reason TEXT
+        );
+
+        INSERT INTO gates_v10
+            (id, name, run_id, rule_name, job_id, status, created_at, decided_at, decided_by, reason)
+        SELECT id, rule_name, NULL, rule_name, job_id, status, created_at, decided_at, decided_by, reason
+        FROM gates;
+
+        DROP TABLE gates;
+
+        ALTER TABLE gates_v10 RENAME TO gates;
+
+        CREATE INDEX IF NOT EXISTS idx_gates_status ON gates(status);
+        CREATE INDEX IF NOT EXISTS idx_gates_name ON gates(name);
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_gates_name_run
+            ON gates(name, run_id) WHERE run_id IS NOT NULL;
+
+        DELETE FROM schema_version;
+        INSERT INTO schema_version (version) VALUES (10);
+
+        COMMIT;
+        ",
+    )
+    .map_err(|e| StateError::Migration {
+        from: 9,
+        to: 10,
+        reason: e.to_string(),
+    })?;
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -456,7 +522,7 @@ mod tests {
         let version: u32 = conn
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 9);
+        assert_eq!(version, 10);
     }
 
     #[test]
@@ -469,7 +535,7 @@ mod tests {
         let version: u32 = conn
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 9);
+        assert_eq!(version, 10);
     }
 
     #[test]
@@ -485,6 +551,7 @@ mod tests {
             "snapshots",
             "snapshot_jobs",
             "job_edges",
+            "gates",
         ] {
             let exists: bool = conn
                 .query_row(
@@ -526,5 +593,106 @@ mod tests {
 
         assert_eq!(repro.as_deref(), Some("deterministic"));
         assert_eq!(prov.as_deref(), Some("{}"));
+    }
+
+    /// Bring an in-memory database to schema v9 exactly as a pre-v10
+    /// binary would have left it (all migrations except the last one).
+    fn v9_database() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);")
+            .unwrap();
+        migrate_v0_to_v1(&conn).unwrap();
+        migrate_v1_to_v2(&conn).unwrap();
+        migrate_v2_to_v3(&conn).unwrap();
+        migrate_v3_to_v4(&conn).unwrap();
+        migrate_v4_to_v5(&conn).unwrap();
+        migrate_v5_to_v6(&conn).unwrap();
+        migrate_v6_to_v7(&conn).unwrap();
+        migrate_v7_to_v8(&conn).unwrap();
+        migrate_v8_to_v9(&conn).unwrap();
+        let version: u32 = conn
+            .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, 9);
+        conn
+    }
+
+    #[test]
+    fn v10_migrates_existing_gates_to_named_records() {
+        let conn = v9_database();
+
+        // A gate written by the v4..v9 schema: keyed by rule/job, no name.
+        conn.execute(
+            "INSERT INTO gates (rule_name, job_id, status, created_at, decided_at, decided_by, reason)
+             VALUES ('deploy', 'deploy-A', 'approved', 1000, 1010, 'alice', 'ok')",
+            [],
+        )
+        .unwrap();
+        // The v9 table must not have a `name` column yet.
+        assert!(conn.prepare("SELECT name FROM gates").is_err());
+
+        migrate(&conn).unwrap();
+
+        let version: u32 = conn
+            .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, 10);
+
+        let (id, name, run_id, rule, job, status, decided_by): (
+            i64,
+            String,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            String,
+            Option<String>,
+        ) = conn
+            .query_row(
+                "SELECT id, name, run_id, rule_name, job_id, status, decided_by FROM gates",
+                [],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                        row.get(6)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(id, 1, "ids are preserved across the table rebuild");
+        assert_eq!(name, "deploy", "name is backfilled from rule_name");
+        assert_eq!(run_id, None);
+        assert_eq!(rule.as_deref(), Some("deploy"));
+        assert_eq!(job.as_deref(), Some("deploy-A"));
+        assert_eq!(status, "approved");
+        assert_eq!(decided_by.as_deref(), Some("alice"));
+    }
+
+    #[test]
+    fn v10_enforces_one_gate_record_per_name_and_run() {
+        let conn = Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+
+        conn.execute(
+            "INSERT INTO gates (name, run_id, status, created_at) VALUES ('qc', 'run-1', 'pending', 1)",
+            [],
+        )
+        .unwrap();
+        // Same name, different run: allowed.
+        conn.execute(
+            "INSERT INTO gates (name, run_id, status, created_at) VALUES ('qc', 'run-2', 'pending', 1)",
+            [],
+        )
+        .unwrap();
+        // Same (name, run): rejected by the unique index.
+        let dup = conn.execute(
+            "INSERT INTO gates (name, run_id, status, created_at) VALUES ('qc', 'run-1', 'pending', 1)",
+            [],
+        );
+        assert!(dup.is_err(), "duplicate (name, run_id) must be refused");
     }
 }

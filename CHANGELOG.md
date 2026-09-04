@@ -8,6 +8,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- **Gates now block.** A `[gate.<name>]` whose `before` names a rule holds
+  that rule's jobs until `ox gate approve <name>`; `ox gate reject <name>`
+  cancels them. Previously the gate was parsed and listed but the scheduler
+  ran without a gate checker, so guarded rules executed immediately and
+  `ox gate list` stayed empty (#2). `ox run` waits while a gate is pending
+  (polling every 500 ms) and prints the gate message once. Gated workflows
+  are refused on `--executor slurm` / `--executor ray`, which submit the DAG
+  without the scheduler. Gate records are scoped to a run: each `ox run`
+  that reaches a gate asks for a fresh decision. A run blocked on a gate
+  now stops on the first Ctrl+C / SIGTERM (the guarded jobs are cancelled)
+  instead of ignoring it until the force-exit second signal.
+- `ox gate approve` / `ox gate reject` accept the gate **name** (as the
+  documentation always showed) as well as the numeric id from `ox gate list`;
+  the listing now shows the gate name, status, run and decider, and `--json`
+  emits a JSON array.
+- `state.db` schema v10: the `gates` table gains `name` and `run_id`
+  (unique per `(name, run_id)`); existing rows are migrated with
+  `name = rule_name`. Migration runs automatically on the next open.
 - Paper: applied the round-5 outside-seat review (a citation audit of every
   `\cite` against its primary source, and a general referee read). Corrections
   include a quotation that Goble et al. do not contain, the "Goble three-layer
