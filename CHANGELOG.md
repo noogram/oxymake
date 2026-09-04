@@ -16,7 +16,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (polling every 500 ms) and prints the gate message once. Gated workflows
   are refused on `--executor slurm` / `--executor ray`, which submit the DAG
   without the scheduler. Gate records are scoped to a run: each `ox run`
-  that reaches a gate asks for a fresh decision.
+  that reaches a gate asks for a fresh decision. A run blocked on a gate
+  now stops on the first Ctrl+C / SIGTERM (the guarded jobs are cancelled)
+  instead of ignoring it until the force-exit second signal.
 - `ox gate approve` / `ox gate reject` accept the gate **name** (as the
   documentation always showed) as well as the numeric id from `ox gate list`;
   the listing now shows the gate name, status, run and decider, and `--json`

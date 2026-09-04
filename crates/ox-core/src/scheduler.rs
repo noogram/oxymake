@@ -917,7 +917,26 @@ pub async fn run_scheduler_with_cache<E: Executor + 'static>(
             // busy-poll at 100% CPU while gates are pending (ox-hm7).
             // A short sleep caps overhead while keeping gate-approval
             // latency under a second.
-            tokio::time::sleep(GATE_POLL_INTERVAL).await;
+            //
+            // The shutdown signal must be observed here too: with a gate
+            // pending nothing is in flight, so the select! above never
+            // runs and a plain sleep would swallow the first Ctrl+C /
+            // SIGTERM, leaving `ox run` blocked until the force-exit
+            // second signal. Requesting termination here lets the next
+            // iteration cancel the remaining jobs and return.
+            let shutdown_fut = async {
+                match &shutdown {
+                    Some(notify) => notify.notified().await,
+                    None => std::future::pending().await,
+                }
+            };
+            tokio::select! {
+                biased;
+                _ = shutdown_fut, if !terminate_requested => {
+                    terminate_requested = true;
+                }
+                _ = tokio::time::sleep(GATE_POLL_INTERVAL) => {}
+            }
         }
     }
 
@@ -4022,6 +4041,76 @@ mod tests {
         }
         assert_eq!(reached, 1, "GateReached is emitted once, not once per poll");
         assert_eq!(approved, 1);
+    }
+
+    /// A gate checker that never approves — the run can only end by
+    /// interruption.
+    struct NeverApproves;
+
+    impl GateCheck for NeverApproves {
+        fn check_gate<'a>(
+            &'a self,
+            _gate_id: &'a GateId,
+        ) -> Pin<Box<dyn Future<Output = GateStatus> + Send + 'a>> {
+            Box::pin(async { GateStatus::Pending })
+        }
+
+        fn register_gate<'a>(
+            &'a self,
+            _gate_id: &'a GateId,
+            _run_id: Option<&'a str>,
+        ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
+            Box::pin(async {})
+        }
+    }
+
+    /// A run blocked on a pending gate has nothing in flight, so the
+    /// shutdown signal must be observed in the idle poll branch: the first
+    /// interrupt cancels the gated job and the scheduler returns instead of
+    /// sleeping until a second, force-exit signal.
+    #[tokio::test(start_paused = true)]
+    async fn shutdown_while_gate_pending_cancels_and_returns() {
+        let jobs = vec![make_job("gated", "build", vec![], vec!["out.txt"])];
+        let mut graph = JobGraph::build(jobs).unwrap();
+        graph.add_gate(&GateId::from("approval"), &JobId::from("gated"));
+
+        let executor = Arc::new(MockExecutor::new());
+        let config = SchedulerConfig::default();
+        let bus = EventBus::new();
+        let ctx = default_ctx();
+        let shutdown = Arc::new(Notify::new());
+
+        // Interrupt after the scheduler has been polling the gate a while.
+        let signal = shutdown.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_secs(3)).await;
+            signal.notify_waiters();
+        });
+
+        let result = tokio::time::timeout(
+            Duration::from_secs(60),
+            run_scheduler_with_cache(
+                &graph,
+                executor,
+                &config,
+                &bus,
+                &ctx,
+                None,
+                Some(Arc::new(NeverApproves) as Arc<dyn GateCheck>),
+                None,
+                Some(shutdown),
+                None,
+            ),
+        )
+        .await
+        .expect("scheduler must return after the shutdown signal")
+        .unwrap();
+
+        assert_eq!(result.succeeded, 0);
+        assert_eq!(
+            result.cancelled, 1,
+            "the gated job is cancelled on interrupt"
+        );
     }
 
     /// Regression test for ox-hm7: when gates are pending and no jobs are
