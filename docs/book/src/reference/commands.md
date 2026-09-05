@@ -165,6 +165,9 @@ Rules of the gate ledger:
   is refused on those executors.
 - **The ledger is the enforcement.** If `.oxymake/state.db` cannot be
   opened, a gated run fails instead of running the guarded rules unapproved.
+  If a gate record cannot be written (the run reports that the gate "could
+  not be registered"), the guarded jobs stay blocked and the registration is
+  retried on every poll; an absent record never opens a gate.
 
 ### `ox snapshot`
 

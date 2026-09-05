@@ -252,6 +252,106 @@ fn rejected_gate_cancels_the_guarded_job() {
     );
 }
 
+/// Verification finding 1: when the gate record cannot be written to
+/// state.db while reads still work, the guarded rule must not run. The
+/// write failure is injected with a `BEFORE INSERT` trigger on `gates`;
+/// once the trigger is dropped the run's retried registration succeeds,
+/// the gate becomes pending and approval completes the run.
+#[test]
+fn gate_registration_failure_keeps_the_guarded_job_blocked() {
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path();
+
+    // Initialise a healthy state.db with an ungated run.
+    fs::write(
+        dir.join("Oxymakefile.toml"),
+        r#"ox_version = "0.1"
+format_version = "1"
+
+[rule.init]
+input = []
+output = ["init.txt"]
+shell = "echo INIT > init.txt"
+"#,
+    )
+    .unwrap();
+    let init = Command::new(ox_bin())
+        .args(["run", "init.txt"])
+        .current_dir(dir)
+        .output()
+        .unwrap();
+    assert!(
+        init.status.success(),
+        "{}",
+        String::from_utf8_lossy(&init.stderr)
+    );
+
+    let db_path = dir.join(".oxymake/state.db");
+    {
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        conn.execute_batch(
+            "CREATE TRIGGER deny_gate_insert BEFORE INSERT ON gates
+             BEGIN SELECT RAISE(ABORT, 'deny gate insert'); END;",
+        )
+        .unwrap();
+    }
+
+    fs::write(dir.join("Oxymakefile.toml"), OXYMAKEFILE).unwrap();
+    let mut run = KillOnDrop(spawn_run(dir));
+
+    // Several gate polls (500 ms each) later the run is still blocked: no
+    // output, no gate row, job pending, process alive.
+    std::thread::sleep(Duration::from_secs(3));
+    assert!(
+        run.0.try_wait().unwrap().is_none(),
+        "ox run exited while gate registration was failing\n--- stdout\n{}\n--- stderr\n{}",
+        fs::read_to_string(dir.join("run.out")).unwrap_or_default(),
+        fs::read_to_string(dir.join("run.err")).unwrap_or_default(),
+    );
+    assert!(
+        !dir.join("out.txt").exists(),
+        "guarded rule ran although its gate could not be registered"
+    );
+    assert!(
+        gate_rows(dir).is_empty(),
+        "no gate row can exist: inserts are denied"
+    );
+    assert_eq!(job_status(dir, "guarded").as_deref(), Some("pending"));
+    let stderr = fs::read_to_string(dir.join("run.err")).unwrap_or_default();
+    assert!(
+        stderr.contains("could not be registered"),
+        "the blocked-on-registration condition is reported: {stderr}"
+    );
+
+    // Lift the write failure: the retried registration succeeds.
+    {
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        conn.execute_batch("DROP TRIGGER deny_gate_insert;")
+            .unwrap();
+    }
+    wait_for_gate(dir, &mut run.0, "approval", "pending");
+    assert!(!dir.join("out.txt").exists());
+
+    let approve = Command::new(ox_bin())
+        .args(["gate", "approve", "approval", "--approver", "test"])
+        .current_dir(dir)
+        .output()
+        .unwrap();
+    assert!(
+        approve.status.success(),
+        "{}",
+        String::from_utf8_lossy(&approve.stderr)
+    );
+
+    let exit = wait_for_exit(dir, &mut run.0);
+    assert!(exit.success());
+    assert_eq!(
+        fs::read_to_string(dir.join("out.txt")).unwrap().trim(),
+        "RAN"
+    );
+    assert_eq!(job_status(dir, "guarded").as_deref(), Some("completed"));
+}
+
 /// A gate whose `before` names a rule that does not exist refuses to run
 /// (verification finding 2): with the typo, no job would be attached to the
 /// gate and the rule the author meant to guard would run unapproved.

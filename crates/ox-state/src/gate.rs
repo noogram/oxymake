@@ -14,8 +14,10 @@
 //!   for the checker's run unless one already exists — idempotent, so the
 //!   scheduler may call it on every poll.
 //! - [`check_gate`](GateCheck::check_gate) reads that record and maps its
-//!   status to [`GateStatus`].  A gate that was never registered for this
-//!   run is `NotFound` (the scheduler treats it as open).
+//!   status to [`GateStatus`].  A gate that has no record for this run is
+//!   `NotFound`: the scheduler keeps the guarded jobs blocked and retries
+//!   the registration on its next poll, so a record that could not be
+//!   written (write failure, locked database) never opens the gate.
 //!
 //! An approval therefore belongs to the run that asked for it: the next
 //! `ox run` that reaches the same gate registers a fresh pending record and
@@ -26,8 +28,9 @@
 //! # Failure policy
 //!
 //! A database error while checking a gate yields `Pending`, never
-//! `Approved`: a gate exists to stop work, so the checker fails closed and
-//! logs the error through `tracing`.
+//! `Approved`, and a failed registration leaves the gate `NotFound`, which
+//! the scheduler also treats as blocked: a gate exists to stop work, so the
+//! checker fails closed and logs the error through `tracing`.
 
 use std::future::Future;
 use std::pin::Pin;

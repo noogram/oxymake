@@ -1794,8 +1794,15 @@ fn check_root_cause(recent: &[(u64, JobId)], threshold: usize) -> Option<Vec<Job
 /// the [`GateCheck`] and announced through [`Event::GateReached`].
 #[derive(Debug, Default)]
 struct GatesSeen {
+    /// Gates whose registration the checker has confirmed (a `check_gate`
+    /// returned something other than `NotFound`). Registration is retried
+    /// on every poll until then.
     registered: HashSet<GateId>,
+    /// Gates announced as waiting for approval (`GateReached`).
     announced: HashSet<GateId>,
+    /// Gates announced as blocked because their record could not be
+    /// registered with the checker.
+    unregistered_announced: HashSet<GateId>,
 }
 
 /// Find jobs that are ready to execute: all upstream dependencies are
@@ -1809,10 +1816,13 @@ struct GatesSeen {
 /// Ready jobs are sorted by descending priority (higher runs first).
 ///
 /// Gates blocking a job are registered with the checker (as pending, for
-/// `run_id`) the first time they are encountered, before their status is
-/// read, so a persistent checker such as the one backed by `state.db` has
-/// a record for `ox gate list` / `ox gate approve` to act on.
-/// `gates_seen` carries that first-encounter memory across polls.
+/// `run_id`) before their status is read, so a persistent checker such as
+/// the one backed by `state.db` has a record for `ox gate list` /
+/// `ox gate approve` to act on. Registration counts as done only once the
+/// checker reports a status other than `NotFound`; until then it is retried
+/// on every poll and the guarded job stays blocked (fail closed: a gate
+/// whose record could not be written must not open). `gates_seen` carries
+/// that memory across polls.
 async fn find_ready_jobs(
     state: &Arc<Mutex<Frontier>>,
     graph: &JobGraph,
@@ -1861,11 +1871,39 @@ async fn find_ready_jobs(
             let mut any_rejected = false;
 
             for gate_id in &gates {
-                if gates_seen.registered.insert(gate_id.clone()) {
+                if !gates_seen.registered.contains(gate_id) {
                     checker.register_gate(gate_id, run_id).await;
                 }
-                match checker.check_gate(gate_id).await {
-                    GateStatus::Approved | GateStatus::NotFound => {}
+                let status = checker.check_gate(gate_id).await;
+                if status != GateStatus::NotFound {
+                    gates_seen.registered.insert(gate_id.clone());
+                }
+                match status {
+                    GateStatus::Approved => {}
+                    GateStatus::NotFound => {
+                        // The checker has no record although one was just
+                        // requested: registration failed. Block and retry
+                        // next poll rather than run unapproved.
+                        all_approved = false;
+                        if gates_seen.unregistered_announced.insert(gate_id.clone()) {
+                            warn!(
+                                target: "ox.scheduler",
+                                gate_id = %gate_id,
+                                job_id = %job_id,
+                                "gate could not be registered with the checker; \
+                                 the guarded job stays blocked and registration is retried"
+                            );
+                            event_bus.emit(Event::GateReached {
+                                gate_id: gate_id.clone(),
+                                message: format!(
+                                    "gate record could not be registered (see the state \
+                                     database); {} stays blocked and registration is retried \
+                                     every poll",
+                                    job_id.as_str()
+                                ),
+                            });
+                        }
+                    }
                     GateStatus::Pending => {
                         all_approved = false;
                         // Emit gate reached event only on first encounter —
@@ -4111,6 +4149,196 @@ mod tests {
             result.cancelled, 1,
             "the gated job is cancelled on interrupt"
         );
+    }
+
+    /// A gate checker whose registration fails (does nothing) for the first
+    /// `failures` calls; `check_gate` reports `NotFound` until a
+    /// registration succeeds, then `Pending` once, then `Approved`.
+    struct FlakyRegistration {
+        failures: usize,
+        register_calls: std::sync::Mutex<usize>,
+        registered: std::sync::atomic::AtomicBool,
+        checks_after_registration: std::sync::Mutex<usize>,
+    }
+
+    impl GateCheck for FlakyRegistration {
+        fn check_gate<'a>(
+            &'a self,
+            _gate_id: &'a GateId,
+        ) -> Pin<Box<dyn Future<Output = GateStatus> + Send + 'a>> {
+            Box::pin(async move {
+                if !self.registered.load(Ordering::SeqCst) {
+                    return GateStatus::NotFound;
+                }
+                let mut n = self.checks_after_registration.lock().unwrap();
+                *n += 1;
+                if *n == 1 {
+                    GateStatus::Pending
+                } else {
+                    GateStatus::Approved
+                }
+            })
+        }
+
+        fn register_gate<'a>(
+            &'a self,
+            _gate_id: &'a GateId,
+            _run_id: Option<&'a str>,
+        ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
+            Box::pin(async move {
+                let mut calls = self.register_calls.lock().unwrap();
+                *calls += 1;
+                if *calls > self.failures {
+                    self.registered.store(true, Ordering::SeqCst);
+                }
+            })
+        }
+    }
+
+    /// Verification finding 1: a gate whose registration failed must not
+    /// open. The scheduler keeps the job blocked while the checker reports
+    /// `NotFound`, retries the (idempotent) registration on every poll, and
+    /// dispatches only once the gate is registered and approved.
+    #[tokio::test(start_paused = true)]
+    async fn gate_registration_failure_blocks_and_is_retried() {
+        let jobs = vec![make_job("gated", "build", vec![], vec!["out.txt"])];
+        let mut graph = JobGraph::build(jobs).unwrap();
+        let gate_id = GateId::from("approval");
+        graph.add_gate(&gate_id, &JobId::from("gated"));
+
+        let checker = Arc::new(FlakyRegistration {
+            failures: 3,
+            register_calls: std::sync::Mutex::new(0),
+            registered: std::sync::atomic::AtomicBool::new(false),
+            checks_after_registration: std::sync::Mutex::new(0),
+        });
+        let executor = Arc::new(MockExecutor::new());
+        let config = SchedulerConfig::default();
+        let bus = EventBus::new();
+        let mut rx = bus.subscribe();
+        let ctx = default_ctx();
+
+        let result = run_scheduler_with_cache(
+            &graph,
+            executor,
+            &config,
+            &bus,
+            &ctx,
+            None,
+            Some(checker.clone() as Arc<dyn GateCheck>),
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            result.succeeded, 1,
+            "job runs once the gate is registered and approved"
+        );
+        assert_eq!(
+            *checker.register_calls.lock().unwrap(),
+            4,
+            "registration is retried on every poll until it succeeds (3 failures + 1 success)"
+        );
+
+        // The blocked-on-registration condition is announced once, and the
+        // normal waiting announcement follows once the record exists.
+        let mut registration_blocked = 0;
+        let mut waiting = 0;
+        let mut started = 0;
+        while let Ok(ev) = rx.try_recv() {
+            match ev {
+                Event::GateReached {
+                    gate_id: g,
+                    message,
+                } if g == gate_id => {
+                    if message.contains("could not be registered") {
+                        registration_blocked += 1;
+                    } else {
+                        waiting += 1;
+                    }
+                }
+                Event::JobStarted { .. } => started += 1,
+                _ => {}
+            }
+        }
+        assert_eq!(registration_blocked, 1);
+        assert_eq!(waiting, 1);
+        assert_eq!(started, 1);
+    }
+
+    /// A gate checker that never manages to register: every check is
+    /// `NotFound`.
+    struct NeverRegisters;
+
+    impl GateCheck for NeverRegisters {
+        fn check_gate<'a>(
+            &'a self,
+            _gate_id: &'a GateId,
+        ) -> Pin<Box<dyn Future<Output = GateStatus> + Send + 'a>> {
+            Box::pin(async { GateStatus::NotFound })
+        }
+
+        fn register_gate<'a>(
+            &'a self,
+            _gate_id: &'a GateId,
+            _run_id: Option<&'a str>,
+        ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
+            Box::pin(async {})
+        }
+    }
+
+    /// Verification finding 1: with a checker attached, `NotFound` is not
+    /// `Approved`. A gate that never registers keeps the job blocked until
+    /// the run is interrupted; the job is never dispatched.
+    #[tokio::test(start_paused = true)]
+    async fn gate_never_registered_never_runs_the_guarded_job() {
+        let jobs = vec![make_job("gated", "build", vec![], vec!["out.txt"])];
+        let mut graph = JobGraph::build(jobs).unwrap();
+        graph.add_gate(&GateId::from("approval"), &JobId::from("gated"));
+
+        let executor = Arc::new(MockExecutor::new());
+        let config = SchedulerConfig::default();
+        let bus = EventBus::new();
+        let mut rx = bus.subscribe();
+        let ctx = default_ctx();
+        let shutdown = Arc::new(Notify::new());
+
+        let signal = shutdown.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_secs(3)).await;
+            signal.notify_waiters();
+        });
+
+        let result = tokio::time::timeout(
+            Duration::from_secs(60),
+            run_scheduler_with_cache(
+                &graph,
+                executor,
+                &config,
+                &bus,
+                &ctx,
+                None,
+                Some(Arc::new(NeverRegisters) as Arc<dyn GateCheck>),
+                None,
+                Some(shutdown),
+                None,
+            ),
+        )
+        .await
+        .expect("scheduler must return after the shutdown signal")
+        .unwrap();
+
+        assert_eq!(result.succeeded, 0, "an unregistered gate must not open");
+        assert_eq!(result.cancelled, 1);
+        while let Ok(ev) = rx.try_recv() {
+            assert!(
+                !matches!(ev, Event::JobStarted { .. }),
+                "guarded job was dispatched behind an unregistered gate"
+            );
+        }
     }
 
     /// Regression test for ox-hm7: when gates are pending and no jobs are

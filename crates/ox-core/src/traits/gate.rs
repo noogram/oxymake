@@ -19,7 +19,10 @@ pub enum GateStatus {
     Pending,
     /// The gate has been rejected — downstream jobs should be cancelled.
     Rejected,
-    /// The gate was not found — treat as if it doesn't exist (proceed).
+    /// The checker has no record of the gate. With a checker attached this
+    /// means registration has not succeeded yet: the scheduler keeps the
+    /// guarded jobs blocked and retries [`GateCheck::register_gate`] on the
+    /// next poll (fail closed — an absent record never opens a gate).
     NotFound,
 }
 
