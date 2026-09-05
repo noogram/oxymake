@@ -292,6 +292,25 @@ impl StateDb {
 /// connection is `Send` but not `Sync`); every operation is a few short
 /// SQLite statements executed without awaiting, so the lock is never held
 /// across a suspension point.
+///
+/// # Clock assumption
+///
+/// The lease is measured on the wall clock (UNIX seconds): the owner's
+/// heartbeat stores its `now`, and this claimer compares that value against
+/// *its* `now`. Both are assumed to come from one non-decreasing clock — the
+/// system clock when every session runs on one host, NTP-synchronised
+/// clocks when hosts share a `state.db`. A skew or backward clock step
+/// larger than the lease makes a live owner read as dead, or a dead one as
+/// live, for one lease; nothing detects it. The reclaim re-checks the
+/// heartbeat inside its transaction ([`StateDb::reclaim_stale_jobs_if_stale`]),
+/// which closes the read-then-reclaim race but not a wrong clock.
+///
+/// A session that stops heartbeating because its process is suspended
+/// (laptop sleep, `SIGSTOP`) is reclaimed like a crashed one. On resume it
+/// fails closed: [`StateDb::heartbeat`] only touches an `active` row and
+/// [`StateDb::complete_job`] / [`StateDb::fail_job`] update zero rows once
+/// a peer has re-claimed the job, so the resumed owner never overwrites a
+/// peer's result (ADR-012, "Suspend / resume").
 pub struct StateJobClaimer {
     db: Mutex<StateDb>,
     session_id: String,

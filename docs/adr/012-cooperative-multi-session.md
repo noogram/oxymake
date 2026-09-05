@@ -117,9 +117,40 @@ pattern as `GateCheck`: the trait lives in `ox-core`, the implementation
   heartbeat (`heartbeat_at <= now - lease`), not by the heartbeat the
   waiter read earlier: an owner that heartbeats between the waiter's read
   and the reclaim keeps its rows and the waiter keeps waiting, so a live
-  owner is never interrupted by a stale observation. If the killed session's orphaned job
-  shell is still writing at that moment, the output-path locks below make
-  the replacement fail closed rather than commit next to it.
+  owner is never interrupted by a stale observation. If the killed
+  session's orphaned job shell is still writing at that moment, the
+  output-path locks below make the replacement fail closed rather than
+  commit next to it.
+- **Clock.** The lease is measured on the **wall clock** in UNIX seconds:
+  `heartbeat` stores the owner's `now`, and the liveness test
+  `now - heartbeat_at < lease` is evaluated with the *reader's* `now`. The
+  protocol assumes one non-decreasing clock shared by every session on the
+  same `state.db`. On one host that is the system clock. When sessions on
+  several hosts share a `state.db` over a network filesystem, it assumes
+  their clocks are synchronised (NTP) to well within the lease: a skew, or
+  a backward step on one host, larger than the lease makes a live owner
+  read as dead (reclaimed while running — the output locks are then the
+  only defence, and they do not cross hosts) or a dead one as live (not
+  reclaimed) for one lease. Nothing detects either; the lease is not a
+  substitute for synchronised clocks. Lengthen `OX_SESSION_LEASE_SECS`
+  where clocks are less trustworthy.
+- **Suspend / resume.** A suspended `ox run` (laptop lid, `SIGSTOP`) stops
+  heartbeating and is treated exactly like a crashed one: after one lease
+  its running jobs are reclaimed and its session row is `interrupted`.
+  That path fails closed for the resumed owner: its heartbeat only updates
+  an `active` row and now does nothing; its terminal writes
+  (`complete_job` / `fail_job`) carry `AND session_id = ?` and update
+  zero rows once a peer has re-claimed the job, so the resumed owner
+  cannot overwrite the peer's verdict — it reports its local result and
+  exits, its session stays `interrupted`. On the same host the suspended
+  owner's shell still holds the per-output `flock`s, so a peer that
+  re-claims the job while the owner is suspended cannot execute it either:
+  it fails closed with `ConcurrentExecution` until the owner's process is
+  gone. If the owner resumes *before* any peer re-claims (the row is
+  `pending`, unowned), its completion event re-claims the row and records
+  the completion — the outputs it wrote are real, and a peer then consumes
+  them as a completion. In no ordering does the resumed owner replace a
+  peer's result.
 - **Old rows.** `register_jobs` keeps existing statuses, so after
   registration `ox run` resets every row of its jobs whose owner is not
   live (yesterday's completed run, a crashed peer, a cached row) — a fresh
