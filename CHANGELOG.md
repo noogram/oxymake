@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **`ox status`, `ox top` and the dashboard no longer report abandoned jobs as
+  running.** A job row left at `running` by a session that was interrupted,
+  completed, or that stopped heartbeating is now reported as **orphaned**,
+  with its age and the reason — instead of "Sessions: 0 active" printed next
+  to "1 running" on the same screen (#5). The rule is the claim protocol's
+  own: a job is running only while its session is `active` with a heartbeat
+  younger than the lease (90 s, `OX_SESSION_LEASE_SECS` overrides). Readers
+  stay read-only — reclaiming still happens at the start of the next
+  `ox run`.
+
+### Added
+- **`ox_state::effective`** — the one read-side derivation every reader
+  consumes: `effective_status()`, `EffectiveStatus` (with an `Orphaned {
+  since, reason }` variant), `OrphanReason`, `SessionLiveness`,
+  `lease_secs_from_env()`, and the `StateDb::job_views` /
+  `effective_job_counts` / `pending_job_views` queries that LEFT JOIN `jobs`
+  to `sessions` (#5). Documented in
+  [ADR-012](docs/adr/012-cooperative-multi-session.md).
+- **`ox status --json` gains `jobs.orphaned`**, an `orphaned_jobs` array
+  (`reason`, `reason_description`, `declared_status`, `session_id`,
+  `elapsed_secs`) and `waiting_for_orphaned` on each pending job; pending
+  lines now name an orphaned upstream as such (#5).
+- **Dashboard**: `orphaned` count in `GET /api/status` and the SSE stream
+  (`running` excludes it), effective `status` plus `declared_status` /
+  `orphan_reason` in `GET /api/jobs`, `GET /api/dag` and `GET /api/job/:id`,
+  a per-rule `orphaned` in `GET /api/stats/rules`, and a distinct badge and
+  card in the UI — the ETA and jobs/sec strip no longer treat orphaned rows
+  as in flight (#5).
+
 ## [0.2.0] - 2026-09-05
 
 Gates now hold, two sessions never execute the same job twice, and outputs can

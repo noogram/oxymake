@@ -10,6 +10,7 @@ use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::Result;
+use ox_state::effective::{EffectiveCounts, JobView};
 
 // ---------------------------------------------------------------------------
 // Args
@@ -78,6 +79,48 @@ fn format_job_name(rule_name: &str, wildcards_json: &str) -> String {
     } else {
         rule_name.to_string()
     }
+}
+
+/// Per-rule rollup of the effective statuses, for `--group-by`.
+///
+/// Derived from the same [`JobView`]s as everything else so a rule's
+/// "running" column never counts a job whose session is gone.
+struct RuleRollup {
+    rule_name: String,
+    completed: usize,
+    running: usize,
+    orphaned: usize,
+    pending: usize,
+    total: usize,
+}
+
+fn rollup_by_rule(views: &[JobView]) -> Vec<RuleRollup> {
+    use ox_state::effective::EffectiveStatus;
+    let mut by_rule: std::collections::BTreeMap<String, RuleRollup> =
+        std::collections::BTreeMap::new();
+    for v in views {
+        let entry = by_rule
+            .entry(v.rule_name.clone())
+            .or_insert_with(|| RuleRollup {
+                rule_name: v.rule_name.clone(),
+                completed: 0,
+                running: 0,
+                orphaned: 0,
+                pending: 0,
+                total: 0,
+            });
+        entry.total += 1;
+        match &v.effective {
+            EffectiveStatus::Completed | EffectiveStatus::Failed | EffectiveStatus::Skipped => {
+                entry.completed += 1
+            }
+            EffectiveStatus::Running => entry.running += 1,
+            EffectiveStatus::Orphaned { .. } => entry.orphaned += 1,
+            EffectiveStatus::Pending => entry.pending += 1,
+            _ => {}
+        }
+    }
+    by_rule.into_values().collect()
 }
 
 pub fn cmd_status(args: StatusArgs, theme: &ox_render::Theme) -> Result<()> {
@@ -166,37 +209,36 @@ pub fn cmd_status(args: StatusArgs, theme: &ox_render::Theme) -> Result<()> {
         }
     }
 
-    // Scope queries to the target run when available.  Fall back to the
-    // unscoped (all-jobs) queries when no run is recorded yet (e.g., old
-    // databases that predate the run_id column on jobs).
-    let counts = match run_id {
-        Some(ref rid) => db.job_counts_for_run(rid)?,
-        None => db.job_counts()?,
-    };
-    let sessions = db.active_sessions()?;
-
-    let total = counts.pending
-        + counts.running
-        + counts.completed
-        + counts.failed
-        + counts.skipped
-        + counts.cancelled;
-
     let now_secs = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
 
-    if args.json {
-        let running_jobs = match run_id {
-            Some(ref rid) => db.running_jobs_detail_for_run(rid)?,
-            None => db.running_jobs_detail()?,
-        };
-        let pending_jobs = match run_id {
-            Some(ref rid) => db.pending_jobs_with_blockers_for_run(rid)?,
-            None => db.pending_jobs_with_blockers()?,
-        };
+    // Every count and every line below comes from the one read-side
+    // derivation in `ox-state` (ADR-012): a `running` row counts as running
+    // only while its session is `active` with a heartbeat younger than the
+    // lease.  Reading `jobs.status` verbatim is what used to print
+    // "Sessions: 0 active" next to "1 running".  This reader never writes:
+    // reclaiming orphaned rows stays with `ox run`.
+    let lease_secs = ox_state::effective::lease_secs_from_env();
 
+    // Scope queries to the target run when available.  Fall back to the
+    // unscoped (all-jobs) queries when no run is recorded yet (e.g., old
+    // databases that predate the run_id column on jobs).
+    let views = db.job_views(run_id.as_deref(), now_secs, lease_secs)?;
+    let counts = EffectiveCounts::from_views(&views);
+    let sessions = db.active_sessions()?;
+
+    let total = counts.total();
+
+    let running_jobs: Vec<&JobView> = views.iter().filter(|v| v.effective.is_running()).collect();
+    let orphaned_jobs: Vec<&JobView> = views.iter().filter(|v| v.effective.is_orphaned()).collect();
+    let pending_jobs = db.pending_job_views(run_id.as_deref(), now_secs, lease_secs)?;
+
+    // Age of an orphan, measured from the abandoned attempt's start.
+    let orphan_age = |v: &JobView| v.started_at.map(|s| now_secs.saturating_sub(s));
+
+    if args.json {
         let running_json: Vec<serde_json::Value> = running_jobs
             .iter()
             .map(|j| {
@@ -209,13 +251,32 @@ pub fn cmd_status(args: StatusArgs, theme: &ox_render::Theme) -> Result<()> {
             })
             .collect();
 
+        let orphaned_json: Vec<serde_json::Value> = orphaned_jobs
+            .iter()
+            .map(|j| {
+                let reason = j.effective.orphan_reason();
+                serde_json::json!({
+                    "name": format_job_name(&j.rule_name, &j.wildcards),
+                    "status": "orphaned",
+                    "declared_status": j.declared_status,
+                    "reason": reason.map(|r| r.as_str()),
+                    "reason_description": reason.map(|r| r.describe()),
+                    "session_id": j.session_id,
+                    "elapsed_secs": orphan_age(j),
+                })
+            })
+            .collect();
+
         let pending_json: Vec<serde_json::Value> = pending_jobs
             .iter()
             .map(|j| {
+                let waiting_for: Vec<&str> =
+                    j.waiting_for.iter().map(|u| u.rule_name.as_str()).collect();
                 serde_json::json!({
                     "name": format_job_name(&j.rule_name, &j.wildcards),
                     "status": "pending",
-                    "waiting_for": j.waiting_for,
+                    "waiting_for": waiting_for,
+                    "waiting_for_orphaned": j.orphaned_upstreams(),
                 })
             })
             .collect();
@@ -228,6 +289,7 @@ pub fn cmd_status(args: StatusArgs, theme: &ox_render::Theme) -> Result<()> {
                 "total": total,
                 "completed": counts.completed,
                 "running": counts.running,
+                "orphaned": counts.orphaned,
                 "failed": counts.failed,
                 "pending": counts.pending,
                 "skipped": counts.skipped,
@@ -235,18 +297,15 @@ pub fn cmd_status(args: StatusArgs, theme: &ox_render::Theme) -> Result<()> {
                 "cancelled": counts.cancelled,
             },
             "running_jobs": running_json,
+            "orphaned_jobs": orphaned_json,
             "pending_jobs": pending_json,
         });
 
         if args.group_by.is_some() {
-            let stats = match run_id {
-                Some(ref rid) => db.pipeline_stats_for_run(rid)?,
-                None => db.pipeline_stats()?,
-            };
+            let stats = rollup_by_rule(&views);
             let groups: Vec<serde_json::Value> = stats
                 .iter()
                 .map(|s| {
-                    let pending = s.total.saturating_sub(s.completed + s.running);
                     let progress_pct = if s.total == 0 {
                         0.0
                     } else {
@@ -257,7 +316,8 @@ pub fn cmd_status(args: StatusArgs, theme: &ox_render::Theme) -> Result<()> {
                         "total": s.total,
                         "completed": s.completed,
                         "running": s.running,
-                        "pending": pending,
+                        "orphaned": s.orphaned,
+                        "pending": s.pending,
                         "progress_pct": (progress_pct * 100.0).round() / 100.0,
                     })
                 })
@@ -283,8 +343,18 @@ pub fn cmd_status(args: StatusArgs, theme: &ox_render::Theme) -> Result<()> {
             theme.header.apply_to("Sessions:"),
             sessions.len()
         );
+        let orphaned_segment = if counts.orphaned > 0 {
+            format!(
+                ", {}",
+                theme
+                    .error
+                    .apply_to(format!("{} orphaned", counts.orphaned))
+            )
+        } else {
+            String::new()
+        };
         println!(
-            "{} {} total ({}, {}, {}, {} pending, {} cached, {} cancelled)",
+            "{} {} total ({}, {}{}, {}, {} pending, {} cached, {} cancelled)",
             theme.header.apply_to("Jobs:"),
             total,
             theme
@@ -293,6 +363,7 @@ pub fn cmd_status(args: StatusArgs, theme: &ox_render::Theme) -> Result<()> {
             theme
                 .running
                 .apply_to(format!("{} running", counts.running)),
+            orphaned_segment,
             theme.error.apply_to(format!("{} failed", counts.failed)),
             counts.pending,
             counts.cached,
@@ -300,11 +371,7 @@ pub fn cmd_status(args: StatusArgs, theme: &ox_render::Theme) -> Result<()> {
         );
 
         // ------ Running jobs with elapsed time ------
-        if counts.running > 0 {
-            let running_jobs = match run_id {
-                Some(ref rid) => db.running_jobs_detail_for_run(rid)?,
-                None => db.running_jobs_detail()?,
-            };
+        if !running_jobs.is_empty() {
             println!(
                 "{} {} jobs in progress",
                 theme.running.apply_to("Running:"),
@@ -326,12 +393,42 @@ pub fn cmd_status(args: StatusArgs, theme: &ox_render::Theme) -> Result<()> {
             println!();
         }
 
+        // ------ Orphaned jobs: claimed by a session that is gone ------
+        if !orphaned_jobs.is_empty() {
+            println!(
+                "{} {} jobs abandoned by a dead session",
+                theme.error.apply_to("Orphaned:"),
+                orphaned_jobs.len()
+            );
+            for j in &orphaned_jobs {
+                let name = format_job_name(&j.rule_name, &j.wildcards);
+                let age = orphan_age(j)
+                    .map(format_elapsed)
+                    .unwrap_or_else(|| "?".to_string());
+                let reason = j
+                    .effective
+                    .orphan_reason()
+                    .map(|r| r.describe())
+                    .unwrap_or("unknown");
+                println!(
+                    "  {:<30} {}  {}  {}",
+                    theme.highlight.apply_to(&name),
+                    theme.error.apply_to("orphaned"),
+                    theme.muted.apply_to(&age),
+                    theme.muted.apply_to(format!("({reason})"))
+                );
+            }
+            println!(
+                "  {}",
+                theme
+                    .muted
+                    .apply_to("the next `ox run` re-evaluates them; `ox status` never reclaims")
+            );
+            println!();
+        }
+
         // ------ Pending jobs with blockers ------
-        if counts.pending > 0 {
-            let pending_jobs = match run_id {
-                Some(ref rid) => db.pending_jobs_with_blockers_for_run(rid)?,
-                None => db.pending_jobs_with_blockers()?,
-            };
+        if !pending_jobs.is_empty() {
             println!(
                 "{} {} jobs waiting",
                 theme.muted.apply_to("Pending:"),
@@ -346,7 +443,20 @@ pub fn cmd_status(args: StatusArgs, theme: &ox_render::Theme) -> Result<()> {
                         theme.success.apply_to("ready")
                     );
                 } else {
-                    let blockers = j.waiting_for.join(", ");
+                    // Name the upstream's effective status so a blocker that
+                    // nobody is executing any more does not read as progress.
+                    let blockers = j
+                        .waiting_for
+                        .iter()
+                        .map(|u| {
+                            if u.effective.is_orphaned() {
+                                format!("{} (orphaned)", u.rule_name)
+                            } else {
+                                u.rule_name.clone()
+                            }
+                        })
+                        .collect::<Vec<_>>()
+                        .join(", ");
                     println!(
                         "  {:<30} waiting for: {}",
                         theme.highlight.apply_to(&name),
@@ -359,23 +469,25 @@ pub fn cmd_status(args: StatusArgs, theme: &ox_render::Theme) -> Result<()> {
 
         // ------ Group-by breakdown ------
         if args.group_by.is_some() {
-            let stats = match run_id {
-                Some(ref rid) => db.pipeline_stats_for_run(rid)?,
-                None => db.pipeline_stats()?,
-            };
-            for s in &stats {
+            for s in &rollup_by_rule(&views) {
                 let progress_pct = if s.total == 0 {
                     0.0
                 } else {
                     (s.completed as f64 / s.total as f64) * 100.0
                 };
+                let orphaned = if s.orphaned > 0 {
+                    format!(", {} orphaned", s.orphaned)
+                } else {
+                    String::new()
+                };
                 println!(
-                    "  {:<20} {}/{} ({:.1}%)  {} running",
+                    "  {:<20} {}/{} ({:.1}%)  {} running{}",
                     theme.highlight.apply_to(&s.rule_name),
                     s.completed,
                     s.total,
                     progress_pct,
-                    s.running
+                    s.running,
+                    orphaned
                 );
             }
         }

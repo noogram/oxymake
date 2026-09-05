@@ -25,6 +25,8 @@
             --red: #f87171;
             --amber: #fbbf24;
             --gray: #6b7280;
+            /* A job declared 'running' whose owning session is gone (#5). */
+            --orphan: #c084fc;
         }
 
         body {
@@ -172,6 +174,7 @@
         .card.running .value  { color: var(--blue); }
         .card.completed .value { color: var(--green); }
         .card.failed .value   { color: var(--red); }
+        .card.orphaned .value { color: var(--orphan); }
         .card.skipped .value  { color: var(--gray); }
         .card.total .value    { color: var(--text); }
 
@@ -319,6 +322,8 @@
         .badge.completed { background: rgba(52,211,153,0.15); color: var(--green); }
         .badge.failed    { background: rgba(248,113,113,0.15); color: var(--red); }
         .badge.skipped   { background: rgba(107,114,128,0.15); color: var(--gray); }
+        /* Deliberately not the running badge: nothing is executing this job. */
+        .badge.orphaned  { background: rgba(192,132,252,0.15); color: var(--orphan); }
 
         /* ── Filter bar ── */
         .filter-bar {
@@ -431,6 +436,7 @@
 
         .gantt-bar.completed { background: var(--green); }
         .gantt-bar.running   { background: var(--blue); animation: pulse-bar 1.5s ease-in-out infinite; }
+        .gantt-bar.orphaned  { background: var(--orphan); }
         .gantt-bar.failed    { background: var(--red); }
         .gantt-bar.skipped   { background: var(--gray); }
         .gantt-bar.pending   { background: rgba(251,191,36,0.3); border: 1px dashed var(--amber); }
@@ -644,6 +650,7 @@
         .grid-cell.failed    { background: var(--red); }
         .grid-cell.skipped   { background: var(--gray); }
         .grid-cell.running   { background: var(--blue); animation: grid-pulse 1.5s infinite; }
+        .grid-cell.orphaned  { background: var(--orphan); }
         .grid-cell.pending   { background: var(--amber); opacity: 0.5; }
         .grid-cell.empty     { background: var(--surface-alt); opacity: 0.3; border: 1px dashed var(--border); }
 
@@ -976,6 +983,11 @@
                 <div class="value" id="c-running">-</div>
                 <div class="label">Running</div>
             </div>
+            <div class="card orphaned" id="card-orphaned" style="display:none;"
+                 title="Declared running, but the owning session is gone. The next `ox run` re-evaluates them.">
+                <div class="value" id="c-orphaned">-</div>
+                <div class="label">Orphaned</div>
+            </div>
             <div class="card completed">
                 <div class="value" id="c-completed">-</div>
                 <div class="label">Completed</div>
@@ -1031,6 +1043,7 @@
                         <button class="filter-btn active" data-filter="all">All</button>
                         <button class="filter-btn" data-filter="pending">Pending</button>
                         <button class="filter-btn" data-filter="running">Running</button>
+                        <button class="filter-btn" data-filter="orphaned">Orphaned</button>
                         <button class="filter-btn" data-filter="completed">Completed</button>
                         <button class="filter-btn" data-filter="failed">Failed</button>
                     </div>
@@ -1219,6 +1232,11 @@
                 statusData = d;
                 document.getElementById('c-pending').textContent = d.pending;
                 document.getElementById('c-running').textContent = d.running;
+                // Orphaned rows are excluded from `running` by the server-side
+                // derivation; the card only appears when there are any.
+                var orphaned = d.orphaned || 0;
+                document.getElementById('c-orphaned').textContent = orphaned;
+                document.getElementById('card-orphaned').style.display = orphaned > 0 ? '' : 'none';
                 document.getElementById('c-completed').textContent = d.completed;
                 document.getElementById('c-failed').textContent = d.failed;
                 document.getElementById('c-skipped').textContent = d.skipped;
@@ -1267,8 +1285,11 @@
                 }
             }
 
-            // ETA estimation based on average completed job duration from rule stats
-            var remaining = d.pending + d.running;
+            // ETA estimation based on average completed job duration from rule
+            // stats.  Orphaned jobs are remaining work but are *not* in flight,
+            // so they count towards `remaining` and never towards the divisor —
+            // and with only orphans left the ETA is blank, not "Done".
+            var remaining = d.pending + d.running + (d.orphaned || 0);
             if (avgJobDuration && remaining > 0 && d.running > 0) {
                 var etaSec = Math.ceil((remaining * avgJobDuration) / Math.max(d.running, 1));
                 document.getElementById('progress-eta').textContent = 'ETA: ~' + formatDurationSec(etaSec);
@@ -1325,6 +1346,10 @@
                 {
                     selector: 'node[status="skipped"]',
                     style: { 'background-color': '#4b5563' }
+                },
+                {
+                    selector: 'node[status="orphaned"]',
+                    style: { 'background-color': '#c084fc' }
                 },
                 {
                     selector: 'node.highlighted',
@@ -1803,7 +1828,8 @@
                 if (j.started_at < minT) minT = j.started_at;
                 var end = j.completed_at || now;
                 if (end > maxT) maxT = end;
-                if (!j.completed_at && j.status !== 'completed' && j.status !== 'failed' && j.status !== 'skipped') {
+                if (!j.completed_at && j.status !== 'completed' && j.status !== 'failed'
+                        && j.status !== 'skipped' && j.status !== 'orphaned') {
                     hasRunning = true;
                 }
             });
@@ -1859,6 +1885,10 @@
                     status = j.exit_code === 0 ? 'completed' : 'failed';
                 } else if (j.completed_at) {
                     status = j.status === 'skipped' ? 'skipped' : 'completed';
+                } else if (j.status === 'orphaned') {
+                    // Declared running with no live session: no pulse, no
+                    // "in progress" marker — nothing is executing it.
+                    status = 'orphaned';
                 } else {
                     status = 'running';
                     lastRunningIdx = rowIdx;
@@ -1871,7 +1901,7 @@
                 // Determine bar color based on color mode
                 var barClass = status;
                 var barStyle = 'left:' + leftPct + '%;width:' + widthPct + '%';
-                if (ganttColorMode === 'rule' && status !== 'failed') {
+                if (ganttColorMode === 'rule' && status !== 'failed' && status !== 'orphaned') {
                     barClass = 'rule-colored';
                     if (status === 'running') barClass += ' running';
                     barStyle += ';background:' + getRuleColor(label);

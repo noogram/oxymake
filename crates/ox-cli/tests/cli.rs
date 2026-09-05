@@ -1308,6 +1308,133 @@ fn status_syncs_results_before_counting() {
         .stdout(predicates::str::contains("0 pending"));
 }
 
+/// Regression test for #5: a `running` row left behind by an interrupted
+/// session must not be reported as live work.  The screen in the issue —
+/// "Sessions: 0 active" printed next to "Running: 1 jobs in progress" — is
+/// the contradiction this asserts is gone.
+#[test]
+fn status_reports_an_interrupted_sessions_row_as_orphaned_not_running() {
+    use predicates::prelude::PredicateBooleanExt;
+    let dir = TempDir::new().unwrap();
+    let oxdir = dir.path().join(".oxymake");
+    fs::create_dir_all(&oxdir).unwrap();
+
+    let db = ox_state::db::StateDb::open(&oxdir.join("state.db")).unwrap();
+    db.begin_run("run-72860", None, 2, None).unwrap();
+    db.register_jobs(&[
+        ox_state::db::JobRecord {
+            id: "substrate_tests".into(),
+            rule_name: "substrate_tests".into(),
+            wildcards: "{}".into(),
+            cache_key: None,
+            run_id: Some("run-72860".into()),
+        },
+        ox_state::db::JobRecord {
+            id: "repro_spheres".into(),
+            rule_name: "repro_spheres".into(),
+            wildcards: "{}".into(),
+            cache_key: None,
+            run_id: Some("run-72860".into()),
+        },
+    ])
+    .unwrap();
+    db.register_edges(&[("substrate_tests".into(), "repro_spheres".into())])
+        .unwrap();
+
+    // A session claims the job and is then interrupted, leaving the row
+    // at 'running' with nobody executing it.
+    let sid = db.create_session(424242, "localhost", None).unwrap();
+    db.claim_job("substrate_tests", &sid).unwrap();
+    db.interrupt_session(&sid).unwrap();
+    assert!(db.active_sessions().unwrap().is_empty());
+    // The declared row is still 'running' — the fix is on the read side.
+    assert_eq!(
+        db.job_status("substrate_tests").unwrap().as_deref(),
+        Some("running")
+    );
+    drop(db);
+
+    ox().current_dir(dir.path())
+        .args(["status"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("Sessions: 0 active"))
+        .stdout(predicates::str::contains("0 running"))
+        .stdout(predicates::str::contains("1 orphaned"))
+        .stdout(predicates::str::contains("substrate_tests"))
+        .stdout(predicates::str::contains("owning session was interrupted"))
+        // The upstream is named as orphaned on the pending line, not as work
+        // in progress.
+        .stdout(predicates::str::contains(
+            "waiting for: substrate_tests (orphaned)",
+        ))
+        .stdout(predicates::str::contains("jobs in progress").not());
+
+    // `ox status` is read-only: the row it just reported as orphaned is
+    // still 'running' in the ledger — reclaiming stays with `ox run`.
+    let db = ox_state::db::StateDb::open(&oxdir.join("state.db")).unwrap();
+    assert_eq!(
+        db.job_status("substrate_tests").unwrap().as_deref(),
+        Some("running")
+    );
+    drop(db);
+
+    let output = ox()
+        .current_dir(dir.path())
+        .args(["status", "--json"])
+        .output()
+        .unwrap();
+    let json: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("status --json must emit valid JSON");
+    assert_eq!(json["jobs"]["running"], 0);
+    assert_eq!(json["jobs"]["orphaned"], 1);
+    assert_eq!(json["sessions"], 0);
+    assert!(json["running_jobs"].as_array().unwrap().is_empty());
+    let orphans = json["orphaned_jobs"].as_array().unwrap();
+    assert_eq!(orphans.len(), 1);
+    assert_eq!(orphans[0]["reason"], "session_interrupted");
+    assert_eq!(orphans[0]["declared_status"], "running");
+    assert_eq!(
+        json["pending_jobs"][0]["waiting_for_orphaned"][0],
+        "substrate_tests"
+    );
+}
+
+/// A job claimed by a session that is still alive stays `running`: the
+/// derivation must not turn healthy work into an orphan.
+#[test]
+fn status_keeps_a_live_sessions_row_running() {
+    use predicates::prelude::PredicateBooleanExt;
+    let dir = TempDir::new().unwrap();
+    let oxdir = dir.path().join(".oxymake");
+    fs::create_dir_all(&oxdir).unwrap();
+
+    let db = ox_state::db::StateDb::open(&oxdir.join("state.db")).unwrap();
+    db.begin_run("run-1", None, 1, None).unwrap();
+    db.register_jobs(&[ox_state::db::JobRecord {
+        id: "job-1".into(),
+        rule_name: "build".into(),
+        wildcards: "{}".into(),
+        cache_key: None,
+        run_id: Some("run-1".into()),
+    }])
+    .unwrap();
+    let sid = db
+        .create_session(std::process::id(), "localhost", None)
+        .unwrap();
+    db.claim_job("job-1", &sid).unwrap();
+    drop(db);
+
+    ox().current_dir(dir.path())
+        .args(["status"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("Sessions: 1 active"))
+        .stdout(predicates::str::contains("1 running"))
+        .stdout(predicates::str::contains("1 jobs in progress"))
+        .stdout(predicates::str::contains("orphaned").not());
+}
+
 #[test]
 fn cancel_no_state() {
     ox().args(["cancel"])

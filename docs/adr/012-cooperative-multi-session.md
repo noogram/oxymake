@@ -46,6 +46,27 @@ rows_affected=0. No application-level locks needed.
 and reclaims their in-progress jobs. The reclaimed jobs re-enter the pending
 pool and can be claimed by any active session.
 
+**Read-side derivation (the readers' half of the same rule)**: between the
+moment a session dies and the moment the next `ox run` reclaims its rows,
+`state.db` holds `running` rows that nobody is executing. Readers must not
+present them as live work — `ox status` printing "Sessions: 0 active" next
+to "1 running" was the symptom (issue #5). Nor may a reader fix them: a
+viewer that reset rows would race a session whose heartbeat is merely late
+under load, and `ox status` / the dashboard / `ox top` have no claim to
+write. So the reconciliation lives in one read-only derivation in
+`ox-state` — `ox_state::effective::effective_status` and the `job_views`
+query that LEFT JOINs `jobs` to `sessions` — which every reader consumes.
+The rule is the claim protocol's own predicate, applied on the read path:
+a `running` row is `Running` only if `sessions.status = 'active'` **and**
+`heartbeat_at > now - lease`; otherwise it is
+`Orphaned { since, reason }` with `reason` one of `SessionInterrupted`,
+`HeartbeatStale`, `SessionCompleted`, `SessionMissing`. Because readers and
+peers evaluate the same predicate against the same lease
+(`DEFAULT_LEASE_SECS`, `OX_SESSION_LEASE_SECS`), what a reader calls
+orphaned is exactly what the next `ox run` will reclaim — the readers are
+honest about the interval without shortening it. Reclaiming remains the
+writer's, in `reset_inactive_job_rows` at run start-up.
+
 ## Consequences
 
 **Easier:**

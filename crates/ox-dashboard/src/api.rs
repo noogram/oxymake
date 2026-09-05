@@ -18,6 +18,7 @@ use tokio_stream::wrappers::IntervalStream;
 
 use ox_core::model::ContentHash;
 use ox_state::db::StateDb;
+use ox_state::effective::{EffectiveCounts, JobView, lease_secs_from_env};
 
 use crate::server::DashboardState;
 
@@ -30,8 +31,13 @@ use crate::server::DashboardState;
 pub struct StatusResponse {
     /// Number of pending jobs.
     pub pending: usize,
-    /// Number of running jobs.
+    /// Number of jobs actually in flight — a `running` row whose session is
+    /// live. Orphaned rows are **not** counted here.
     pub running: usize,
+    /// Number of jobs declared `running` whose owning session is gone
+    /// (interrupted, completed, or past its heartbeat lease).
+    #[serde(default)]
+    pub orphaned: usize,
     /// Number of completed jobs (includes cached).
     pub completed: usize,
     /// Number of failed jobs.
@@ -53,8 +59,12 @@ pub struct DagNode {
     pub id: String,
     /// Rule that produced this job.
     pub rule_name: String,
-    /// Current status (pending, running, completed, failed, skipped).
+    /// Effective status (pending, running, orphaned, completed, failed,
+    /// skipped) — derived, not the raw `jobs.status`.
     pub status: String,
+    /// Why the node is orphaned, when it is.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub orphan_reason: Option<String>,
     /// JSON-encoded wildcard bindings.
     #[serde(default)]
     pub wildcards: String,
@@ -96,8 +106,15 @@ pub struct JobInfo {
     pub id: String,
     /// Rule that produced this job.
     pub rule_name: String,
-    /// Current status.
+    /// Effective status: `running` only while the owning session is live,
+    /// `orphaned` once it is not.
     pub status: String,
+    /// `jobs.status` as last written by the owning session.
+    #[serde(default)]
+    pub declared_status: String,
+    /// Why the job is orphaned, when it is.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub orphan_reason: Option<String>,
     /// JSON-encoded wildcard bindings.
     pub wildcards: String,
     /// UNIX timestamp when the job started (if running or completed).
@@ -144,7 +161,11 @@ pub struct RuleStats {
     pub rule_name: String,
     pub completed: usize,
     pub total: usize,
+    /// Jobs in flight, excluding orphaned rows.
     pub running: usize,
+    /// Jobs declared `running` whose owning session is gone.
+    #[serde(default)]
+    pub orphaned: usize,
     pub pending: usize,
     pub failed: usize,
     /// Average wall-clock duration of completed jobs for this rule (ms).
@@ -178,10 +199,57 @@ pub struct JobDetail {
     pub id: String,
     pub rule_name: String,
     pub wildcards: String,
+    /// Effective status (see [`JobInfo::status`]).
     pub status: String,
+    /// Why the job is orphaned, when it is.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub orphan_reason: Option<String>,
     pub started_at: Option<u64>,
     pub log_path: Option<String>,
     pub stderr_tail: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
+// Shared read-side derivation
+// ---------------------------------------------------------------------------
+
+/// Current UNIX time in seconds.
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
+/// Read every job through the one derivation in `ox-state` (ADR-012): a
+/// `running` row is running only while its session is `active` with a
+/// heartbeat younger than the lease.  The dashboard is a **reader** — it
+/// never reclaims a row it reports as orphaned.
+fn job_views(db: &StateDb) -> Result<Vec<JobView>, StatusError> {
+    db.job_views(None, now_secs(), lease_secs_from_env())
+        .map_err(|_| StatusError::Query)
+}
+
+/// The orphan reason token of a view, when orphaned.
+fn orphan_reason(view: &JobView) -> Option<String> {
+    view.effective
+        .orphan_reason()
+        .map(|r| r.as_str().to_string())
+}
+
+/// `StatusResponse` from aggregated effective counts.
+fn status_from_counts(counts: &EffectiveCounts, active_sessions: usize) -> StatusResponse {
+    StatusResponse {
+        pending: counts.pending,
+        running: counts.running,
+        orphaned: counts.orphaned,
+        completed: counts.completed,
+        failed: counts.failed,
+        skipped: counts.skipped,
+        cached: counts.cached,
+        total: counts.total(),
+        active_sessions,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -201,19 +269,10 @@ pub async fn api_status(
     State(state): State<Arc<DashboardState>>,
 ) -> Result<Json<StatusResponse>, StatusError> {
     let db = StateDb::open(&state.db_path).map_err(|_| StatusError::DbOpen)?;
-    let counts = db.job_counts().map_err(|_| StatusError::Query)?;
+    let counts = EffectiveCounts::from_views(&job_views(&db)?);
     let sessions = db.active_sessions().map_err(|_| StatusError::Query)?;
 
-    Ok(Json(StatusResponse {
-        pending: counts.pending,
-        running: counts.running,
-        completed: counts.completed,
-        failed: counts.failed,
-        skipped: counts.skipped,
-        cached: counts.cached,
-        total: counts.pending + counts.running + counts.completed + counts.failed + counts.skipped,
-        active_sessions: sessions.len(),
-    }))
+    Ok(Json(status_from_counts(&counts, sessions.len())))
 }
 
 /// `GET /api/dag` — DAG structure as JSON.
@@ -228,14 +287,14 @@ pub async fn api_dag(
     let db = StateDb::open(&state.db_path).map_err(|_| StatusError::DbOpen)?;
 
     // Build nodes from all jobs in the database with full details.
-    let all = db.all_jobs_detail().map_err(|_| StatusError::Query)?;
-    let nodes: Vec<DagNode> = all
+    let nodes: Vec<DagNode> = job_views(&db)?
         .into_iter()
         .map(|j| DagNode {
+            orphan_reason: orphan_reason(&j),
+            status: j.effective.as_str().to_string(),
             id: j.id,
             rule_name: j.rule_name,
             wildcards: j.wildcards,
-            status: j.status,
             started_at: j.started_at,
         })
         .collect();
@@ -261,15 +320,22 @@ pub async fn api_jobs(
 ) -> Result<Json<Vec<JobInfo>>, StatusError> {
     let db = StateDb::open(&state.db_path).map_err(|_| StatusError::DbOpen)?;
 
-    let all_detail = db.all_jobs_detail().map_err(|_| StatusError::Query)?;
-
-    let jobs: Vec<JobInfo> = all_detail
+    // The `status` filter matches the *effective* status, so
+    // `?status=running` never returns a row whose session is gone.
+    let jobs: Vec<JobInfo> = job_views(&db)?
         .into_iter()
-        .filter(|j| params.status.as_ref().is_none_or(|f| f == &j.status))
+        .filter(|j| {
+            params
+                .status
+                .as_ref()
+                .is_none_or(|f| f == j.effective.as_str())
+        })
         .map(|j| JobInfo {
+            orphan_reason: orphan_reason(&j),
+            status: j.effective.as_str().to_string(),
+            declared_status: j.declared_status,
             id: j.id,
             rule_name: j.rule_name,
-            status: j.status,
             wildcards: j.wildcards,
             started_at: j.started_at,
             completed_at: j.completed_at,
@@ -291,22 +357,11 @@ pub async fn api_events_sse(
     let interval = tokio::time::interval(Duration::from_secs(1));
     let stream = IntervalStream::new(interval).map(move |_| {
         let event = match StateDb::open(&state.db_path) {
-            Ok(db) => match db.job_counts() {
+            Ok(db) => match db.effective_job_counts(None, now_secs(), lease_secs_from_env()) {
                 Ok(counts) => {
-                    let status = StatusResponse {
-                        pending: counts.pending,
-                        running: counts.running,
-                        completed: counts.completed,
-                        failed: counts.failed,
-                        skipped: counts.skipped,
-                        cached: counts.cached,
-                        total: counts.pending
-                            + counts.running
-                            + counts.completed
-                            + counts.failed
-                            + counts.skipped,
-                        active_sessions: 0, // Skip session query in SSE for performance
-                    };
+                    // Skip the session query in SSE for performance; the
+                    // orphan split already comes from the joined derivation.
+                    let status = status_from_counts(&counts, 0);
                     Event::default()
                         .event("status")
                         .data(serde_json::to_string(&status).unwrap_or_default())
@@ -388,18 +443,31 @@ pub async fn api_stats_rules(
         .pipeline_stats_with_timing()
         .map_err(|_| StatusError::Query)?;
 
+    // Split orphaned rows out of each rule's `running` column, so the
+    // per-rule progress strip does not animate abandoned work.
+    let mut orphans: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    for v in job_views(&db)? {
+        if v.effective.is_orphaned() {
+            *orphans.entry(v.rule_name).or_default() += 1;
+        }
+    }
+
     Ok(Json(
         stats
             .into_iter()
-            .map(|s| RuleStats {
-                rule_name: s.rule_name,
-                completed: s.completed,
-                total: s.total,
-                running: s.running,
-                pending: s.pending,
-                failed: s.failed,
-                avg_wall_time_ms: s.avg_wall_time_ms,
-                earliest_started_at: s.earliest_started_at,
+            .map(|s| {
+                let orphaned = orphans.get(&s.rule_name).copied().unwrap_or(0);
+                RuleStats {
+                    running: s.running.saturating_sub(orphaned),
+                    orphaned,
+                    rule_name: s.rule_name,
+                    completed: s.completed,
+                    total: s.total,
+                    pending: s.pending,
+                    failed: s.failed,
+                    avg_wall_time_ms: s.avg_wall_time_ms,
+                    earliest_started_at: s.earliest_started_at,
+                }
             })
             .collect(),
     ))
@@ -438,9 +506,8 @@ pub async fn api_job_detail(
 ) -> Result<Json<JobDetail>, StatusError> {
     let db = StateDb::open(&state.db_path).map_err(|_| StatusError::DbOpen)?;
 
-    // Get full job row: id, rule_name, wildcards, status, started_at
-    let all = db.all_jobs_detail().map_err(|_| StatusError::Query)?;
-    let job = all
+    // Get full job row: id, rule_name, wildcards, effective status, started_at
+    let job = job_views(&db)?
         .into_iter()
         .find(|j| j.id == job_id)
         .ok_or(StatusError::NotFound)?;
@@ -464,10 +531,11 @@ pub async fn api_job_detail(
     });
 
     Ok(Json(JobDetail {
+        orphan_reason: orphan_reason(&job),
+        status: job.effective.as_str().to_string(),
         id: job_id,
         rule_name: job.rule_name,
         wildcards: job.wildcards,
-        status: job.status,
         started_at: job.started_at,
         log_path,
         stderr_tail,
@@ -534,6 +602,7 @@ mod tests {
         let resp = StatusResponse {
             pending: 1,
             running: 2,
+            orphaned: 0,
             completed: 3,
             failed: 4,
             skipped: 0,
@@ -552,6 +621,7 @@ mod tests {
             id: "j2".into(),
             rule_name: "qc".into(),
             status: "pending".into(),
+            orphan_reason: None,
             wildcards: "{}".into(),
             started_at: None,
         };
@@ -577,6 +647,8 @@ mod tests {
             id: "j42".into(),
             rule_name: "align".into(),
             status: "failed".into(),
+            declared_status: "failed".into(),
+            orphan_reason: None,
             wildcards: "{}".into(),
             started_at: Some(100),
             completed_at: Some(200),
@@ -724,7 +796,8 @@ mod tests {
         let status: StatusResponse = serde_json::from_slice(&body).unwrap();
 
         assert_eq!(status.completed, 1); // build-A
-        assert_eq!(status.running, 1); // build-B
+        assert_eq!(status.running, 1); // build-B, owned by a live session
+        assert_eq!(status.orphaned, 0);
         assert_eq!(status.pending, 1); // test-A
         assert_eq!(status.total, 3);
         assert_eq!(status.active_sessions, 1);
@@ -847,6 +920,119 @@ mod tests {
         let jobs: Vec<JobInfo> = serde_json::from_slice(&body).unwrap();
 
         assert_eq!(jobs.len(), 3);
+    }
+
+    // -- Orphaned rows (#5): a `running` row whose session is gone --
+
+    /// The same seed as [`test_app`], with the owning session interrupted:
+    /// `build-B` stays declared `running` while nobody executes it.
+    fn orphaned_app() -> (NamedTempFile, Router) {
+        let (tmp, _) = test_app();
+        let db = StateDb::open(tmp.path()).unwrap();
+        let sid = db.session_statuses().unwrap()[0].0.clone();
+        db.interrupt_session(&sid).unwrap();
+        assert_eq!(
+            db.job_status("build-B").unwrap().as_deref(),
+            Some("running"),
+            "the declared row must stay 'running' — the fix is on the read side"
+        );
+        drop(db);
+
+        let state = Arc::new(DashboardState {
+            db_path: tmp.path().to_path_buf(),
+        });
+        let router = create_router(state);
+        (tmp, router)
+    }
+
+    async fn get_json(app: Router, uri: &str) -> serde_json::Value {
+        let req = Request::builder().uri(uri).body(Body::empty()).unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        serde_json::from_slice(&body).unwrap()
+    }
+
+    #[tokio::test]
+    async fn api_status_splits_orphaned_out_of_running() {
+        let (_tmp, app) = orphaned_app();
+        let status: StatusResponse =
+            serde_json::from_value(get_json(app, "/api/status").await).unwrap();
+
+        assert_eq!(status.running, 0);
+        assert_eq!(status.orphaned, 1);
+        assert_eq!(status.active_sessions, 0);
+        assert_eq!(status.total, 3);
+    }
+
+    #[tokio::test]
+    async fn api_jobs_running_filter_excludes_orphaned() {
+        let (_tmp, app) = orphaned_app();
+        let jobs: Vec<JobInfo> =
+            serde_json::from_value(get_json(app, "/api/jobs?status=running").await).unwrap();
+        assert!(jobs.is_empty());
+    }
+
+    #[tokio::test]
+    async fn api_jobs_orphaned_filter_carries_the_reason() {
+        let (_tmp, app) = orphaned_app();
+        let jobs: Vec<JobInfo> =
+            serde_json::from_value(get_json(app, "/api/jobs?status=orphaned").await).unwrap();
+
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0].id, "build-B");
+        assert_eq!(jobs[0].status, "orphaned");
+        assert_eq!(jobs[0].declared_status, "running");
+        assert_eq!(
+            jobs[0].orphan_reason.as_deref(),
+            Some("session_interrupted")
+        );
+    }
+
+    #[tokio::test]
+    async fn api_dag_node_is_orphaned_not_running() {
+        let (_tmp, app) = orphaned_app();
+        let dag: DagResponse = serde_json::from_value(get_json(app, "/api/dag").await).unwrap();
+
+        let node = dag.nodes.iter().find(|n| n.id == "build-B").unwrap();
+        assert_eq!(node.status, "orphaned");
+        assert_eq!(node.orphan_reason.as_deref(), Some("session_interrupted"));
+    }
+
+    #[tokio::test]
+    async fn api_stats_rules_does_not_count_orphaned_as_running() {
+        let (_tmp, app) = orphaned_app();
+        let stats: Vec<RuleStats> =
+            serde_json::from_value(get_json(app, "/api/stats/rules").await).unwrap();
+
+        let build = stats.iter().find(|s| s.rule_name == "build").unwrap();
+        assert_eq!(build.running, 0);
+        assert_eq!(build.orphaned, 1);
+    }
+
+    #[tokio::test]
+    async fn api_job_detail_reports_the_effective_status() {
+        let (_tmp, app) = orphaned_app();
+        let detail: JobDetail =
+            serde_json::from_value(get_json(app, "/api/job/build-B").await).unwrap();
+        assert_eq!(detail.status, "orphaned");
+        assert_eq!(detail.orphan_reason.as_deref(), Some("session_interrupted"));
+    }
+
+    #[tokio::test]
+    async fn dashboard_reads_never_reclaim() {
+        let (tmp, app) = orphaned_app();
+        let _ = get_json(app, "/api/status").await;
+
+        // The row the dashboard just reported as orphaned is untouched:
+        // reclaiming stays with `ox run`.
+        let db = StateDb::open(tmp.path()).unwrap();
+        assert_eq!(
+            db.job_status("build-B").unwrap().as_deref(),
+            Some("running")
+        );
     }
 
     #[tokio::test]
@@ -1063,6 +1249,7 @@ mod tests {
             completed: 90,
             total: 100,
             running: 5,
+            orphaned: 0,
             pending: 4,
             failed: 1,
             avg_wall_time_ms: 5000,
@@ -1122,6 +1309,7 @@ mod tests {
             rule_name: "build".into(),
             wildcards: r#"{"target":"A"}"#.into(),
             status: "completed".into(),
+            orphan_reason: None,
             started_at: Some(1000),
             log_path: Some("/tmp/logs/build-A.log".into()),
             stderr_tail: Some("warning: unused variable".into()),
@@ -1140,6 +1328,7 @@ mod tests {
                     id: "a".into(),
                     rule_name: "build".into(),
                     status: "completed".into(),
+                    orphan_reason: None,
                     wildcards: "{}".into(),
                     started_at: Some(100),
                 },
@@ -1147,6 +1336,7 @@ mod tests {
                     id: "b".into(),
                     rule_name: "test".into(),
                     status: "pending".into(),
+                    orphan_reason: None,
                     wildcards: "{}".into(),
                     started_at: None,
                 },

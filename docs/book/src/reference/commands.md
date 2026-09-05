@@ -108,6 +108,35 @@ ox status                   # Summary of current state
 ox status --json            # Structured status
 ```
 
+#### Running vs. orphaned
+
+`ox status` does not report `jobs.status` verbatim. A job counts as
+**running** only while the session that claimed it is `active` *and* its
+heartbeat is younger than the claim lease (90 s by default,
+`OX_SESSION_LEASE_SECS` overrides). A row left at `running` by a session
+that was interrupted, completed, or stopped heartbeating is reported as
+**orphaned**, with its age and the reason:
+
+```text
+Sessions: 0 active
+Jobs: 14 total (1 completed, 0 running, 1 orphaned, 2 failed, 10 pending, 0 cached, 0 cancelled)
+Orphaned: 1 jobs abandoned by a dead session
+  substrate_tests                orphaned  12m17s  (owning session was interrupted)
+  the next `ox run` re-evaluates them; `ox status` never reclaims
+Pending: 10 jobs waiting
+  repro_spheres                  waiting for: substrate_tests (orphaned)
+```
+
+`ox status` is a **reader**: it never rewrites a row it reports as
+orphaned. Reclaiming happens at the start of the next `ox run`. The same
+derivation backs `ox top` and the web dashboard — see
+[ADR-012](../../adr/012-cooperative-multi-session.md).
+
+`--json` carries the distinction too: `jobs.orphaned` alongside
+`jobs.running`, an `orphaned_jobs` array (each entry with `reason`,
+`reason_description`, `declared_status`, `session_id`, `elapsed_secs`),
+and `waiting_for_orphaned` on each pending job.
+
 ### `ox logs`
 
 View job logs.
@@ -242,6 +271,11 @@ ox top                      # Interactive dashboard
 ```
 
 Shows real-time job status, resource utilization, and DAG progress.
+
+It uses the same running-vs-orphaned derivation as
+[`ox status`](#ox-status): the Running Jobs panel lists only jobs a live
+session is executing, and the panel title carries an `N orphaned` count
+when rows were abandoned. `ox top` never reclaims them.
 
 ## Global Options
 

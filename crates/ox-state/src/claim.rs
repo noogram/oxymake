@@ -762,9 +762,16 @@ mod tests {
         assert_eq!(db.job_status("j").unwrap().as_deref(), Some("running"));
         assert_eq!(db.active_sessions().unwrap().len(), 1);
 
-        // Stale owner: the row and the session flip together.
+        // Stale owner: the row and the session flip together.  The cutoff
+        // is re-read after ageing the heartbeat: `now` was captured before
+        // it, so a wall-clock second crossing in between would leave the
+        // aged heartbeat just younger than a stale cutoff.
         age_heartbeat(&db, &s1, LEASE);
-        assert_eq!(db.reclaim_stale_jobs_if_stale(&s1, now - LEASE).unwrap(), 1);
+        assert_eq!(
+            db.reclaim_stale_jobs_if_stale(&s1, unix_now() - LEASE)
+                .unwrap(),
+            1
+        );
         assert_eq!(db.job_status("j").unwrap().as_deref(), Some("pending"));
         assert!(db.active_sessions().unwrap().is_empty());
 
