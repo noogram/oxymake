@@ -17,7 +17,7 @@ Status is the first non-empty line under each ADR's `## Status` section, verbati
 | ADR-009 | Contextual Output Reporter — Adapt Display to Executor Profile | Proposed | — | — | event_bus, executor, ray, slurm, state_db |
 | ADR-010 | Guarded State Transitions with WHERE Preconditions | Accepted | ADR-011, ADR-015 | — | cancel, session, skip_job, sqlite, state_db |
 | ADR-011 | Three-Stage State Pipeline | Accepted | ADR-015 | — | cancel, event_bus, executor, session, skip_job, sqlite, state_db |
-| ADR-012 | Cooperative Multi-Session via SQLite Atomic Claims | Accepted | ADR-015 | — | ray, session, skip_job, slurm, sqlite, state_db |
+| ADR-012 | Cooperative Multi-Session via SQLite Atomic Claims | Accepted | ADR-015 | — | cancel, executor, ray, session, skip_job, slurm, sqlite, state_db |
 | ADR-013 | Distinct JobCancelled vs JobSkipped Semantics | Accepted | ADR-015 | — | cancel, skip_job |
 | ADR-014 | Cache-State Separation with Dedicated Cached Flag | Accepted | ADR-013, ADR-015 | — | skip_job, state_db |
 | ADR-015 | Named Invariants and TLA+ Scope | Accepted (revised from the D2 scope decision by a follow-up design panel; | — | — | cancel, session, sqlite, state_db |

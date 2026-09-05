@@ -107,6 +107,28 @@ use crate::traits::gate::{GateCheck, GateStatus};
 /// 500 ms latency after a gate is approved.
 const GATE_POLL_INTERVAL: Duration = Duration::from_millis(500);
 
+/// How long a cancelled job may take to exit before the scheduler stops
+/// asking and kills it (SIGTERM → SIGKILL escalation, ADR-012).
+///
+/// A child that traps or ignores SIGTERM — a test runner, a wrapper that
+/// re-parents its children, a process stuck in uninterruptible I/O — must not
+/// be able to hold `ox run` open without bound: the only exit left to the
+/// operator would be a second Ctrl+C, which is the force-exit path.
+const DEFAULT_SHUTDOWN_GRACE: Duration = Duration::from_secs(10);
+
+/// Environment override for [`DEFAULT_SHUTDOWN_GRACE`], in whole seconds.
+/// `0` escalates immediately; a value that does not parse is ignored.
+const SHUTDOWN_GRACE_ENV: &str = "OX_SHUTDOWN_GRACE_SECS";
+
+/// The shutdown grace period for this process.
+fn shutdown_grace() -> Duration {
+    std::env::var(SHUTDOWN_GRACE_ENV)
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .map(Duration::from_secs)
+        .unwrap_or(DEFAULT_SHUTDOWN_GRACE)
+}
+
 // ---------------------------------------------------------------------------
 // Configuration
 // ---------------------------------------------------------------------------
@@ -582,6 +604,10 @@ pub async fn run_scheduler_with_claims<E: Executor + 'static>(
     let mut join_set: JoinSet<Result<CompletionMsg, OxError>> = JoinSet::new();
     let mut in_flight = HashSet::<JobId>::new();
     let mut terminate_requested = false;
+    // Armed when graceful shutdown starts: the instant after which any job
+    // still in flight is hard-killed. `None` once the escalation has fired
+    // (or while no shutdown is in progress).
+    let mut hard_kill_at: Option<Instant> = None;
     // Gates this run has already registered with the checker and announced
     // via `GateReached`; the poll loop revisits pending gates every
     // GATE_POLL_INTERVAL and must not re-register or re-announce them.
@@ -930,18 +956,47 @@ pub async fn run_scheduler_with_claims<E: Executor + 'static>(
                 }
             };
 
+            // Escalation timer: `None` (never resolves) until a graceful
+            // shutdown arms it.
+            let kill_at = hard_kill_at;
+            let hard_kill_fut = async move {
+                match kill_at {
+                    Some(at) => tokio::time::sleep_until(tokio::time::Instant::from_std(at)).await,
+                    None => std::future::pending().await,
+                }
+            };
+
             tokio::select! {
                 biased;
 
                 // Shutdown signal received — graceful termination.
                 _ = shutdown_fut, if !terminate_requested => {
                     terminate_requested = true;
-                    // Send SIGTERM to all in-flight children.  They will
-                    // exit non-zero, and finalize_workspace (in the spawned
-                    // tasks) will clean up partial outputs.
-                    for job_id in &in_flight {
+                    // Mark every in-flight job Cancelled *before* signalling
+                    // it. The status is what the B4 guard in
+                    // handle_completion reads, so the child's non-zero exit
+                    // is discarded instead of being recorded as a genuine
+                    // failure — and the emitted JobCancelled is what moves
+                    // the ledger row off `running`.
+                    let cancelling: Vec<JobId> = in_flight.iter().cloned().collect();
+                    {
+                        let mut st = state.lock().await;
+                        for job_id in &cancelling {
+                            st.set_status(job_id.clone(), JobLifecycle::Cancelled);
+                        }
+                    }
+                    for job_id in &cancelling {
+                        event_bus.emit(Event::JobCancelled {
+                            job_id: job_id.clone(),
+                            reason: "run interrupted".into(),
+                        });
+                        // Send SIGTERM to the child.  finalize_workspace (in
+                        // the spawned task) will clean up partial outputs.
                         let _ = executor.cancel(job_id).await;
                     }
+                    // Arm the bounded escalation: a child deaf to SIGTERM
+                    // gets SIGKILL once the grace period elapses.
+                    hard_kill_at = Some(Instant::now() + shutdown_grace());
                     // Don't break — continue the loop to collect completions
                     // from the join_set so finalize_workspace can run.
                 }
@@ -1008,6 +1063,24 @@ pub async fn run_scheduler_with_claims<E: Executor + 'static>(
                         }
                         None => break,
                     }
+                }
+
+                // Grace period elapsed and jobs are still in flight — the
+                // children are deaf to SIGTERM. Escalate to SIGKILL on the
+                // same process groups. Their rows are already Cancelled
+                // (set when the shutdown arm fired), so the completions
+                // that follow are discarded by the B4 guard.
+                _ = hard_kill_fut, if hard_kill_at.is_some() => {
+                    warn!(
+                        target: "ox.scheduler",
+                        counter = "scheduler.shutdown.hard_kill",
+                        jobs = in_flight.len(),
+                        "shutdown grace elapsed — killing in-flight jobs"
+                    );
+                    for job_id in &in_flight {
+                        let _ = executor.kill(job_id).await;
+                    }
+                    hard_kill_at = None;
                 }
             }
         } else if skipped_this_iter {

@@ -582,6 +582,107 @@ async fn read_log_tail(path: &std::path::Path, n: usize) -> Option<String> {
     if tail.is_empty() { None } else { Some(tail) }
 }
 
+/// The two dispositions the local executor can send to a job's process group.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Signal {
+    /// Cooperative stop — the child may trap it and clean up.
+    Term,
+    /// Unconditional stop — cannot be trapped or ignored.
+    Kill,
+}
+
+impl Signal {
+    #[cfg(unix)]
+    fn as_libc(self) -> libc::c_int {
+        match self {
+            Signal::Term => libc::SIGTERM,
+            Signal::Kill => libc::SIGKILL,
+        }
+    }
+
+    #[cfg(not(unix))]
+    fn flag(self) -> &'static str {
+        match self {
+            Signal::Term => "-TERM",
+            Signal::Kill => "-KILL",
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Signal::Term => "SIGTERM",
+            Signal::Kill => "SIGKILL",
+        }
+    }
+}
+
+impl LocalExecutor {
+    /// Send `signal` to the process group of a running job.
+    ///
+    /// Shared by [`Executor::cancel`] (SIGTERM) and [`Executor::kill`]
+    /// (SIGKILL): only the disposition differs, the lookup — cold PID first,
+    /// then warm worker pool — is identical.
+    async fn signal_job(&self, job_id: &JobId, signal: Signal) {
+        let pid = self.running.lock().get(job_id.as_str()).copied();
+        if let Some(pid) = pid {
+            debug!(
+                target: "ox.executor",
+                counter = "executor.local.signal",
+                job_id = %job_id,
+                pid,
+                signal = signal.name(),
+                "signalling job process group"
+            );
+            #[cfg(unix)]
+            {
+                // Safety: killpg with a valid PGID is a standard POSIX
+                // syscall.  The process group was created by
+                // process_group(0) in spawn_shell_with_callback.
+                unsafe {
+                    libc::killpg(pid as libc::pid_t, signal.as_libc());
+                }
+            }
+            #[cfg(not(unix))]
+            {
+                let _ = std::process::Command::new("kill")
+                    .args([signal.flag(), &pid.to_string()])
+                    .status();
+            }
+            return;
+        }
+
+        // Warm call-mode dispatches have no PID of their own — they run
+        // inside the worker pool's forked child. Mark the job cancelled
+        // (so execute() surfaces Cancelled instead of falling back to a
+        // cold re-run) and kill the worker's process group via the pool.
+        // The pool's teardown is a SIGKILL already, so both dispositions
+        // land on the same call.
+        let env_key = self.warm_running.lock().get(job_id.as_str()).cloned();
+        if let Some(env_key) = env_key {
+            debug!(
+                target: "ox.executor",
+                counter = "executor.local.signal",
+                job_id = %job_id,
+                env_key = %env_key,
+                signal = signal.name(),
+                "killing warm worker group"
+            );
+            self.warm_cancelled.lock().insert(job_id.to_string());
+            if let Some(ref pool) = self.worker_pool {
+                pool.kill_env(&env_key).await;
+            }
+            return;
+        }
+
+        warn!(
+            target: "ox.executor",
+            job_id = %job_id,
+            signal = signal.name(),
+            "signal requested but job not in running map"
+        );
+    }
+}
+
 impl Executor for LocalExecutor {
     type Error = ExecLocalError;
 
@@ -1199,58 +1300,22 @@ impl Executor for LocalExecutor {
         fields(job_id = %job_id),
     )]
     async fn cancel(&self, job_id: &JobId) -> Result<(), Self::Error> {
-        let pid = self.running.lock().get(job_id.as_str()).copied();
-        if let Some(pid) = pid {
-            debug!(
-                target: "ox.executor",
-                counter = "executor.local.cancel",
-                job_id = %job_id,
-                pid,
-                "SIGTERM"
-            );
-            #[cfg(unix)]
-            {
-                // Safety: killpg with a valid PGID is a standard POSIX
-                // syscall.  The process group was created by
-                // process_group(0) in spawn_shell_with_callback.
-                unsafe {
-                    libc::killpg(pid as libc::pid_t, libc::SIGTERM);
-                }
-            }
-            #[cfg(not(unix))]
-            {
-                let _ = std::process::Command::new("kill")
-                    .args(["-TERM", &pid.to_string()])
-                    .status();
-            }
-            return Ok(());
-        }
+        self.signal_job(job_id, Signal::Term).await;
+        Ok(())
+    }
 
-        // Warm call-mode dispatches have no PID of their own — they run
-        // inside the worker pool's forked child. Mark the job cancelled
-        // (so execute() surfaces Cancelled instead of falling back to a
-        // cold re-run) and kill the worker's process group via the pool.
-        let env_key = self.warm_running.lock().get(job_id.as_str()).cloned();
-        if let Some(env_key) = env_key {
-            debug!(
-                target: "ox.executor",
-                counter = "executor.local.cancel",
-                job_id = %job_id,
-                env_key = %env_key,
-                "killing warm worker group"
-            );
-            self.warm_cancelled.lock().insert(job_id.to_string());
-            if let Some(ref pool) = self.worker_pool {
-                pool.kill_env(&env_key).await;
-            }
-            return Ok(());
-        }
-
-        warn!(
-            target: "ox.executor",
-            job_id = %job_id,
-            "cancel called but job not in running map"
-        );
+    /// Hard-kill a running job: SIGKILL to its whole process group.
+    ///
+    /// The scheduler escalates here once the shutdown grace period elapses
+    /// (see `ox-core`'s `OX_SHUTDOWN_GRACE_SECS`), so a child that traps or
+    /// ignores SIGTERM cannot keep `ox run` open without bound.
+    #[tracing::instrument(
+        name = "executor.local.kill",
+        skip_all,
+        fields(job_id = %job_id),
+    )]
+    async fn kill(&self, job_id: &JobId) -> Result<(), Self::Error> {
+        self.signal_job(job_id, Signal::Kill).await;
         Ok(())
     }
 

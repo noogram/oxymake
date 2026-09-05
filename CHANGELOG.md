@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **An interrupted `ox run` no longer leaves `running` rows behind** (issue #4).
+  Graceful shutdown is now bounded: after `SIGTERM`, the scheduler escalates to
+  `SIGKILL` on the job's process group once a grace period elapses (default 10 s,
+  overridable with `OX_SHUTDOWN_GRACE_SECS`), so a child that traps or ignores
+  `SIGTERM` can no longer hold the run open without bound. The force-exit path
+  (second `SIGINT`/`SIGTERM`) now cancels this session's still-`running` rows
+  before calling `exit(130)` instead of exiting silently. In-flight jobs of an
+  interrupted run are recorded `cancelled` rather than `failed`, and the run
+  exits `130`. All writes stay scoped by `session_id`, so a live peer's row is
+  never terminalized (ADR-012). `ox cancel` inherits the same contract.
+
+### Added
+- `OX_SHUTDOWN_GRACE_SECS` — seconds a cancelled job may take to exit before
+  `ox run` kills it (default `10`; `0` escalates immediately).
+
 ## [0.2.0] - 2026-09-05
 
 Gates now hold, two sessions never execute the same job twice, and outputs can

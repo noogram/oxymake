@@ -49,6 +49,7 @@ OxyMake reads the following environment variables:
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `OX_CACHE_VALIDATION` | Cache validation strategy (`mtime`, `mtime+hash`, `hash`) | `mtime+hash` |
+| `OX_SHUTDOWN_GRACE_SECS` | Seconds a cancelled job may take to exit after `SIGTERM` before `ox run` sends `SIGKILL` to its process group. `0` escalates immediately. | `10` |
 
 Everything else is set with a command-line flag or in the Oxymakefile.
 

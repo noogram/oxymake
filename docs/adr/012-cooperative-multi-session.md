@@ -198,6 +198,46 @@ is refused (`ExecLocalError::LockUnsupported`).
 **Out of scope.** Distributed executors (`--executor slurm` / `ray`)
 submit the DAG without the scheduler and keep refusing gated workflows.
 
+## Bounded interruption (2026-09-05, issue #4)
+
+An interruption must leave the ledger describing a state that still exists.
+Two paths broke that: the force-exit (second `SIGINT`/`SIGTERM`) called
+`process::exit(130)` without writing anything, and `LocalExecutor::cancel`
+sent `SIGTERM` once and never escalated — a child that traps or ignores it
+held `ox run` open with no bound, so the operator's only exit *was* the
+force-exit. Either way the ledger kept `running` rows for jobs that were
+gone, and could not tell "still running" from "abandoned".
+
+**The shutdown is now bounded.** On the first signal the scheduler marks
+every in-flight job `Cancelled`, emits `JobCancelled` (which moves the
+ledger row off `running`), sends `SIGTERM` to each job's process group, and
+arms a **grace period**. When it elapses with jobs still in flight, the
+scheduler escalates to `SIGKILL` on the same process groups
+(`Executor::kill`, whose default forwards to `cancel` for backends whose
+cancellation is already unconditional). The grace period defaults to **10
+seconds** and is overridden by `OX_SHUTDOWN_GRACE_SECS` (whole seconds; `0`
+escalates immediately, an unparseable value is ignored). It bounds how long
+a cancelled job may take to exit, not the run: collecting the completions
+that follow the kill is what lets `finalize_workspace` clean up partial
+outputs.
+
+**The force-exit writes before it exits.** On the second signal, before
+`process::exit(130)`, the handler opens the state database and cancels the
+rows this session still holds as `running`
+(`running_job_ids_for_session` → `cancel_job_ids_for_session`). These are a
+handful of synchronous SQLite statements and deliberately do not await the
+scheduler — awaiting it is exactly what the operator gave up on. The session
+keeps the `interrupted` status written on the first signal.
+
+**Scope is the invariant.** Every write on both paths is scoped by
+`session_id`, so a live peer's `running` row is never terminalized: under
+the dispatch-time claim above, a session that stops waiting must not decide
+about the job its peer is still executing. `ox cancel` needs no separate
+handling — it signals the owning `ox run`, and so inherits this contract.
+Rows left by a session that died without receiving a signal (`SIGKILL`,
+power loss) remain the business of `reset_inactive_job_rows` on the next
+`ox run`.
+
 ## Alternatives Considered
 
 **File-based advisory locks (flock/fcntl) as the coordination primitive**:

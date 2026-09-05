@@ -3239,3 +3239,193 @@ shell = "touch started.txt && sleep 30 && touch out.txt"
         "SIGTERM must take the graceful shutdown path; stderr: {stderr:?}, status: {status:?}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Bounded interruption (#4 — the ledger never keeps a `running` row behind)
+// ---------------------------------------------------------------------------
+
+/// Read `(id, status)` for every job row of `session_id` in a state DB.
+#[cfg(unix)]
+fn jobs_of_session(db_path: &std::path::Path, session_id: &str) -> Vec<(String, String)> {
+    let conn = rusqlite::Connection::open(db_path).expect("open state.db");
+    let mut stmt = conn
+        .prepare("SELECT id, status FROM jobs WHERE session_id = ?1")
+        .expect("prepare");
+    let rows = stmt
+        .query_map([session_id], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+        })
+        .expect("query");
+    rows.map(|r| r.expect("row")).collect()
+}
+
+/// The single session recorded in a state DB (this fixture only ever runs one).
+#[cfg(unix)]
+fn only_session(db_path: &std::path::Path) -> (String, String) {
+    let conn = rusqlite::Connection::open(db_path).expect("open state.db");
+    let mut stmt = conn
+        .prepare("SELECT id, status FROM sessions")
+        .expect("prepare");
+    let rows: Vec<(String, String)> = stmt
+        .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+        .expect("query")
+        .map(|r| r.expect("row"))
+        .collect();
+    assert_eq!(rows.len(), 1, "fixture must record exactly one session");
+    rows.into_iter().next().unwrap()
+}
+
+/// Spawn `ox run` on a job that ignores SIGTERM and wait until it is live.
+#[cfg(unix)]
+fn spawn_sigterm_deaf_run(
+    dir: &std::path::Path,
+    grace_secs: &str,
+) -> (std::process::Child, std::path::PathBuf) {
+    use std::process::{Command as StdCommand, Stdio};
+    use std::time::{Duration, Instant};
+
+    let oxymakefile = dir.join("Oxymakefile.toml");
+    // `trap '' TERM` makes the job's shell deaf to SIGTERM; the inner sleeps
+    // die on the group signal but the loop keeps the shell (and the process
+    // group) alive, so only SIGKILL ends it.
+    fs::write(
+        &oxymakefile,
+        r#"ox_version = "0.1"
+
+[rule.all]
+input = ["out.txt"]
+
+[rule.deaf]
+output = ["out.txt"]
+shell = "trap '' TERM; touch started.txt; while true; do sleep 0.2; done"
+"#,
+    )
+    .unwrap();
+
+    let child = StdCommand::new(env!("CARGO_BIN_EXE_oxymake"))
+        .args(["run", "-f", oxymakefile.to_str().unwrap()])
+        .current_dir(dir)
+        .env("OX_SHUTDOWN_GRACE_SECS", grace_secs)
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn ox run");
+
+    let sentinel = dir.join("started.txt");
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !sentinel.exists() {
+        if Instant::now() > deadline {
+            panic!("deaf job did not start within 30 s");
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    // The signal handler is installed before dispatch; give the scheduler a
+    // moment to reach its select! loop.
+    std::thread::sleep(Duration::from_millis(200));
+
+    (child, dir.join(".oxymake/state.db"))
+}
+
+#[cfg(unix)]
+fn wait_for_exit(child: &mut std::process::Child, secs: u64) -> std::process::ExitStatus {
+    use std::time::{Duration, Instant};
+    let deadline = Instant::now() + Duration::from_secs(secs);
+    loop {
+        if let Some(status) = child.try_wait().expect("try_wait") {
+            return status;
+        }
+        if Instant::now() > deadline {
+            let _ = child.kill();
+            panic!("ox run did not exit within {secs} s");
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+/// A single SIGINT on a job that ignores SIGTERM must still terminate within
+/// the shutdown grace period: the child is SIGKILLed, its row lands on
+/// `cancelled`, the session stays `interrupted`, and nothing is left
+/// `running` (#4, hole 2).
+#[test]
+#[cfg(unix)]
+fn interrupt_escalates_to_sigkill_and_leaves_no_running_row() {
+    use std::process::Command as StdCommand;
+
+    let dir = TempDir::new().unwrap();
+    let (mut child, db_path) = spawn_sigterm_deaf_run(dir.path(), "2");
+
+    StdCommand::new("kill")
+        .args(["-INT", &child.id().to_string()])
+        .status()
+        .expect("send SIGINT");
+
+    // Grace is 2 s; allow generous margin for CI scheduling.
+    wait_for_exit(&mut child, 40);
+
+    let (session_id, session_status) = only_session(&db_path);
+    assert_eq!(
+        session_status, "interrupted",
+        "a signalled session must stay 'interrupted'"
+    );
+
+    let jobs = jobs_of_session(&db_path, &session_id);
+    assert!(
+        !jobs.iter().any(|(_, st)| st == "running"),
+        "no row of the interrupted session may stay 'running': {jobs:?}"
+    );
+    assert!(
+        jobs.iter()
+            .any(|(id, st)| id == "deaf" && st == "cancelled"),
+        "the SIGKILLed job must be recorded 'cancelled': {jobs:?}"
+    );
+}
+
+/// Two quick signals force-exit with 130 — and the force-exit path must
+/// terminalize this session's rows before it calls `process::exit` (#4,
+/// hole 1).
+#[test]
+#[cfg(unix)]
+fn double_interrupt_force_exits_without_leaving_running_rows() {
+    use std::os::unix::process::ExitStatusExt;
+    use std::process::Command as StdCommand;
+    use std::time::Duration;
+
+    let dir = TempDir::new().unwrap();
+    // A long grace keeps the run parked in graceful shutdown, so the second
+    // signal is what ends it.
+    let (mut child, db_path) = spawn_sigterm_deaf_run(dir.path(), "600");
+
+    let pid = child.id().to_string();
+    StdCommand::new("kill")
+        .args(["-INT", &pid])
+        .status()
+        .expect("send first SIGINT");
+    std::thread::sleep(Duration::from_millis(500));
+    StdCommand::new("kill")
+        .args(["-INT", &pid])
+        .status()
+        .expect("send second SIGINT");
+
+    let status = wait_for_exit(&mut child, 30);
+    assert_eq!(
+        status.code(),
+        Some(130),
+        "a second signal must force-exit with 130 (signal: {:?})",
+        status.signal()
+    );
+
+    let (session_id, session_status) = only_session(&db_path);
+    assert_eq!(session_status, "interrupted");
+
+    let jobs = jobs_of_session(&db_path, &session_id);
+    assert!(
+        !jobs.iter().any(|(_, st)| st == "running"),
+        "force-exit must not leave a 'running' row behind: {jobs:?}"
+    );
+
+    // The orphaned job's process group is not this test's business (the
+    // force-exit path is deliberately ledger-only), but leave nothing behind.
+    let _ = StdCommand::new("pkill")
+        .args(["-f", "trap '' TERM"])
+        .status();
+}
