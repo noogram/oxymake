@@ -55,22 +55,40 @@ pub enum ExecLocalError {
         reason: String,
     },
 
-    /// Another `ox run` session is already executing this job's output set.
+    /// Another `ox run` session is already writing one of this job's outputs.
     ///
     /// Two sessions approved for the same gate both reach the job because
     /// the cooperative claim protocol (`StateDb::claim_job`, ADR-012) is not
     /// yet the scheduling gate. Rather than execute concurrently into the
     /// same paths and risk committing a mixed output set (issue #2), the
-    /// session that does not hold the output-set lock fails closed here.
+    /// session that cannot lock every output path fails closed here.
     #[error(
-        "job '{job}' is already being executed by another session (pid {holder}); \
-         refusing to run it concurrently, which could commit a mixed output set \
-         (the claim protocol is not yet the scheduling gate — see ADR-012)"
+        "job '{job}' is already being executed by another session ({holder}): \
+         output '{path}' is locked; refusing to run it concurrently, which could \
+         commit a mixed output set (the claim protocol is not yet the scheduling \
+         gate — see ADR-012)"
     )]
     ConcurrentExecution {
-        /// The job whose output set is already locked.
+        /// The job one of whose output paths is already locked.
         job: String,
-        /// PID of the session holding the lock (or `unknown`).
+        /// The first output path (in lock order) found locked.
+        path: String,
+        /// Description of the lock holder, e.g. `pid 1234`.
         holder: String,
+    },
+
+    /// The platform cannot provide the cross-process output-path lock that
+    /// keeps two sessions from committing a mixed output set, so local
+    /// execution of jobs with file outputs is refused rather than run
+    /// unprotected (fail closed).
+    #[error(
+        "cannot lock the outputs of job '{job}': {reason}; refusing to execute \
+         without the cross-process lock that prevents a mixed output set"
+    )]
+    LockUnsupported {
+        /// The job whose outputs could not be locked.
+        job: String,
+        /// Why the platform provides no usable lock.
+        reason: String,
     },
 }

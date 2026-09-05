@@ -256,7 +256,7 @@ fn rejected_gate_cancels_the_guarded_job() {
 /// PID into both outputs; the write order is flipped by PID parity so that
 /// two *concurrent* executions would interleave and leave a mixed set
 /// (`a.txt != b.txt`). A `go` barrier file holds the shell so the winning
-/// session keeps the output-set lock while the second session tries to run.
+/// session keeps the output-path locks while the second session tries to run.
 const TWO_OUTPUT_OXYMAKEFILE: &str = r#"ox_version = "0.1"
 format_version = "1"
 
@@ -278,7 +278,7 @@ shell = "while [ ! -f go ]; do sleep 0.01; done; id=$$; if [ $((id % 2)) -eq 0 ]
 /// multi-output rule could commit a set mixing files from two physical
 /// executions and report success for it.
 ///
-/// The fix fails closed: the session that does not win the output-set lock
+/// The fix fails closed: the session that does not win the output-path locks
 /// refuses to execute the job concurrently. This test asserts the two
 /// properties the mission requires — `a.txt == b.txt` after both sessions
 /// finish (the committed set is one execution's set, never mixed), and no
@@ -344,7 +344,7 @@ fn two_approved_runs_never_commit_a_mixed_set() {
         );
     }
 
-    // After approval, one session wins the output-set lock and blocks on the
+    // After approval, one session wins the output-path locks and blocks on the
     // `go` barrier (holding the lock); the other fails closed at prepare
     // time, before `go` even exists. Wait for that loser to exit.
     let loser_tag = loop {
@@ -419,7 +419,7 @@ fn two_approved_runs_never_commit_a_mixed_set() {
     assert!(!dir.join("a.txt.oxytmp").exists());
     assert!(!dir.join("b.txt.oxytmp").exists());
     // NB: the shared `state.db` `guarded` row is claimed by whichever session
-    // wins the `claim_job` CAS, which is independent of the output-set lock
+    // wins the `claim_job` CAS, which is independent of the output-path locks
     // winner, so its final status may read `completed` or `failed`. That
     // decoupling is the known root cause (the claim is not yet the scheduling
     // gate, ADR-012) and is out of scope here; the invariant this test guards
@@ -586,4 +586,161 @@ fn gated_workflow_is_refused_on_dag_submission_executors() {
         );
         assert!(!dir.join("out.txt").exists());
     }
+}
+
+/// A gated two-output rule whose first execution records its shell PID in
+/// `mid.pid` and then sleeps before writing `b.txt`; once `second` exists,
+/// executions write the whole set quickly instead. Used to leave a job
+/// shell orphaned by killing its `ox` session mid-job.
+const ORPHAN_OXYMAKEFILE: &str = r#"ox_version = "0.1"
+format_version = "1"
+
+[gate.approval]
+after = []
+before = ["guarded"]
+
+[rule.guarded]
+input = []
+output = ["a.txt", "b.txt"]
+shell = "id=$$; if [ ! -f second ]; then printf 'killed-%s\n' \"$id\" > a.txt; printf '%s\n' \"$id\" > mid.pid; sleep 4; printf 'killed-%s\n' \"$id\" > b.txt; else printf 'replacement-%s\n' \"$id\" > a.txt; sleep 0.2; printf 'replacement-%s\n' \"$id\" > b.txt; fi"
+"#;
+
+/// Whether a process with `pid` still exists (`kill -0`).
+fn process_alive(pid: &str) -> bool {
+    Command::new("kill")
+        .args(["-0", pid])
+        .stderr(Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+/// Start `ox run a.txt b.txt` in `dir`, logging to `run-<tag>.{out,err}`,
+/// and approve its gate once it is pending.
+fn spawn_two_output_run_and_approve(dir: &Path, tag: &str) -> KillOnDrop {
+    let child = Command::new(ox_bin())
+        .args(["run", "a.txt", "b.txt"])
+        .current_dir(dir)
+        .stdout(Stdio::from(
+            fs::File::create(dir.join(format!("run-{tag}.out"))).unwrap(),
+        ))
+        .stderr(Stdio::from(
+            fs::File::create(dir.join(format!("run-{tag}.err"))).unwrap(),
+        ))
+        .spawn()
+        .expect("spawn ox run");
+    let mut run = KillOnDrop(child);
+    let gate = wait_for_gate(dir, &mut run.0, "approval", "pending");
+    let id = gate["id"].as_i64().unwrap();
+    let out = Command::new(ox_bin())
+        .args(["gate", "approve", &id.to_string(), "--approver", "test"])
+        .current_dir(dir)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "approve {tag}: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    run
+}
+
+/// Round-3 finding 1 (blocking): `SIGKILL` of an `ox` session mid-job
+/// leaves its `bash -c` child alive as an orphan. The output locks used to
+/// be held by the session alone, so the kill released them: a replacement
+/// run then acquired the locks and committed a consistent set, which the
+/// orphan later overwrote at the final path (`b.txt`), leaving a mixed set
+/// under a green "1 succeeded".
+///
+/// The job child now inherits a duplicate of every lock descriptor, so the
+/// locks live as long as the child does. A replacement started while the
+/// orphan is alive fails closed (naming the dead session); one started
+/// after the orphan has exited — i.e. past its delayed write — commits a
+/// set that nothing can overwrite any more.
+#[test]
+fn killed_session_does_not_release_locks_while_its_job_child_lives() {
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path();
+    fs::write(dir.join("Oxymakefile.toml"), ORPHAN_OXYMAKEFILE).unwrap();
+
+    // First run: approved, then SIGKILLed once its job shell is mid-job.
+    let mut first = spawn_two_output_run_and_approve(dir, "killed");
+    let start = Instant::now();
+    while !dir.join("mid.pid").exists() {
+        assert!(
+            first.0.try_wait().unwrap().is_none(),
+            "first run exited before its job was mid-way:\n{}",
+            fs::read_to_string(dir.join("run-killed.err")).unwrap_or_default()
+        );
+        assert!(start.elapsed() < WAIT, "job never reached mid-job");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let shell_pid = fs::read_to_string(dir.join("mid.pid"))
+        .unwrap()
+        .trim()
+        .to_string();
+    first.0.kill().unwrap(); // SIGKILL on Unix
+    let killed = first.0.wait().unwrap();
+    assert!(!killed.success());
+    assert!(
+        process_alive(&shell_pid),
+        "the job shell must have been orphaned by the kill for this test to mean anything"
+    );
+
+    // Replacement while the orphan is alive: fails closed, commits nothing.
+    fs::write(dir.join("second"), "").unwrap();
+    let mut early = spawn_two_output_run_and_approve(dir, "early");
+    let early_exit = wait_for_exit(dir, &mut early.0);
+    let early_out = fs::read_to_string(dir.join("run-early.out")).unwrap_or_default();
+    let early_err = fs::read_to_string(dir.join("run-early.err")).unwrap_or_default();
+    assert!(
+        !early_exit.success(),
+        "replacement succeeded while the orphaned job still held the locks:\n{early_out}\n{early_err}"
+    );
+    assert!(
+        early_err.contains("already being executed by another session")
+            && early_err.contains("which has exited"),
+        "replacement must fail closed naming the dead session:\n{early_err}"
+    );
+    assert!(
+        !early_out.contains("1 succeeded"),
+        "replacement reported success:\n{early_out}"
+    );
+    assert!(
+        fs::read_to_string(dir.join("a.txt"))
+            .unwrap_or_default()
+            .starts_with("killed-"),
+        "the replacement must not have touched the orphan's paths"
+    );
+
+    // Wait past the orphan's delayed write (it exits right after it).
+    let start = Instant::now();
+    while process_alive(&shell_pid) {
+        assert!(start.elapsed() < WAIT, "orphaned job shell never exited");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert_eq!(
+        fs::read_to_string(dir.join("b.txt")).unwrap().trim(),
+        format!("killed-{shell_pid}"),
+        "the orphan's delayed write landed (uncommitted by anyone)"
+    );
+
+    // Replacement after the orphan is gone: the locks are free, it commits,
+    // and the committed set stays intact.
+    let mut late = spawn_two_output_run_and_approve(dir, "late");
+    let late_exit = wait_for_exit(dir, &mut late.0);
+    let late_out = fs::read_to_string(dir.join("run-late.out")).unwrap_or_default();
+    let late_err = fs::read_to_string(dir.join("run-late.err")).unwrap_or_default();
+    assert!(late_exit.success(), "{late_out}\n{late_err}");
+    assert!(late_out.contains("1 succeeded"), "{late_out}");
+    let a = fs::read_to_string(dir.join("a.txt")).unwrap();
+    let b = fs::read_to_string(dir.join("b.txt")).unwrap();
+    assert!(a.starts_with("replacement-"), "a.txt={a:?}");
+    assert_eq!(
+        a.trim(),
+        b.trim(),
+        "committed set is mixed: a={a:?} b={b:?}"
+    );
+    assert!(!dir.join("a.txt.oxytmp").exists());
+    assert!(!dir.join("b.txt.oxytmp").exists());
 }

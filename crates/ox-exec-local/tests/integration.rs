@@ -1466,3 +1466,71 @@ async fn prepare_workspace_skips_write_when_file_exists() {
 
     std::env::set_current_dir(_guard).unwrap();
 }
+
+/// Round-3 finding 1 (issue #2): a job child spawned with `inherit_fds`
+/// holds its own reference to the session's `flock(2)`. Once the session's
+/// descriptor is gone the lock is still held while the child lives, and
+/// released when the child exits.
+#[cfg(unix)]
+#[tokio::test]
+#[serial]
+async fn inherited_descriptor_keeps_flock_while_the_child_lives() {
+    use std::os::unix::io::AsRawFd;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let lock_path = tmp.path().join("out.lock");
+    let open = || {
+        std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(&lock_path)
+            .unwrap()
+    };
+    // SAFETY (test): flock on a valid descriptor is a plain POSIX syscall.
+    let try_lock =
+        |f: &std::fs::File| unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+
+    let session = open();
+    assert_eq!(try_lock(&session), 0, "session takes the lock");
+    let fds = vec![session.as_raw_fd()];
+
+    let work = tmp.path().to_path_buf();
+    let log = tmp.path().join("child.log");
+    let child = tokio::spawn(async move {
+        ox_exec_local::process::spawn_shell_with_callback(
+            "sleep 1",
+            &work,
+            &log,
+            None,
+            &[],
+            ox_core::model::DEFAULT_SHELL,
+            &fds,
+            |_| {},
+        )
+        .await
+        .unwrap()
+    });
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    drop(session);
+
+    let probe = open();
+    assert_eq!(
+        try_lock(&probe),
+        -1,
+        "the child's inherited descriptor keeps the lock after the session dropped its own"
+    );
+    assert_eq!(
+        std::io::Error::last_os_error().raw_os_error(),
+        Some(libc::EWOULDBLOCK)
+    );
+
+    let result = child.await.unwrap();
+    assert_eq!(result.exit_code, 0);
+    assert_eq!(
+        try_lock(&probe),
+        0,
+        "the lock is released once the child exits"
+    );
+}

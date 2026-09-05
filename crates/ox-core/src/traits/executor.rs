@@ -134,6 +134,16 @@ impl Workspace {
         }
     }
 
+    /// Borrow the private state without consuming the workspace.
+    ///
+    /// Returns `None` if the stored state is not of type `T`. Lets
+    /// [`Executor::execute`], which only receives `&Workspace`, read what
+    /// [`Executor::prepare_workspace`] stored (the local executor reads its
+    /// output-path lock descriptors here to hand them to the job child).
+    pub fn state<T: 'static>(&self) -> Option<&T> {
+        self._private.downcast_ref::<T>()
+    }
+
     /// Consume the workspace and attempt to downcast its private state.
     ///
     /// Returns `None` if the stored state is not of type `T`.
