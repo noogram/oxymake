@@ -72,6 +72,7 @@
 pub mod backend;
 pub mod claim;
 pub mod db;
+pub mod effective;
 pub mod error;
 pub mod gate;
 pub mod migration;

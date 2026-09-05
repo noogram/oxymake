@@ -8,6 +8,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::Result;
 use ox_state::db::StateDb;
+use ox_state::effective::{EffectiveStatus, JobView, lease_secs_from_env};
 use serde::Deserialize;
 
 // ---------------------------------------------------------------------------
@@ -44,7 +45,10 @@ pub struct StageStats {
     pub name: String,
     pub completed: usize,
     pub total: usize,
+    /// Jobs in flight — orphaned rows are excluded.
     pub running: usize,
+    /// Jobs declared `running` whose owning session is gone.
+    pub orphaned: usize,
 }
 
 impl StageStats {
@@ -61,6 +65,10 @@ impl StageStats {
     pub fn status_label(&self) -> String {
         if self.completed == self.total {
             "done".into()
+        } else if self.running > 0 && self.orphaned > 0 {
+            format!("{} running, {} orphaned", self.running, self.orphaned)
+        } else if self.orphaned > 0 {
+            format!("{} orphaned", self.orphaned)
         } else if self.running > 0 {
             format!("{} running", self.running)
         } else {
@@ -77,6 +85,20 @@ pub struct RunningJob {
     pub wildcards: String,
     pub duration: Duration,
     pub resources: String,
+}
+
+/// A job the ledger still declares `running` while its owning session is
+/// gone (interrupted, completed, or past its heartbeat lease).
+///
+/// `ox top` only reports these — reclaiming them stays with `ox run`.
+#[derive(Debug, Clone)]
+pub struct OrphanedJob {
+    pub id: String,
+    pub rule: String,
+    /// Age of the abandoned attempt, measured from its start.
+    pub age: Duration,
+    /// One-line explanation of why the claim is dead.
+    pub reason: &'static str,
 }
 
 /// A single event line shown in the Events panel.
@@ -101,7 +123,10 @@ pub struct SessionInfo {
 #[derive(Debug, Clone, Default)]
 pub struct JobCounts {
     pub pending: usize,
+    /// Jobs in flight — orphaned rows are excluded.
     pub running: usize,
+    /// Jobs declared `running` whose owning session is gone.
+    pub orphaned: usize,
     pub completed: usize,
     pub failed: usize,
     pub skipped: usize,
@@ -110,7 +135,7 @@ pub struct JobCounts {
 
 impl JobCounts {
     pub fn total(&self) -> usize {
-        self.pending + self.running + self.completed + self.failed + self.skipped
+        self.pending + self.running + self.orphaned + self.completed + self.failed + self.skipped
     }
 
     pub fn done(&self) -> usize {
@@ -141,6 +166,7 @@ pub struct App {
     pub selected_panel: Panel,
     pub pipeline_stats: Vec<StageStats>,
     pub running_jobs: Vec<RunningJob>,
+    pub orphaned_jobs: Vec<OrphanedJob>,
     pub recent_events: Vec<EventLine>,
     pub sessions: Vec<SessionInfo>,
     pub job_counts: JobCounts,
@@ -156,6 +182,7 @@ impl App {
             selected_panel: Panel::Pipeline,
             pipeline_stats: Vec::new(),
             running_jobs: Vec::new(),
+            orphaned_jobs: Vec::new(),
             recent_events: Vec::new(),
             sessions: Vec::new(),
             job_counts: JobCounts::default(),
@@ -175,24 +202,28 @@ impl App {
                     completed: 3,
                     total: 3,
                     running: 0,
+                    orphaned: 0,
                 },
                 StageStats {
                     name: "features".into(),
                     completed: 1450,
                     total: 3412,
                     running: 145,
+                    orphaned: 0,
                 },
                 StageStats {
                     name: "call".into(),
                     completed: 0,
                     total: 1024,
                     running: 0,
+                    orphaned: 0,
                 },
                 StageStats {
                     name: "annotate".into(),
                     completed: 0,
                     total: 48,
                     running: 0,
+                    orphaned: 0,
                 },
             ],
             running_jobs: vec![
@@ -268,9 +299,11 @@ impl App {
                     running_count: 89,
                 },
             ],
+            orphaned_jobs: Vec::new(),
             job_counts: JobCounts {
                 pending: 5808,
                 running: 145,
+                orphaned: 0,
                 completed: 4291, // 847 executed + 3444 cached
                 failed: 3,
                 skipped: 0,
@@ -304,11 +337,23 @@ impl App {
     /// Reads job counts, active sessions, running job details, and
     /// pipeline stats from `db`.  Called periodically by the main loop.
     pub fn refresh_from_db(&mut self, db: &StateDb) -> Result<()> {
+        let now_secs = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        // One read-side derivation for every panel (ADR-012): a `running`
+        // row counts as running only while its session is `active` with a
+        // heartbeat younger than the lease.  `ox top` is a reader — it
+        // reports orphans, it never reclaims them.
+        let views = db.job_views(None, now_secs, lease_secs_from_env())?;
+
         // Job counts
-        let counts = db.job_counts()?;
+        let counts = ox_state::effective::EffectiveCounts::from_views(&views);
         self.job_counts = JobCounts {
             pending: counts.pending,
             running: counts.running,
+            orphaned: counts.orphaned,
             completed: counts.completed,
             failed: counts.failed,
             skipped: counts.skipped,
@@ -334,40 +379,64 @@ impl App {
             })
             .collect();
 
-        // Running jobs detail
-        let now_secs = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-        let running_details = db.running_jobs_detail()?;
-        self.running_jobs = running_details
+        // Running jobs detail — genuinely in flight only.
+        let age = |v: &JobView| {
+            v.started_at
+                .map(|t| Duration::from_secs(now_secs.saturating_sub(t)))
+                .unwrap_or(Duration::ZERO)
+        };
+        self.running_jobs = views
             .iter()
-            .map(|detail| {
-                let duration = detail
-                    .started_at
-                    .map(|t| Duration::from_secs(now_secs.saturating_sub(t)))
-                    .unwrap_or(Duration::ZERO);
-                RunningJob {
-                    id: detail.id.clone(),
-                    rule: detail.rule_name.clone(),
-                    wildcards: detail.wildcards.clone(),
-                    duration,
-                    resources: String::new(),
-                }
+            .filter(|v| v.effective.is_running())
+            .map(|v| RunningJob {
+                id: v.id.clone(),
+                rule: v.rule_name.clone(),
+                wildcards: v.wildcards.clone(),
+                duration: age(v),
+                resources: String::new(),
             })
             .collect();
 
-        // Pipeline stats (per-rule aggregation)
-        let stats = db.pipeline_stats()?;
-        self.pipeline_stats = stats
-            .into_iter()
-            .map(|s| StageStats {
-                name: s.rule_name,
-                completed: s.completed,
-                total: s.total,
-                running: s.running,
+        // Orphaned rows: shown apart, never as work in progress.
+        self.orphaned_jobs = views
+            .iter()
+            .filter(|v| v.effective.is_orphaned())
+            .map(|v| OrphanedJob {
+                id: v.id.clone(),
+                rule: v.rule_name.clone(),
+                age: age(v),
+                reason: v
+                    .effective
+                    .orphan_reason()
+                    .map(|r| r.describe())
+                    .unwrap_or("unknown"),
             })
             .collect();
+
+        // Pipeline stats (per-rule aggregation), from the same views.
+        let mut by_rule: std::collections::BTreeMap<String, StageStats> =
+            std::collections::BTreeMap::new();
+        for v in &views {
+            let entry = by_rule
+                .entry(v.rule_name.clone())
+                .or_insert_with(|| StageStats {
+                    name: v.rule_name.clone(),
+                    completed: 0,
+                    total: 0,
+                    running: 0,
+                    orphaned: 0,
+                });
+            entry.total += 1;
+            match &v.effective {
+                EffectiveStatus::Completed | EffectiveStatus::Failed | EffectiveStatus::Skipped => {
+                    entry.completed += 1
+                }
+                EffectiveStatus::Running => entry.running += 1,
+                EffectiveStatus::Orphaned { .. } => entry.orphaned += 1,
+                _ => {}
+            }
+        }
+        self.pipeline_stats = by_rule.into_values().collect();
 
         Ok(())
     }
@@ -552,6 +621,7 @@ mod tests {
             completed: 3,
             total: 3,
             running: 0,
+            orphaned: 0,
         };
         assert!((s.progress_fraction() - 1.0).abs() < f64::EPSILON);
         assert_eq!(s.status_label(), "done");
@@ -561,6 +631,7 @@ mod tests {
             completed: 50,
             total: 100,
             running: 10,
+            orphaned: 0,
         };
         assert!((s2.progress_fraction() - 0.5).abs() < f64::EPSILON);
         assert_eq!(s2.status_label(), "10 running");
@@ -570,6 +641,7 @@ mod tests {
             completed: 0,
             total: 100,
             running: 0,
+            orphaned: 0,
         };
         assert_eq!(s3.status_label(), "waiting");
     }
@@ -579,6 +651,7 @@ mod tests {
         let c = JobCounts {
             pending: 10,
             running: 2,
+            orphaned: 0,
             completed: 8, // 5 executed + 3 cached
             failed: 1,
             skipped: 0,
@@ -595,6 +668,55 @@ mod tests {
         let c = JobCounts::default();
         assert_eq!(c.total(), 0);
         assert!((c.progress_fraction() - 0.0).abs() < f64::EPSILON);
+    }
+
+    /// #5: a `running` row left by an interrupted session must leave the
+    /// Running Jobs panel and appear as an orphan instead.
+    #[test]
+    fn refresh_from_db_separates_orphaned_from_running() {
+        use ox_state::db::{JobRecord, StateDb};
+        use tempfile::NamedTempFile;
+
+        let tmp = NamedTempFile::new().unwrap();
+        let db = StateDb::open(tmp.path()).unwrap();
+        let sid = db.create_session(42, "test-host", None).unwrap();
+        db.register_jobs(&[JobRecord {
+            id: "build/a".into(),
+            rule_name: "build".into(),
+            wildcards: "{}".into(),
+            cache_key: None,
+            run_id: None,
+        }])
+        .unwrap();
+        db.claim_job("build/a", &sid).unwrap();
+
+        let mut app = App::new();
+        app.refresh_from_db(&db).unwrap();
+        assert_eq!(app.job_counts.running, 1);
+        assert_eq!(app.job_counts.orphaned, 0);
+        assert_eq!(app.running_jobs.len(), 1);
+
+        db.interrupt_session(&sid).unwrap();
+        app.refresh_from_db(&db).unwrap();
+
+        assert_eq!(app.job_counts.running, 0);
+        assert_eq!(app.job_counts.orphaned, 1);
+        assert!(app.running_jobs.is_empty());
+        assert_eq!(app.orphaned_jobs.len(), 1);
+        assert_eq!(app.orphaned_jobs[0].id, "build/a");
+        assert_eq!(
+            app.orphaned_jobs[0].reason,
+            "owning session was interrupted"
+        );
+        assert_eq!(app.pipeline_stats[0].orphaned, 1);
+        assert_eq!(app.pipeline_stats[0].running, 0);
+        assert_eq!(app.pipeline_stats[0].status_label(), "1 orphaned");
+
+        // `ox top` is a reader: the ledger row is untouched.
+        assert_eq!(
+            db.job_status("build/a").unwrap().as_deref(),
+            Some("running")
+        );
     }
 
     #[test]

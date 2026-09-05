@@ -146,27 +146,51 @@ fn render_running_jobs(frame: &mut Frame, app: &App, area: Rect) {
     let is_selected = app.selected_panel == Panel::RunningJobs;
     let border_style = panel_border_style(is_selected);
 
+    // Orphaned rows are declared `running` in the ledger but nobody is
+    // executing them; they are titled and styled apart so the panel never
+    // presents abandoned work as progress.
+    let title = if app.orphaned_jobs.is_empty() {
+        format!(" Running Jobs ({}) ", app.running_jobs.len())
+    } else {
+        format!(
+            " Running Jobs ({}) | {} orphaned ",
+            app.running_jobs.len(),
+            app.orphaned_jobs.len()
+        )
+    };
     let block = Block::default()
-        .title(format!(" Running Jobs ({}) ", app.running_jobs.len()))
+        .title(title)
         .borders(Borders::ALL)
         .border_style(border_style);
 
-    let rows: Vec<Row> = app
+    let mut rows: Vec<Row> = app
         .running_jobs
         .iter()
         .map(|job| {
             Row::new(vec![
                 Cell::from(job.id.clone()),
                 Cell::from(fmt_duration(job.duration)),
+                Cell::from("running"),
                 Cell::from(job.resources.clone()),
             ])
         })
         .collect();
 
+    rows.extend(app.orphaned_jobs.iter().map(|job| {
+        let dim = Style::default().fg(DIMMED);
+        Row::new(vec![
+            Cell::from(Span::styled(job.id.clone(), dim)),
+            Cell::from(Span::styled(fmt_duration(job.age), dim)),
+            Cell::from(Span::styled("orphaned", Style::default().fg(FAILURE))),
+            Cell::from(Span::styled(job.reason, dim)),
+        ])
+    }));
+
     let widths = [
         Constraint::Min(30),
         Constraint::Length(10),
-        Constraint::Length(16),
+        Constraint::Length(10),
+        Constraint::Length(34),
     ];
 
     let table = Table::new(rows, widths).block(block);
