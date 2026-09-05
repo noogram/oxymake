@@ -21,6 +21,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   per-output-path `flock` locks of #2 stay as defence in depth; the
   `ConcurrentExecution` error is only reached when a reclaimed job's
   orphaned shell is still writing (#3).
+
+### Fixed
+- A waiting session no longer takes over a live peer's job on a stale
+  observation: the reclaim of a dead session's running jobs is one
+  `state.db` transaction guarded by the peer's *current* heartbeat
+  (`StateDb::reclaim_stale_jobs_if_stale`), so a heartbeat landing between
+  the waiter's read and its reclaim keeps the owner's rows and session
+  intact. Previously the two steps were separate and both sessions could
+  end up executing the job (#3, round-1 QA finding 1). `ox clean` uses the
+  same guarded reclaim.
 - A run that stops waiting on a peer (Ctrl+C) no longer cancels the
   peer's running job in `state.db`; it records its own session as
   `interrupted` at the first signal and closes the session at exit (#3).

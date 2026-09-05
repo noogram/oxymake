@@ -273,8 +273,15 @@ pub fn cmd_clean(args: CleanArgs) -> Result<()> {
 
             // Reclaim stale sessions
             let stale = db.find_stale_sessions(300)?;
+            let cutoff = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs()
+                .saturating_sub(300);
             for session_id in &stale {
-                let reclaimed = db.reclaim_stale_jobs(session_id)?;
+                // Re-checked inside the transaction: a session that
+                // heartbeated since `find_stale_sessions` keeps its jobs.
+                let reclaimed = db.reclaim_stale_jobs_if_stale(session_id, cutoff)?;
                 if reclaimed > 0 && !args.json {
                     println!("  Reclaimed {reclaimed} jobs from stale session {session_id}");
                 }

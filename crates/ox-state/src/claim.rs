@@ -13,8 +13,11 @@
 //! younger than the lease (`lease_secs`). `ox run` heartbeats every third of
 //! the lease; a session that stops heartbeating — `kill -9`, power loss —
 //! goes stale after one lease and its `running` rows are reclaimed by the
-//! first peer that looks at them ([`StateDb::reclaim_stale_jobs`], the same
-//! reclaim `ox clean` uses). There is exactly one lease, the heartbeat one.
+//! first peer that looks at them ([`StateDb::reclaim_stale_jobs_if_stale`],
+//! the same reclaim `ox clean` uses). The reclaim re-checks the heartbeat
+//! inside its own transaction: what a peer *observed* only decides whether
+//! to try, the row's heartbeat at write time decides whether it happens.
+//! There is exactly one lease, the heartbeat one.
 //!
 //! # What a losing session sees
 //!
@@ -149,6 +152,12 @@ impl StateDb {
     /// owned by a live session, `pending` rows and (unless `reset_completed`)
     /// `completed` rows are left alone. Returns whether the row is now
     /// `pending`.
+    ///
+    /// `row` is what the caller *observed*; the decision to reclaim is
+    /// taken again inside the reclaim transaction on the current heartbeat
+    /// ([`StateDb::reclaim_stale_jobs_if_stale`]), so an owner that
+    /// heartbeated between the observation and this call keeps its rows
+    /// and this returns `false`.
     fn release_if_owner_dead(
         &self,
         job_id: &str,
@@ -162,8 +171,8 @@ impl StateDb {
             _ if row.owner_live(lease_secs, now) => Ok(false),
             "running" => match &row.session_id {
                 Some(owner) => {
-                    self.reclaim_stale_jobs(owner)?;
-                    Ok(true)
+                    let cutoff = now.saturating_sub(lease_secs);
+                    Ok(self.reclaim_stale_jobs_if_stale(owner, cutoff)? > 0)
                 }
                 None => self.reset_job_row(job_id, row),
             },
@@ -525,6 +534,84 @@ mod tests {
         // is rejected by the zombie guard.
         assert!(db.active_sessions().unwrap().iter().all(|s| s.id != s1));
         assert!(!db.complete_job("j", &s1, 0, "").unwrap());
+    }
+
+    #[test]
+    fn heartbeat_between_observation_and_reclaim_keeps_the_live_owner() {
+        // Round-1 QA finding 1 (issue #3): the waiter observes a stale
+        // heartbeat, then the owner heartbeats, then the waiter reclaims.
+        // The reclaim must decide on the row's own heartbeat inside its
+        // transaction, so the now-live owner keeps its running rows.
+        let (tmp, owner_db) = db_with_job("j");
+        let waiter_db = StateDb::open(tmp.path()).unwrap();
+        let s1 = owner_db.create_session(1, "h", None).unwrap();
+        let s2 = owner_db.create_session(2, "h", None).unwrap();
+        owner_db.claim_job_for_session("j", &s1, LEASE).unwrap();
+        age_heartbeat(&owner_db, &s1, LEASE + 5);
+
+        // The waiter reads the row: the owner looks dead.
+        let observed = waiter_db.job_row("j").unwrap().unwrap();
+        assert!(!observed.owner_live(LEASE, unix_now()));
+
+        // The owner's heartbeat lands before the waiter acts on what it saw.
+        owner_db.heartbeat(&s1).unwrap();
+
+        // The reclaim must not go through on the stale observation.
+        assert!(
+            !waiter_db
+                .release_if_owner_dead("j", &observed, LEASE, false)
+                .unwrap()
+        );
+        assert_eq!(
+            waiter_db.claim_job_for_session("j", &s2, LEASE).unwrap(),
+            ClaimOutcome::Lost {
+                owner: Some(s1.clone())
+            }
+        );
+        assert_eq!(
+            owner_db.job_status("j").unwrap().as_deref(),
+            Some("running")
+        );
+        assert!(
+            owner_db
+                .active_sessions()
+                .unwrap()
+                .iter()
+                .any(|s| s.id == s1)
+        );
+        // The owner's terminal write still lands.
+        assert!(owner_db.complete_job("j", &s1, 0, "").unwrap());
+    }
+
+    #[test]
+    fn reclaim_if_stale_decides_on_the_row_heartbeat_in_one_transaction() {
+        let (_tmp, db) = db_with_job("j");
+        let s1 = db.create_session(1, "h", None).unwrap();
+        db.claim_job_for_session("j", &s1, LEASE).unwrap();
+        let now = unix_now();
+
+        // Live owner (heartbeat younger than the cutoff): nothing happens.
+        assert_eq!(db.reclaim_stale_jobs_if_stale(&s1, now - LEASE).unwrap(), 0);
+        assert_eq!(db.job_status("j").unwrap().as_deref(), Some("running"));
+        assert_eq!(db.active_sessions().unwrap().len(), 1);
+
+        // Stale owner: the row and the session flip together.
+        age_heartbeat(&db, &s1, LEASE);
+        assert_eq!(db.reclaim_stale_jobs_if_stale(&s1, now - LEASE).unwrap(), 1);
+        assert_eq!(db.job_status("j").unwrap().as_deref(), Some("pending"));
+        assert!(db.active_sessions().unwrap().is_empty());
+
+        // A session that already closed itself is not live either: its
+        // leftover running rows are reclaimable regardless of heartbeat.
+        let s2 = db.create_session(2, "h", None).unwrap();
+        db.claim_job_for_session("j", &s2, LEASE).unwrap();
+        db.interrupt_session(&s2).unwrap();
+        assert_eq!(
+            db.reclaim_stale_jobs_if_stale(&s2, unix_now() - LEASE)
+                .unwrap(),
+            1
+        );
+        assert_eq!(db.job_status("j").unwrap().as_deref(), Some("pending"));
     }
 
     #[test]

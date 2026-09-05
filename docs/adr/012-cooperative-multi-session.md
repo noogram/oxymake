@@ -110,9 +110,14 @@ pattern as `GateCheck`: the trait lives in `ox-core`, the implementation
 - **Lease.** `ox run` heartbeats its session every third of the lease
   (default 90 s, `OX_SESSION_LEASE_SECS` overrides). When the owner's
   heartbeat goes stale the waiting session reclaims its running jobs with
-  the existing `reclaim_stale_jobs` — there is exactly one lease — and the
+  `reclaim_stale_jobs_if_stale` — there is exactly one lease — and the
   next claim wins: a session killed with `kill -9` mid-job is replaced by
-  its waiter after at most one lease. If the killed session's orphaned job
+  its waiter after at most one lease. The reclaim is one SQLite
+  transaction whose `UPDATE`s are guarded by the owner's *current*
+  heartbeat (`heartbeat_at <= now - lease`), not by the heartbeat the
+  waiter read earlier: an owner that heartbeats between the waiter's read
+  and the reclaim keeps its rows and the waiter keeps waiting, so a live
+  owner is never interrupted by a stale observation. If the killed session's orphaned job
   shell is still writing at that moment, the output-path locks below make
   the replacement fail closed rather than commit next to it.
 - **Old rows.** `register_jobs` keeps existing statuses, so after
