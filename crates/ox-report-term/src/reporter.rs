@@ -633,8 +633,11 @@ impl Reporter for TermReporter {
                     self.eprintln(&format!("    {}", root_cause));
                 }
 
-                Event::ExecutorMessage { message, .. } => {
-                    if self.verbosity >= 2 {
+                Event::ExecutorMessage { message, executor } => {
+                    // The scheduler speaks rarely and about this run's
+                    // progress (a job deferred to a peer session, ADR-012):
+                    // always shown. Executor chatter stays behind -vv.
+                    if self.verbosity >= 2 || executor == "scheduler" {
                         self.eprintln(&format!(
                             "  {} {}",
                             self.theme.command.apply_to("\u{25b8}"),

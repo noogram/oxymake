@@ -1496,6 +1496,13 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
     } else {
         None
     };
+    // Lease of this session's claims: a session whose heartbeat is older
+    // than this is dead to its peers and its running jobs are reclaimed.
+    let lease_secs = std::env::var(ox_state::claim::LEASE_ENV_VAR)
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .filter(|secs| *secs > 0)
+        .unwrap_or(ox_state::claim::DEFAULT_LEASE_SECS);
 
     timer.mark("state_db_open");
 
@@ -1529,6 +1536,14 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
             .collect();
         let _ = db.register_jobs(&records);
 
+        // Rows left behind by sessions that are no longer live (yesterday's
+        // run, a crashed peer) are reset so this run re-evaluates them;
+        // rows owned by a live peer are kept for the claim protocol (ADR-012).
+        let ids: Vec<String> = records.iter().map(|r| r.id.clone()).collect();
+        if let Err(e) = db.reset_inactive_job_rows(&ids, lease_secs) {
+            eprintln!("warning: could not reset stale job rows in state.db: {e}");
+        }
+
         // Persist job-to-job edges for DAG visualization.
         let edge_records: Vec<(String, String)> = job_graph
             .job_edges()
@@ -1561,6 +1576,30 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
         )))
     } else {
         None
+    };
+
+    // Job claimer: the cooperative claim protocol (ADR-012) as the scheduling
+    // gate. Every job is claimed in state.db before dispatch; a claim lost to
+    // a live peer makes this session wait for the peer's result instead of
+    // executing the job a second time. Without a session there is nothing to
+    // coordinate through, and the scheduler runs uncoordinated (the local
+    // executor's output-path locks still fail closed).
+    let job_claimer: Option<Arc<dyn ox_core::traits::claim::JobClaim>> = match &session_id {
+        Some(sid) => match ox_state::db::StateDb::open(&state_db_path) {
+            Ok(db) => Some(Arc::new(ox_state::claim::StateJobClaimer::new(
+                db,
+                sid.clone(),
+                lease_secs,
+            ))),
+            Err(e) => {
+                eprintln!(
+                    "warning: state database unavailable for job claims ({e}); \
+                     concurrent sessions are not coordinated"
+                );
+                None
+            }
+        },
+        None => None,
     };
 
     // Build the cache checker for the scheduler (dynamic cache checking).
@@ -1606,6 +1645,28 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
         // scheduler completes, ensuring all in-flight events are drained
         // before the process exits (hq-28pdh).
         let mut bridge_handles: Vec<tokio::task::JoinHandle<()>> = Vec::new();
+
+        // Heartbeat: keeps this session's claims alive for its peers. Stops
+        // when the scheduler returns (aborted below); a session killed
+        // outright stops heartbeating and its jobs are reclaimed by the
+        // first peer that finds the heartbeat older than the lease.
+        let heartbeat_handle = session_id.as_ref().map(|sid| {
+            let sid = sid.clone();
+            let db_path = state_db_path.clone();
+            let period = ox_state::claim::heartbeat_interval(lease_secs);
+            tokio::spawn(async move {
+                let db = match ox_state::db::StateDb::open(&db_path) {
+                    Ok(db) => db,
+                    Err(_) => return,
+                };
+                let mut ticker = tokio::time::interval(period);
+                ticker.tick().await; // first tick fires immediately; the session row is fresh
+                loop {
+                    ticker.tick().await;
+                    let _ = db.heartbeat(&sid);
+                }
+            })
+        });
 
         // Always persist events to the log file for `ox subscribe`.
         {
@@ -1747,7 +1808,10 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
                                 let _ = db.skip_job(job_id.as_str());
                             }
                             Event::JobCancelled { ref job_id, .. } => {
-                                let _ = db.cancel_job_ids(&[job_id.to_string()]);
+                                // Never cancel a row a live peer is executing:
+                                // a job this session only waited for stays the
+                                // peer's (ADR-012).
+                                let _ = db.cancel_job_ids_for_session(&[job_id.to_string()], &sid);
                             }
                             _ => {}
                         },
@@ -1767,6 +1831,8 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
         // orphaned (B8). A second signal force-exits.
         {
             let shutdown = shutdown.clone();
+            let interrupted_session = session_id.clone();
+            let db_path = state_db_path.clone();
             tokio::spawn(async move {
                 #[cfg(unix)]
                 let mut sigterm =
@@ -1776,6 +1842,15 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
 
                 // First signal: graceful shutdown.
                 wait_for_shutdown_signal(&mut sigterm).await;
+                // Record the interruption before any job is terminalized, so
+                // a peer waiting on one of our jobs reads the failure that
+                // follows as an interrupted session's leftover (re-run it)
+                // rather than a verdict to mirror (ADR-012).
+                if let Some(sid) = &interrupted_session {
+                    if let Ok(db) = ox_state::db::StateDb::open(&db_path) {
+                        let _ = db.interrupt_session(sid);
+                    }
+                }
                 // Clear progress bars so the message is visible.
                 if let Some(ref multi) = progress_multi {
                     let _ = multi.clear();
@@ -1834,7 +1909,7 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
                     executor = executor.with_worker_pool(pool);
                 }
                 let bench_sink: Option<Arc<dyn BenchmarkSink>> = Some(Arc::new(FsBenchmarkSink));
-                scheduler::run_scheduler_with_cache(
+                scheduler::run_scheduler_with_claims(
                     &job_graph,
                     Arc::new(executor),
                     &scheduler_config,
@@ -1845,6 +1920,7 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
                     bench_sink,
                     Some(shutdown.clone()),
                     disk_writer_handle.clone(),
+                    job_claimer.clone(),
                 )
                 .await
             }
@@ -2222,6 +2298,12 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
             }
         }
 
+        // The scheduler has returned: this session holds no live claims any
+        // more, stop heartbeating.
+        if let Some(handle) = heartbeat_handle {
+            handle.abort();
+        }
+
         // Drop the event bus sender so all bridge receivers see `Closed`
         // and drain their remaining events before we exit (hq-28pdh).
         drop(event_bus);
@@ -2272,6 +2354,13 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
         // The jobs table already has rule_name, wildcards, status, timing,
         // and exit_code — no need to iterate the in-memory job graph.
         let _ = db.finalize_job_history(&run_id, &args.executor, "localhost", &durations);
+
+        // Close the session (a session interrupted by a signal keeps that
+        // status): its terminal rows are then history to the next run,
+        // which re-evaluates them instead of consuming them as a peer's.
+        if let Some(sid) = &session_id {
+            let _ = db.complete_session(sid);
+        }
     }
 
     // -----------------------------------------------------------------------
