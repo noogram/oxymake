@@ -89,6 +89,36 @@ fn snapshot_rusage_children() -> Option<RusageSnapshot> {
     })
 }
 
+/// Arrange for the child to inherit `fds` across `exec`.
+///
+/// Rust opens every file with `CLOEXEC`, so a plain spawn would close the
+/// lock descriptors in the child. The duplicates are made in the child
+/// only (after `fork`, before `exec`), so no other concurrently spawned
+/// child — for another job of the same session — ever inherits them.
+#[cfg(unix)]
+fn inherit_descriptors(cmd: &mut Command, fds: &[i32]) {
+    if fds.is_empty() {
+        return;
+    }
+    let fds: Vec<i32> = fds.to_vec();
+    // SAFETY: the closure runs in the forked child before `exec` and calls
+    // only `dup(2)`, which is async-signal-safe; it touches no heap or
+    // lock state of the parent beyond reading the moved `fds` vector, and
+    // reports failure through the returned `io::Error` instead of panicking.
+    unsafe {
+        cmd.pre_exec(move || {
+            for &fd in &fds {
+                // `dup` clears FD_CLOEXEC on the new descriptor, which is
+                // exactly what makes it survive `exec`.
+                if libc::dup(fd) == -1 {
+                    return Err(std::io::Error::last_os_error());
+                }
+            }
+            Ok(())
+        });
+    }
+}
+
 /// Spawn a shell command and capture its combined stdout/stderr to a log file.
 ///
 /// The command is executed via `<shell> -c "<command>"` where `<shell>` defaults
@@ -124,6 +154,7 @@ pub async fn spawn_shell(
         timeout,
         env_vars,
         shell,
+        &[],
         |_| {},
     )
     .await
@@ -132,6 +163,15 @@ pub async fn spawn_shell(
 /// Like [`spawn_shell`], but calls `on_spawn` with the child's PID immediately
 /// after the process is created.  This allows the caller to track the PID for
 /// cancellation before the process completes.
+///
+/// `inherit_fds` are open descriptors of the calling process that the child
+/// must keep open: after `fork`, and only in the child, each is duplicated
+/// without `CLOEXEC` so the child holds its own reference to the same open
+/// file description across `exec`. The local executor passes its output-path
+/// lock descriptors here, so an advisory `flock(2)` taken by the session
+/// stays held while the job runs even if the session itself is killed
+/// (issue #2, round-3 finding 1). Ignored on non-Unix targets.
+#[allow(clippy::too_many_arguments)]
 pub async fn spawn_shell_with_callback(
     command: &str,
     work_dir: &Path,
@@ -139,6 +179,7 @@ pub async fn spawn_shell_with_callback(
     timeout: Option<Duration>,
     env_vars: &[(String, String)],
     shell: &str,
+    inherit_fds: &[i32],
     on_spawn: impl FnOnce(u32),
 ) -> Result<ProcessResult, ExecLocalError> {
     let start = Instant::now();
@@ -160,6 +201,8 @@ pub async fn spawn_shell_with_callback(
     // cancellation.  process_group(0) sets PGID = child PID.
     #[cfg(unix)]
     cmd.process_group(0);
+    #[cfg(unix)]
+    inherit_descriptors(&mut cmd, inherit_fds);
 
     for (key, value) in env_vars {
         cmd.env(key, value);
@@ -307,7 +350,8 @@ pub async fn spawn_shell_with_callback(
 /// channel in real-time.  Each line from stdout/stderr is sent as an
 /// [`OutputLine`] to the provided sender, enabling live progress display.
 ///
-/// The log file is still written in the same format as [`spawn_shell`].
+/// The log file is still written in the same format as [`spawn_shell`];
+/// `inherit_fds` behaves as in [`spawn_shell_with_callback`].
 #[allow(clippy::too_many_arguments)]
 pub async fn spawn_shell_streaming(
     command: &str,
@@ -316,6 +360,7 @@ pub async fn spawn_shell_streaming(
     timeout: Option<Duration>,
     env_vars: &[(String, String)],
     shell: &str,
+    inherit_fds: &[i32],
     on_spawn: impl FnOnce(u32),
     output_tx: mpsc::UnboundedSender<OutputLine>,
 ) -> Result<ProcessResult, ExecLocalError> {
@@ -334,6 +379,8 @@ pub async fn spawn_shell_streaming(
 
     #[cfg(unix)]
     cmd.process_group(0);
+    #[cfg(unix)]
+    inherit_descriptors(&mut cmd, inherit_fds);
 
     for (key, value) in env_vars {
         cmd.env(key, value);

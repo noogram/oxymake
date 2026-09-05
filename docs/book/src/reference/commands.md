@@ -161,12 +161,24 @@ Rules of the gate ledger:
   The cooperative claim protocol of `state.db` (ADR-012) is not yet the
   scheduling gate, so approving both ids makes both sessions try to run the
   job. Rather than let two executions interleave and commit a mixed output
-  set, the local executor takes an exclusive lock on the job's output set:
-  the session that wins it executes and commits, and the other aborts that
-  job with an error (exit status 1) that names the holding session's PID
-  (`job '<id>' is already being executed by another session (pid N)`). The
-  committed outputs are always one execution's set, never a mix. To run the
-  job exactly once, approve one id and reject the other.
+  set, the local executor takes an exclusive `flock(2)` lock on **each
+  output path** of the job (under `.oxymake/locks/`) before it touches any
+  file, and holds them until the outputs are committed. Two jobs contend as
+  soon as their output sets overlap, whatever the spelling of the path
+  (symlinked directories are resolved). The session that wins executes and
+  commits; the other aborts that job with an error (exit status 1) naming
+  the holder and the locked path (`job '<id>' is already being executed by
+  another session (pid N): output '<path>' is locked`). The job's own
+  subprocess inherits the locks, so a session killed mid-job (`kill -9`)
+  does not free them while its orphaned job is still writing: a replacement
+  run fails closed in the same way, naming the exited session, until that
+  job exits. To run the job exactly once, approve one id and reject the
+  other. **Scope of the guarantee:** it holds on local filesystems with a
+  working `flock(2)`. On NFS and other distributed filesystems the lock may
+  not be visible between hosts, and `ox` cannot detect that; sessions on
+  different hosts sharing such a directory are not protected. On platforms
+  without `flock` (non-Unix) a job with file outputs is refused rather than
+  run unprotected.
 - **`after` adds no dependency edge.** A gate is evaluated once a guarded
   job's own inputs are ready, so list in `after` rules that are upstream of
   the `before` rules through the DAG.

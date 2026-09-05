@@ -49,12 +49,15 @@ pool and can be claimed by any active session.
 ## Consequences
 
 **Easier:**
-- Zero external dependencies: no lock files, no lock servers, no ZooKeeper.
-  SQLite is the only coordination primitive.
+- No lock servers, no ZooKeeper: SQLite is the coordination primitive for
+  *claiming* jobs. (Until the claim is the scheduling gate, the local
+  executor additionally uses per-output-path `flock` files under
+  `.oxymake/locks/` — see *Known limitation* below.)
 - Crash recovery is automatic: stale heartbeat → reclaim. No manual cleanup
   required.
-- Works correctly on NFS/network filesystems where SQLite WAL is supported
-  (same guarantees as local disk).
+- The claim protocol works on NFS/network filesystems where SQLite WAL is
+  supported (same guarantees as local disk). The interim output-path locks
+  do **not** carry that guarantee (see below).
 - Session identity includes UUIDv4 suffix, preventing PID-reuse collisions.
 
 **Harder:**
@@ -82,27 +85,57 @@ that is unsound for a non-deterministic or multi-output job and has been
 reverted.
 
 The local executor now **fails closed** instead: `prepare_workspace` takes an
-exclusive, non-blocking advisory lock (`flock`) over the job's output set
-before touching any file, held until `finalize_workspace` commits. The
-session that wins the lock is the only one that executes and commits; a
-concurrent session that does not win it aborts that job with
-`ExecLocalError::ConcurrentExecution` (exit status 1), naming the holder's
-PID, without disturbing the winner's outputs. Under no circumstance do two
-physical executions contribute files to one committed set. The lock is tied
-to an open file description, so the kernel releases it if a session crashes.
+exclusive, non-blocking advisory lock (`flock`) on **each output path** of
+the job before touching any file, and holds them until `finalize_workspace`
+commits. Locks are taken in globally sorted order of the path's key so two
+sessions can never deadlock; on the first contended path the session
+releases what it took and aborts that job with
+`ExecLocalError::ConcurrentExecution` (exit status 1), naming the holder and
+the locked path, without disturbing the winner's outputs. Because the lock
+is per path, two jobs contend as soon as their output sets *intersect*, not
+only when they are equal; and the key is derived from the canonicalised
+deepest existing ancestor of the path, so two spellings of one file through
+a symlinked directory contend too (round-3 finding 2).
+
+Each lock is tied to an open file description, so the kernel releases it
+when the last descriptor closes — a crashed session leaves no stale lock.
+The job subprocess inherits a duplicate of every lock descriptor (made in
+the child only, after `fork`), so a session killed with `SIGKILL` mid-job
+does **not** release the locks while its orphaned job shell can still write
+the final paths: a replacement run fails closed, naming the exited session,
+until that job exits (round-3 finding 1). The lock files live under
+`.oxymake/locks/` and are inert once unlocked; they are never a stale
+marker.
+
+**Scope of the guarantee.** On a local filesystem with a working `flock(2)`,
+two physical executions never contribute files to one committed set. On
+NFS and other distributed filesystems `flock` may not be mutually visible
+between hosts (or may be emulated per host), and the executor cannot detect
+that; sessions on *different hosts* sharing such a directory are not
+protected by these locks (the claim protocol above still is, once it gates
+scheduling). On targets without `flock` (non-Unix) the executor refuses to
+run a job with file outputs (`ExecLocalError::LockUnsupported`) rather than
+pretend the lock is held (round-3 finding 3).
 
 This is conservative: the losing session fails its run rather than sharing
 the work. The complete fix is to make `claim_job` the scheduling gate so the
 scheduler defers to the owning session before dispatch (the loser then waits
-for and consumes the peer's terminal state instead of re-running). That is
-the open follow-up.
+for and consumes the peer's terminal state instead of re-running); the
+output-path locks then become a defence in depth rather than the guarantee.
+That is the open follow-up.
 
 ## Alternatives Considered
 
-**File-based advisory locks (flock/fcntl)**: One lock file per job. Simple but
-doesn't survive crashes cleanly (lock held by dead process until OS cleans up),
-doesn't work reliably on all NFS implementations, and scales poorly with job
-count. Rejected.
+**File-based advisory locks (flock/fcntl) as the coordination primitive**:
+One lock file per job for *claiming* work. Doesn't work reliably on all NFS
+implementations and scales poorly with job count, so it was rejected as the
+*claim* mechanism in favour of SQLite. (The concern that a crashed holder
+strands the lock does not apply to `flock`, which the kernel releases with
+the last descriptor.) The per-output-path `flock` of the *Known limitation*
+above is not a reversal of this decision: it is a local-filesystem
+fail-closed guard against the one race the unfinished claim protocol still
+allows, explicitly scoped to hosts with a working `flock`, and it is meant
+to become defence in depth once the claim gates scheduling.
 
 **Postgres/distributed database**: Full MVCC, row-level locking, LISTEN/NOTIFY
 for real-time coordination. Far more capable but introduces an external

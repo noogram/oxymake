@@ -82,11 +82,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   release had the losing session *adopt* its peer's committed outputs, which
   for a non-deterministic or multi-output rule could commit a set mixing
   files from two physical executions and report success. That adoption is
-  reverted. The local executor now fails closed: it takes an exclusive lock
-  on the job's output set, so the session that wins it executes and commits
-  while a concurrent session aborts that job with an error naming the holding
-  session's PID (`already being executed by another session`). The committed
-  set is always one execution's outputs, never a mix (#2).
+  reverted. The local executor now fails closed: it takes an exclusive
+  `flock(2)` lock on **each output path** of the job (under
+  `.oxymake/locks/`), so the session that wins executes and commits while a
+  concurrent session aborts that job with an error naming the holder and the
+  locked path (`already being executed by another session (pid N): output
+  '<path>' is locked`). Jobs contend as soon as their output sets overlap,
+  including through a symlinked directory. The job's subprocess inherits the
+  locks, so a session killed mid-job (`kill -9`) does not free them while
+  its orphaned job can still write: a replacement run fails closed, naming
+  the exited session, until that job exits. **Scope:** the guarantee holds
+  on local filesystems with a working `flock(2)`; on NFS and other
+  distributed filesystems the lock may not be visible between hosts and `ox`
+  cannot detect that. On platforms without `flock` (non-Unix) a job with file
+  outputs is refused (`cannot lock the outputs of job`) instead of running
+  unprotected. Library users: `ox_core::traits::executor::Workspace::state`
+  borrows the private state, and `ox_exec_local::process::spawn_shell_with_callback`
+  / `spawn_shell_streaming` take an `inherit_fds` parameter (#2).
 - `ox gate reject` confirms with "rejected by", not "rejectd by".
 - The terminal progress summary now counts cancelled jobs (gate rejected,
   interrupted) as `N cancelled` instead of folding them into `N skipped`;

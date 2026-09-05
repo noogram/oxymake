@@ -42,12 +42,13 @@ const ATOMIC_TEMP_SUFFIX: &str = ".oxytmp";
 struct AtomicOutputState {
     /// Absolute paths to declared file outputs.
     output_files: Vec<PathBuf>,
-    /// Exclusive lock over this output set, held from `prepare_workspace`
+    /// Exclusive locks over every output path, held from `prepare_workspace`
     /// (before any output is touched) until `finalize_workspace` returns, so
-    /// no second session can execute the same job into the same paths. `None`
-    /// when the job declares no file outputs. Dropped with the state, which
-    /// releases the underlying `flock`.
-    _output_lock: Option<crate::lock::OutputSetLock>,
+    /// no second session can write any of the same paths. `None` when the
+    /// job declares no file outputs. Dropped with the state, which releases
+    /// the session's descriptors; the job child holds inherited duplicates
+    /// (see `execute`) so the kernel keeps each `flock` until it exits too.
+    output_locks: Option<crate::lock::OutputLocks>,
 }
 
 /// Local executor that runs jobs as subprocesses on the current machine.
@@ -686,27 +687,36 @@ impl Executor for LocalExecutor {
             }
         }
 
-        // Acquire the exclusive output-set lock BEFORE deleting any existing
-        // output or staging file. Two `ox run` sessions approved for the same
-        // gate both reach this job (the claim protocol of ADR-012 is not yet
-        // the scheduling gate); executing both into the same paths would
-        // interleave writes and commit a mixed set (issue #2). The session
-        // that does not win the lock fails closed here, before touching the
-        // filesystem, so the peer's outputs are never disturbed. The guard is
-        // stored in the workspace state and released only after
-        // `finalize_workspace` commits, so the lock spans execution + commit.
-        let output_lock = if output_files.is_empty() {
+        // Lock every output path BEFORE deleting any existing output or
+        // staging file. Two `ox run` sessions approved for the same gate both
+        // reach this job (the claim protocol of ADR-012 is not yet the
+        // scheduling gate); executing both into the same paths would
+        // interleave writes and commit a mixed set (issue #2). A session that
+        // cannot lock all of its output paths fails closed here, before
+        // touching the filesystem, so the peer's outputs are never disturbed.
+        // The guards are stored in the workspace state and released only
+        // after `finalize_workspace` commits, so the locks span execution +
+        // commit; the job child inherits duplicates in `execute`.
+        let output_locks = if output_files.is_empty() {
             None
         } else {
-            match crate::lock::OutputSetLock::acquire(&work_dir, &output_files)? {
-                Some(guard) => Some(guard),
-                None => {
-                    let lock_path = crate::lock::lock_path_for(&work_dir, &output_files);
+            use crate::lock::{Acquired, LockError, OutputLocks};
+            match OutputLocks::acquire(&work_dir, &output_files) {
+                Ok(Acquired::Held(guard)) => Some(guard),
+                Ok(Acquired::Contended { path, holder }) => {
                     return Err(ExecLocalError::ConcurrentExecution {
                         job: job.id.to_string(),
-                        holder: crate::lock::holder_pid(&lock_path),
+                        path: path.display().to_string(),
+                        holder,
                     });
                 }
+                Err(LockError::Unsupported(reason)) => {
+                    return Err(ExecLocalError::LockUnsupported {
+                        job: job.id.to_string(),
+                        reason: reason.to_string(),
+                    });
+                }
+                Err(LockError::Io(e)) => return Err(ExecLocalError::Io(e)),
             }
         };
 
@@ -778,7 +788,7 @@ impl Executor for LocalExecutor {
 
         let state = AtomicOutputState {
             output_files,
-            _output_lock: output_lock,
+            output_locks,
         };
         Ok(Workspace::with_state(work_dir, state))
     }
@@ -975,6 +985,17 @@ impl Executor for LocalExecutor {
             });
         }
 
+        // The job child inherits a duplicate of every output-path lock
+        // descriptor, so the locks taken in `prepare_workspace` stay held
+        // while the child runs even if this session is killed: a
+        // replacement session then fails closed instead of committing a set
+        // the orphaned child later overwrites (issue #2, round-3 finding 1).
+        let lock_fds: Vec<i32> = workspace
+            .state::<AtomicOutputState>()
+            .and_then(|s| s.output_locks.as_ref())
+            .map(|locks| locks.raw_fds())
+            .unwrap_or_default();
+
         // Spawn the process and track its PID for cancellation.
         let job_id_str = job.id.to_string();
         let running = Arc::clone(&self.running);
@@ -1008,6 +1029,7 @@ impl Executor for LocalExecutor {
                 job.timeout,
                 &env_vars,
                 shell,
+                &lock_fds,
                 |pid| {
                     running.lock().insert(job_id_clone, pid);
                 },
@@ -1028,6 +1050,7 @@ impl Executor for LocalExecutor {
                 job.timeout,
                 &env_vars,
                 shell,
+                &lock_fds,
                 |pid| {
                     running.lock().insert(job_id_clone, pid);
                 },
@@ -1086,8 +1109,8 @@ impl Executor for LocalExecutor {
     ///   output is visible at its final path or none are.
     ///
     /// Concurrent execution of the same job by two sessions is prevented
-    /// upstream, in `prepare_workspace`, by an exclusive output-set lock (the
-    /// `lock` module); only the lock holder reaches this point, so a rename
+    /// upstream, in `prepare_workspace`, by exclusive per-output-path locks
+    /// (the `lock` module); only the lock holder reaches this point, so a rename
     /// that fails here is a genuine error and is reported as such — this
     /// session never adopts another session's outputs.
     async fn finalize_workspace(
@@ -1692,7 +1715,7 @@ mod tests {
             work_dir,
             AtomicOutputState {
                 output_files,
-                _output_lock: None,
+                output_locks: None,
             },
         )
     }
@@ -1769,7 +1792,7 @@ mod tests {
     /// staged copy exists on disk — is a genuine error, not another
     /// session's commit to inherit. The revert of the earlier "adopt the
     /// peer's outputs" workaround is asserted here; concurrent execution is
-    /// now prevented upstream by the output-set lock, so finalisation never
+    /// now prevented upstream by the per-output-path locks, so finalisation never
     /// races a peer.
     #[tokio::test]
     async fn finalize_does_not_adopt_a_staged_but_uncommitted_output() {
