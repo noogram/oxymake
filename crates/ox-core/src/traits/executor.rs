@@ -275,6 +275,21 @@ pub trait Executor: Send + Sync + Debug {
     /// upstream failures trigger downstream cancellation.
     fn cancel(&self, job_id: &JobId) -> impl Future<Output = Result<(), Self::Error>> + Send;
 
+    /// Hard-kill a running job, unconditionally and without waiting.
+    ///
+    /// [`Executor::cancel`] asks a job to stop (SIGTERM on a local process
+    /// group); `kill` is what the scheduler escalates to when the job did
+    /// not stop within the shutdown grace period (SIGKILL). A job that
+    /// ignores its cancellation signal must not be able to hold `ox run`
+    /// open indefinitely.
+    ///
+    /// The default implementation forwards to [`Executor::cancel`], which is
+    /// correct for backends whose cancellation is already unconditional
+    /// (or whose scheduler owns the escalation itself, as SLURM and Ray do).
+    fn kill(&self, job_id: &JobId) -> impl Future<Output = Result<(), Self::Error>> + Send {
+        self.cancel(job_id)
+    }
+
     /// Poll the status of a submitted job.
     ///
     /// Used by remote executors where `execute()` returns before the

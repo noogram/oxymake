@@ -1631,7 +1631,13 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
     // Collect per-job duration_ms from events for the audit trail (ox-mnbb).
     let job_durations: Arc<Mutex<HashMap<String, u64>>> = Arc::new(Mutex::new(HashMap::new()));
 
+    // Set once the first shutdown signal is seen, so the post-scheduler
+    // finalisation knows this run was interrupted rather than merely finished
+    // with cancellations.
+    let interrupted = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let interrupted_outer = interrupted.clone();
     let result = rt.block_on(async {
+        let interrupted = interrupted_outer;
         // Set up graceful shutdown: SIGINT (Ctrl+C) notifies the scheduler
         // to send SIGTERM to running children and stop dispatching new work.
         // A second Ctrl+C force-exits (exit code 130 = 128 + SIGINT).
@@ -1833,6 +1839,7 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
             let shutdown = shutdown.clone();
             let interrupted_session = session_id.clone();
             let db_path = state_db_path.clone();
+            let interrupted = interrupted.clone();
             tokio::spawn(async move {
                 #[cfg(unix)]
                 let mut sigterm =
@@ -1842,6 +1849,7 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
 
                 // First signal: graceful shutdown.
                 wait_for_shutdown_signal(&mut sigterm).await;
+                interrupted.store(true, std::sync::atomic::Ordering::SeqCst);
                 // Record the interruption before any job is terminalized, so
                 // a peer waiting on one of our jobs reads the failure that
                 // follows as an interrupted session's leftover (re-run it)
@@ -1861,6 +1869,21 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
                 // Second signal: force-exit. Without this, tokio's signal
                 // hook swallows subsequent SIGINTs (ox-2sek).
                 wait_for_shutdown_signal(&mut sigterm).await;
+                // The ledger must not be left describing a state that no
+                // longer exists (#4): before exiting, terminalize the rows
+                // this session still holds as `running`. A handful of
+                // synchronous SQLite statements — it must not await the
+                // scheduler, which is exactly what the operator gave up on.
+                // Scoped to our own session_id: a live peer's row is never
+                // ours to terminalize (ADR-012). The session keeps the
+                // `interrupted` status written on the first signal.
+                if let Some(sid) = &interrupted_session {
+                    if let Ok(db) = ox_state::db::StateDb::open(&db_path) {
+                        if let Ok(ids) = db.running_job_ids_for_session(sid) {
+                            let _ = db.cancel_job_ids_for_session(&ids, sid);
+                        }
+                    }
+                }
                 eprintln!("\nForce exit.");
                 std::process::exit(130);
             });
@@ -2337,11 +2360,18 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
             Ok(r) => r.failed > 0,
             Err(_) => true,
         };
-        if had_failures {
-            // Scoped to this run's session: in cooperative multi-session
-            // mode another live session's running jobs are not ours to
-            // terminalize (H16).
-            if let Some(sid) = &session_id {
+        let was_interrupted = interrupted.load(std::sync::atomic::Ordering::SeqCst);
+        // Scoped to this run's session: in cooperative multi-session mode
+        // another live session's running jobs are not ours to terminalize
+        // (H16 / ADR-012).
+        if let Some(sid) = &session_id {
+            if was_interrupted {
+                // An interrupted run's leftovers are cancellations, not
+                // failures: the scheduler asked these jobs to stop (#4).
+                if let Ok(ids) = db.running_job_ids_for_session(sid) {
+                    let _ = db.cancel_job_ids_for_session(&ids, sid);
+                }
+            } else if had_failures {
                 if let Ok(running) = db.jobs_by_status("running") {
                     for job_id in &running {
                         let _ = db.fail_job(job_id.as_str(), sid, 1);
@@ -2447,6 +2477,12 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
             timer.print();
             if sched_result.failed > 0 {
                 std::process::exit(1);
+            }
+            // An interrupted run did not complete its DAG, even when every
+            // in-flight job was cancelled rather than failed: report the
+            // conventional signal exit code instead of success.
+            if interrupted.load(std::sync::atomic::Ordering::SeqCst) {
+                std::process::exit(130);
             }
             Ok(())
         }

@@ -58,10 +58,23 @@ checkout pointing at the same directory re-executes unless that local index
 is transferred too. A remote computation-key manifest that removes this
 requirement is future work. See [Caching](../concepts/cache.md).
 
+**Interruption.** The first Ctrl+C (or `SIGTERM`, which is what
+[`ox cancel`](#ox-cancel) sends) starts a graceful shutdown: the session is
+recorded `interrupted`, every in-flight job is marked `cancelled` in the
+ledger, and its process group gets `SIGTERM`. The shutdown is **bounded** —
+a job that has not exited after the grace period (default 10 s,
+`OX_SHUTDOWN_GRACE_SECS` overrides; `0` escalates immediately) is killed with
+`SIGKILL`, so a child that traps or ignores `SIGTERM` cannot hold the run
+open. A second signal force-exits with `130`, cancelling this session's
+still-running rows on the way out. Either way no row of the interrupted
+session is left `running`, and rows owned by a *concurrent* session are never
+touched (ADR-012).
+
 **Exit codes:**
 - `0` -- Success (all jobs succeeded or were cached)
 - `1` -- Runtime error or one or more jobs failed
 - `2` -- Command-line usage error
+- `130` -- Interrupted by Ctrl+C / `SIGTERM`
 
 ### `ox plan`
 
@@ -232,6 +245,11 @@ Cancel running jobs.
 ox cancel                   # Cancel all running jobs
 ox cancel stats-alice       # Cancel a specific job
 ```
+
+`ox cancel` marks the jobs cancelled in `.oxymake/state.db` and sends
+`SIGTERM` to the owning `ox run`, which handles it on the same graceful path
+as Ctrl+C — including the bounded `SIGTERM` → `SIGKILL` escalation described
+under [`ox run`](#ox-run).
 
 ### `ox top`
 

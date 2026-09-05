@@ -766,6 +766,23 @@ impl StateDb {
         Ok(cancelled)
     }
 
+    /// Return the IDs of the rows this session currently owns as `running`.
+    ///
+    /// Scoped by `session_id` on purpose: it feeds the interrupt paths, which
+    /// may only terminalize their own claims — a peer's `running` row belongs
+    /// to the peer until its own session ends (ADR-012).
+    pub fn running_job_ids_for_session(&self, session_id: &str) -> Result<Vec<String>, StateError> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id FROM jobs WHERE status = 'running' AND session_id = ?1")?;
+        let rows = stmt.query_map(rusqlite::params![session_id], |row| row.get::<_, String>(0))?;
+        let mut ids = Vec::new();
+        for row in rows {
+            ids.push(row?);
+        }
+        Ok(ids)
+    }
+
     /// Return IDs of running/pending jobs matching the given filters.
     fn cancellable_job_ids(
         &self,
