@@ -94,6 +94,7 @@ use crate::job_graph::{JobGraph, output_ref_key};
 use crate::model::*;
 use crate::traits::benchmark::BenchmarkSink;
 use crate::traits::cache::CacheCheck;
+use crate::traits::claim::{ClaimOutcome, JobClaim, PeerJobState};
 use crate::traits::executor::{ExecContext, Executor, JobResult, JobStatus};
 use crate::traits::gate::{GateCheck, GateStatus};
 
@@ -419,11 +420,6 @@ pub async fn run_scheduler<E: Executor + 'static>(
 /// `SchedulerConfig`, because it can check intermediate jobs whose inputs
 /// are produced by upstream jobs within the same run.
 #[allow(clippy::too_many_arguments)]
-#[tracing::instrument(
-    name = "scheduler.run",
-    skip_all,
-    fields(total_jobs = graph.job_count(), max_jobs = config.max_jobs),
-)]
 pub async fn run_scheduler_with_cache<E: Executor + 'static>(
     graph: &JobGraph,
     executor: Arc<E>,
@@ -435,6 +431,54 @@ pub async fn run_scheduler_with_cache<E: Executor + 'static>(
     benchmark_sink: Option<Arc<dyn BenchmarkSink>>,
     shutdown: Option<Arc<Notify>>,
     disk_writer: Option<DiskWriterHandle>,
+) -> Result<SchedulerResult, OxError> {
+    run_scheduler_with_claims(
+        graph,
+        executor,
+        config,
+        event_bus,
+        ctx,
+        cache,
+        gate_checker,
+        benchmark_sink,
+        shutdown,
+        disk_writer,
+        None,
+    )
+    .await
+}
+
+/// [`run_scheduler_with_cache`] plus the cooperative claim protocol
+/// (ADR-012, issue #3).
+///
+/// When a `claimer` is provided, every job is claimed through
+/// [`JobClaim::claim`] **before** it is dispatched. A job whose claim is lost
+/// is never launched by this session: it stays `Pending` while the scheduler
+/// polls [`JobClaim::peer_state`] every [`GATE_POLL_INTERVAL`] (observing the
+/// `shutdown` signal like a pending gate) and then consumes the owner's
+/// terminal state as its own — a peer completion promotes the downstream jobs
+/// exactly as a local success would, a peer failure or cancellation is
+/// mirrored. When the owner's lease expires the state layer reclaims the job
+/// and the poll reports it unclaimed, at which point this session claims and
+/// executes it itself.
+#[allow(clippy::too_many_arguments)]
+#[tracing::instrument(
+    name = "scheduler.run",
+    skip_all,
+    fields(total_jobs = graph.job_count(), max_jobs = config.max_jobs),
+)]
+pub async fn run_scheduler_with_claims<E: Executor + 'static>(
+    graph: &JobGraph,
+    executor: Arc<E>,
+    config: &SchedulerConfig,
+    event_bus: &EventBus,
+    ctx: &ExecContext,
+    cache: Option<Arc<dyn CacheCheck>>,
+    gate_checker: Option<Arc<dyn GateCheck>>,
+    benchmark_sink: Option<Arc<dyn BenchmarkSink>>,
+    shutdown: Option<Arc<Notify>>,
+    disk_writer: Option<DiskWriterHandle>,
+    claimer: Option<Arc<dyn JobClaim>>,
 ) -> Result<SchedulerResult, OxError> {
     let start = Instant::now();
 
@@ -542,9 +586,15 @@ pub async fn run_scheduler_with_cache<E: Executor + 'static>(
     // via `GateReached`; the poll loop revisits pending gates every
     // GATE_POLL_INTERVAL and must not re-register or re-announce them.
     let mut gates_seen = GatesSeen::default();
+    // Jobs whose claim this session lost: they are owned by a peer session
+    // and stay `Pending` (out of the ready frontier) until the peer's
+    // terminal state is consumed or the job becomes claimable again.
+    let mut peer_waits = PeerWaits::default();
 
     loop {
         // 1. Find newly ready jobs and dispatch them (unless terminating).
+        //    `skipped_this_iter` also records progress made by the peer-wait
+        //    poll below, so the loop re-runs immediately instead of sleeping.
         let mut skipped_this_iter = false;
         if !terminate_requested {
             let ready = find_ready_jobs(
@@ -593,6 +643,33 @@ pub async fn run_scheduler_with_cache<E: Executor + 'static>(
                 } else {
                     false
                 };
+
+                // Cooperative claim (ADR-012): ask the shared state whether a
+                // peer session already owns this job. A lost claim is the
+                // scheduling gate — the job is parked in `peer_waits` and this
+                // session never launches it. A cache hit needs no claim: the
+                // job is not executed here either way. The claim is idempotent
+                // per session, so a job deferred below (budget / semaphore) is
+                // simply claimed again on its next dispatch attempt.
+                if !cached {
+                    if let Some(ref claimer) = claimer {
+                        if let ClaimOutcome::Lost { owner } = claimer.claim(job_id).await {
+                            let parked = {
+                                let mut s = state.lock().await;
+                                if matches!(s.get_status(job_id), Some(JobLifecycle::Ready)) {
+                                    s.set_status(job_id.clone(), JobLifecycle::Pending);
+                                    true
+                                } else {
+                                    false // cancelled meanwhile (H6) — drop it
+                                }
+                            };
+                            if parked {
+                                peer_waits.park(job_id.clone(), owner, event_bus);
+                            }
+                            continue;
+                        }
+                    }
+                }
 
                 // Consolidated dispatch lock: force-rerun read, cache-skip
                 // resolution, budget check, semaphore acquire, resource
@@ -790,6 +867,29 @@ pub async fn run_scheduler_with_cache<E: Executor + 'static>(
                     })
                 });
             }
+
+            // 1b. Poll the jobs owned by peer sessions and consume their
+            //     terminal states (or re-queue them once unclaimed).
+            if let Some(ref claimer) = claimer {
+                if !peer_waits.is_empty() {
+                    let progressed = poll_peer_waits(
+                        &mut peer_waits,
+                        claimer.as_ref(),
+                        &state,
+                        graph,
+                        config,
+                        event_bus,
+                        ctx,
+                        &mut terminate_requested,
+                        executor.as_ref(),
+                        cache.as_ref(),
+                    )
+                    .await;
+                    if progressed {
+                        skipped_this_iter = true;
+                    }
+                }
+            }
         }
 
         // 2. Check if we're done.
@@ -845,6 +945,12 @@ pub async fn run_scheduler_with_cache<E: Executor + 'static>(
                     // Don't break — continue the loop to collect completions
                     // from the join_set so finalize_workspace can run.
                 }
+
+                // Jobs owned by a peer session are polled on the same cadence
+                // as gates even while our own jobs are in flight; otherwise a
+                // peer completion would only be noticed on our next local
+                // completion.
+                _ = tokio::time::sleep(GATE_POLL_INTERVAL), if !peer_waits.is_empty() && !terminate_requested => {}
 
                 // Normal completion path.
                 join_result = join_set.join_next() => {
@@ -1803,6 +1909,180 @@ struct GatesSeen {
     /// Gates announced as blocked because their record could not be
     /// registered with the checker.
     unregistered_announced: HashSet<GateId>,
+}
+
+/// Jobs whose claim this session lost (ADR-012): owned by a peer session,
+/// kept `Pending` and out of the ready frontier until the peer's terminal
+/// state is consumed or the job becomes claimable again.
+#[derive(Debug, Default)]
+struct PeerWaits {
+    /// Waiting jobs, with the owning session when the claimer reported one.
+    owners: HashMap<JobId, Option<String>>,
+}
+
+impl PeerWaits {
+    fn is_empty(&self) -> bool {
+        self.owners.is_empty()
+    }
+
+    /// Park `job_id` behind its peer owner and announce it once.
+    fn park(&mut self, job_id: JobId, owner: Option<String>, event_bus: &EventBus) {
+        let session = owner.clone().unwrap_or_else(|| "another session".into());
+        info!(
+            target: "ox.scheduler",
+            counter = "scheduler.job.deferred_to_peer",
+            job_id = %job_id,
+            owner = %session,
+            "claim lost; waiting for the owning session"
+        );
+        event_bus.emit(Event::ExecutorMessage {
+            executor: "scheduler".into(),
+            message: format!(
+                "{} is being executed by {session}; waiting for its result instead of running it here",
+                job_id.as_str()
+            ),
+        });
+        self.owners.insert(job_id, owner);
+    }
+}
+
+/// Poll every job parked in `peer_waits` and act on what the shared state
+/// reports (see [`PeerJobState`]):
+///
+/// - `Running`: keep waiting.
+/// - `Unclaimed`: the owner's lease expired (or it never ran the job) — put
+///   the job back into the ready frontier so the next dispatch claims it.
+/// - `Completed` / `Failed`: consume the peer's outcome through the same
+///   [`handle_completion`] path a local execution takes, so downstream
+///   promotion, error strategy, root-cause tracking and cache recording all
+///   behave as if the job had run here.
+/// - `Cancelled`: mirror the cancellation and cancel the downstream jobs.
+///
+/// A job that left `Pending` while waiting (cancelled by an upstream failure)
+/// is dropped from the wait set without acting on the peer's state.
+///
+/// Returns `true` when at least one job changed state, so the caller can
+/// re-run the dispatch loop immediately instead of sleeping.
+#[allow(clippy::too_many_arguments)]
+async fn poll_peer_waits<E: Executor + ?Sized>(
+    peer_waits: &mut PeerWaits,
+    claimer: &dyn JobClaim,
+    state: &Arc<Mutex<Frontier>>,
+    graph: &JobGraph,
+    config: &SchedulerConfig,
+    event_bus: &EventBus,
+    ctx: &ExecContext,
+    terminate_requested: &mut bool,
+    executor: &E,
+    cache: Option<&Arc<dyn CacheCheck>>,
+) -> bool {
+    let mut progressed = false;
+    let waiting: Vec<JobId> = peer_waits.owners.keys().cloned().collect();
+    for job_id in waiting {
+        // Still ours to wait for? A job cancelled while parked (upstream
+        // failure) must not be resurrected by the peer's outcome.
+        {
+            let s = state.lock().await;
+            if !matches!(s.get_status(&job_id), Some(JobLifecycle::Pending)) {
+                peer_waits.owners.remove(&job_id);
+                continue;
+            }
+        }
+        let Some(job) = graph.get_job(&job_id).cloned() else {
+            peer_waits.owners.remove(&job_id);
+            continue;
+        };
+        let owner = peer_waits
+            .owners
+            .get(&job_id)
+            .cloned()
+            .flatten()
+            .unwrap_or_else(|| "another session".into());
+
+        let peer = claimer.peer_state(&job_id).await;
+        match peer {
+            PeerJobState::Running => {}
+            PeerJobState::Unclaimed => {
+                peer_waits.owners.remove(&job_id);
+                let mut s = state.lock().await;
+                if matches!(s.get_status(&job_id), Some(JobLifecycle::Pending)) {
+                    s.ready_frontier.insert(job_id.clone());
+                }
+                drop(s);
+                info!(
+                    target: "ox.scheduler",
+                    counter = "scheduler.job.peer_reclaimed",
+                    job_id = %job_id,
+                    owner = %owner,
+                    "owning session gone; job is claimable again"
+                );
+                progressed = true;
+            }
+            PeerJobState::Completed | PeerJobState::Failed { .. } => {
+                peer_waits.owners.remove(&job_id);
+                let exit_code = match peer {
+                    PeerJobState::Failed { exit_code } => exit_code,
+                    _ => 0,
+                };
+                let stderr_tail = (exit_code != 0)
+                    .then(|| format!("job failed in peer session {owner} (exit code {exit_code})"));
+                let msg = CompletionMsg {
+                    job_id: job_id.clone(),
+                    job: job.clone(),
+                    result: JobResult {
+                        job_id: job_id.clone(),
+                        exit_code,
+                        duration: Duration::ZERO,
+                        peak_memory_bytes: None,
+                        cpu_time: None,
+                        log_path: None,
+                        stderr_tail,
+                    },
+                };
+                info!(
+                    target: "ox.scheduler",
+                    counter = "scheduler.job.consumed_from_peer",
+                    job_id = %job_id,
+                    owner = %owner,
+                    exit_code,
+                    "consuming the owning session's terminal state"
+                );
+                let committed = handle_completion(
+                    &msg,
+                    state,
+                    graph,
+                    config,
+                    event_bus,
+                    ctx,
+                    terminate_requested,
+                    executor,
+                )
+                .await;
+                if committed && exit_code == 0 {
+                    if let Some(cache) = cache {
+                        cache.record(&job).await;
+                    }
+                }
+                progressed = true;
+            }
+            PeerJobState::Cancelled => {
+                peer_waits.owners.remove(&job_id);
+                let mut s = state.lock().await;
+                if !matches!(s.get_status(&job_id), Some(JobLifecycle::Pending)) {
+                    continue;
+                }
+                s.set_status(job_id.clone(), JobLifecycle::Cancelled);
+                drop(s);
+                event_bus.emit(Event::JobCancelled {
+                    job_id: job_id.clone(),
+                    reason: format!("cancelled by peer session {owner}"),
+                });
+                cancel_downstream(&job_id, state, graph, event_bus, executor).await;
+                progressed = true;
+            }
+        }
+    }
+    progressed
 }
 
 /// Find jobs that are ready to execute: all upstream dependencies are
@@ -7095,5 +7375,453 @@ mod tests {
                 );
             }
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Cooperative claim as the scheduling gate (ADR-012, issue #3)
+    // -----------------------------------------------------------------------
+
+    /// Claimer driven by scripted per-job answers. Each `claim` / `peer_state`
+    /// pops the next scripted answer for the job; once a script is exhausted
+    /// its last answer repeats (an empty script means `Won` / `Running`).
+    struct ScriptedClaimer {
+        claims: std::sync::Mutex<HashMap<String, std::collections::VecDeque<ClaimOutcome>>>,
+        states: std::sync::Mutex<HashMap<String, std::collections::VecDeque<PeerJobState>>>,
+        claim_calls: std::sync::Mutex<Vec<String>>,
+        poll_calls: AtomicUsize,
+    }
+
+    impl ScriptedClaimer {
+        fn new() -> Self {
+            Self {
+                claims: std::sync::Mutex::new(HashMap::new()),
+                states: std::sync::Mutex::new(HashMap::new()),
+                claim_calls: std::sync::Mutex::new(Vec::new()),
+                poll_calls: AtomicUsize::new(0),
+            }
+        }
+
+        fn script(self, job: &str, claims: Vec<ClaimOutcome>, states: Vec<PeerJobState>) -> Self {
+            self.claims
+                .lock()
+                .unwrap()
+                .insert(job.into(), claims.into_iter().collect());
+            self.states
+                .lock()
+                .unwrap()
+                .insert(job.into(), states.into_iter().collect());
+            self
+        }
+
+        fn claims_for(&self, job: &str) -> usize {
+            self.claim_calls
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|j| j.as_str() == job)
+                .count()
+        }
+    }
+
+    fn lost() -> ClaimOutcome {
+        ClaimOutcome::Lost {
+            owner: Some("s-peer".into()),
+        }
+    }
+
+    impl JobClaim for ScriptedClaimer {
+        fn claim<'a>(
+            &'a self,
+            job_id: &'a JobId,
+        ) -> Pin<Box<dyn Future<Output = ClaimOutcome> + Send + 'a>> {
+            self.claim_calls
+                .lock()
+                .unwrap()
+                .push(job_id.as_str().to_string());
+            let mut claims = self.claims.lock().unwrap();
+            let out = match claims.get_mut(job_id.as_str()) {
+                Some(q) if q.len() > 1 => q.pop_front().unwrap(),
+                Some(q) if q.len() == 1 => q.front().cloned().unwrap(),
+                _ => ClaimOutcome::Won,
+            };
+            Box::pin(async move { out })
+        }
+
+        fn peer_state<'a>(
+            &'a self,
+            job_id: &'a JobId,
+        ) -> Pin<Box<dyn Future<Output = PeerJobState> + Send + 'a>> {
+            self.poll_calls.fetch_add(1, Ordering::SeqCst);
+            let mut states = self.states.lock().unwrap();
+            let out = match states.get_mut(job_id.as_str()) {
+                Some(q) if q.len() > 1 => q.pop_front().unwrap(),
+                Some(q) if q.len() == 1 => q.front().cloned().unwrap(),
+                _ => PeerJobState::Running,
+            };
+            Box::pin(async move { out })
+        }
+    }
+
+    async fn run_with_claimer(
+        graph: &JobGraph,
+        executor: Arc<MockExecutor>,
+        config: &SchedulerConfig,
+        bus: &EventBus,
+        claimer: Arc<ScriptedClaimer>,
+        shutdown: Option<Arc<Notify>>,
+    ) -> Result<SchedulerResult, OxError> {
+        tokio::time::timeout(
+            Duration::from_secs(60),
+            run_scheduler_with_claims(
+                graph,
+                executor,
+                config,
+                bus,
+                &default_ctx(),
+                None,
+                None,
+                None,
+                shutdown,
+                None,
+                Some(claimer as Arc<dyn JobClaim>),
+            ),
+        )
+        .await
+        .expect("scheduler must return")
+    }
+
+    fn drain(rx: &mut tokio::sync::broadcast::Receiver<Event>) -> Vec<Event> {
+        let mut events = Vec::new();
+        while let Ok(event) = rx.try_recv() {
+            events.push(event);
+        }
+        events
+    }
+
+    /// A lost claim is the scheduling gate: the job is never launched here,
+    /// the session waits, and the peer's completion is consumed as its own —
+    /// downstream jobs run, the job reports completed, exactly one execution
+    /// (the peer's) happened.
+    #[tokio::test]
+    async fn lost_claim_waits_and_consumes_peer_completion() {
+        let jobs = vec![
+            make_job("A", "rA", vec![], vec!["a.txt"]),
+            make_job("B", "rB", vec!["a.txt"], vec!["b.txt"]),
+        ];
+        let graph = JobGraph::build(jobs).unwrap();
+        let executor = Arc::new(MockExecutor::new());
+        let bus = EventBus::new();
+        let mut rx = bus.subscribe();
+        let claimer = Arc::new(ScriptedClaimer::new().script(
+            "A",
+            vec![lost()],
+            vec![
+                PeerJobState::Running,
+                PeerJobState::Running,
+                PeerJobState::Completed,
+            ],
+        ));
+
+        let result = run_with_claimer(
+            &graph,
+            executor.clone(),
+            &SchedulerConfig::default(),
+            &bus,
+            claimer.clone(),
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result.succeeded, 2, "A consumed from the peer, B run here");
+        assert_eq!(result.failed, 0);
+        assert_eq!(
+            executor.call_count.load(Ordering::SeqCst),
+            1,
+            "only B executes in this session"
+        );
+        assert!(
+            claimer.poll_calls.load(Ordering::SeqCst) >= 3,
+            "A was polled until terminal"
+        );
+
+        let events = drain(&mut rx);
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, Event::JobStarted { job_id, .. } if job_id.as_str() == "A")),
+            "the losing session must not start A"
+        );
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, Event::JobCompleted { job_id, .. } if job_id.as_str() == "A")),
+            "A is reported completed"
+        );
+        assert!(
+            events.iter().any(|e| matches!(
+                e,
+                Event::ExecutorMessage { executor, message }
+                    if executor == "scheduler" && message.contains("s-peer")
+            )),
+            "the wait is announced with the owning session"
+        );
+        let pos = |pred: &dyn Fn(&Event) -> bool| events.iter().position(pred).unwrap();
+        assert!(
+            pos(&|e| matches!(e, Event::JobCompleted { job_id, .. } if job_id.as_str() == "A"))
+                < pos(&|e| matches!(e, Event::JobStarted { job_id, .. } if job_id.as_str() == "B")),
+            "B starts only after A's peer completion is consumed"
+        );
+    }
+
+    /// A peer failure is mirrored through the ordinary error path: the job
+    /// fails here without executing, downstream is cancelled.
+    #[tokio::test]
+    async fn peer_failure_is_mirrored_without_executing() {
+        let jobs = vec![
+            make_job("A", "rA", vec![], vec!["a.txt"]),
+            make_job("B", "rB", vec!["a.txt"], vec!["b.txt"]),
+        ];
+        let graph = JobGraph::build(jobs).unwrap();
+        let executor = Arc::new(MockExecutor::new());
+        let bus = EventBus::new();
+        let mut rx = bus.subscribe();
+        let claimer = Arc::new(ScriptedClaimer::new().script(
+            "A",
+            vec![lost()],
+            vec![PeerJobState::Failed { exit_code: 3 }],
+        ));
+
+        let result = run_with_claimer(
+            &graph,
+            executor.clone(),
+            &SchedulerConfig::default(),
+            &bus,
+            claimer,
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result.failed, 1);
+        assert_eq!(result.cancelled, 1);
+        assert_eq!(result.succeeded, 0);
+        assert_eq!(executor.call_count.load(Ordering::SeqCst), 0);
+        let events = drain(&mut rx);
+        assert!(events.iter().any(|e| matches!(
+            e,
+            Event::JobFailed { job_id, exit_code: Some(3), stderr_tail: Some(tail), .. }
+                if job_id.as_str() == "A" && tail.contains("s-peer")
+        )));
+    }
+
+    /// A peer cancellation is mirrored: the job and its downstream are
+    /// cancelled here, nothing executes.
+    #[tokio::test]
+    async fn peer_cancellation_is_mirrored() {
+        let jobs = vec![
+            make_job("A", "rA", vec![], vec!["a.txt"]),
+            make_job("B", "rB", vec!["a.txt"], vec!["b.txt"]),
+        ];
+        let graph = JobGraph::build(jobs).unwrap();
+        let executor = Arc::new(MockExecutor::new());
+        let bus = EventBus::new();
+        let mut rx = bus.subscribe();
+        let claimer = Arc::new(ScriptedClaimer::new().script(
+            "A",
+            vec![lost()],
+            vec![PeerJobState::Cancelled],
+        ));
+
+        let result = run_with_claimer(
+            &graph,
+            executor.clone(),
+            &SchedulerConfig::default(),
+            &bus,
+            claimer,
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result.cancelled, 2);
+        assert_eq!(executor.call_count.load(Ordering::SeqCst), 0);
+        let events = drain(&mut rx);
+        assert!(events.iter().any(|e| matches!(
+            e,
+            Event::JobCancelled { job_id, reason } if job_id.as_str() == "A" && reason.contains("s-peer")
+        )));
+    }
+
+    /// When the state layer reports the job unclaimed (the owner's lease
+    /// expired and its jobs were reclaimed), the waiter claims again, wins,
+    /// and executes the job itself.
+    #[tokio::test]
+    async fn reclaimed_job_is_claimed_again_and_executed_here() {
+        let jobs = vec![make_job("A", "rA", vec![], vec!["a.txt"])];
+        let graph = JobGraph::build(jobs).unwrap();
+        let executor = Arc::new(MockExecutor::new());
+        let bus = EventBus::new();
+        let mut rx = bus.subscribe();
+        let claimer = Arc::new(ScriptedClaimer::new().script(
+            "A",
+            vec![lost(), ClaimOutcome::Won],
+            vec![PeerJobState::Running, PeerJobState::Unclaimed],
+        ));
+
+        let result = run_with_claimer(
+            &graph,
+            executor.clone(),
+            &SchedulerConfig::default(),
+            &bus,
+            claimer.clone(),
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result.succeeded, 1);
+        assert_eq!(
+            executor.call_count.load(Ordering::SeqCst),
+            1,
+            "A executed here after reclaim"
+        );
+        assert_eq!(claimer.claims_for("A"), 2, "lost once, then won");
+        let events = drain(&mut rx);
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, Event::JobStarted { job_id, .. } if job_id.as_str() == "A"))
+        );
+    }
+
+    /// The wait observes the shutdown signal: a session parked behind a peer
+    /// that never finishes stops on the first Ctrl+C and cancels the job
+    /// locally, without ever having launched it.
+    #[tokio::test]
+    async fn shutdown_while_waiting_for_peer_cancels_and_returns() {
+        let jobs = vec![make_job("A", "rA", vec![], vec!["a.txt"])];
+        let graph = JobGraph::build(jobs).unwrap();
+        let executor = Arc::new(MockExecutor::new());
+        let bus = EventBus::new();
+        let mut rx = bus.subscribe();
+        let claimer =
+            Arc::new(ScriptedClaimer::new().script("A", vec![lost()], vec![PeerJobState::Running]));
+        let shutdown = Arc::new(Notify::new());
+        let signal = shutdown.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_secs(2)).await;
+            signal.notify_waiters();
+        });
+
+        let result = run_with_claimer(
+            &graph,
+            executor.clone(),
+            &SchedulerConfig::default(),
+            &bus,
+            claimer,
+            Some(shutdown),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result.cancelled, 1);
+        assert_eq!(result.succeeded, 0);
+        assert_eq!(executor.call_count.load(Ordering::SeqCst), 0);
+        assert!(
+            !drain(&mut rx)
+                .iter()
+                .any(|e| matches!(e, Event::JobStarted { .. }))
+        );
+    }
+
+    /// A peer completion is noticed while this session's own jobs are in
+    /// flight, not only when one of them finishes: with a slow local job
+    /// running, the consumed peer job must complete well before it.
+    #[tokio::test]
+    async fn peer_completion_is_polled_while_local_jobs_run() {
+        let jobs = vec![
+            make_job("slow", "rS", vec![], vec!["s.txt"]),
+            make_job("peer", "rP", vec![], vec!["p.txt"]),
+        ];
+        let graph = JobGraph::build(jobs).unwrap();
+        let executor = Arc::new(MockExecutor {
+            results: BTreeMap::new(),
+            delay: Some(Duration::from_secs(4)),
+            call_count: AtomicUsize::new(0),
+        });
+        let bus = EventBus::new();
+        let mut rx = bus.subscribe();
+        let claimer = Arc::new(ScriptedClaimer::new().script(
+            "peer",
+            vec![lost()],
+            vec![PeerJobState::Running, PeerJobState::Completed],
+        ));
+        let config = SchedulerConfig {
+            max_jobs: 2,
+            ..Default::default()
+        };
+
+        let started = Instant::now();
+        let peer_completed_at = {
+            let mut rx2 = bus.subscribe();
+            tokio::spawn(async move {
+                while let Ok(ev) = rx2.recv().await {
+                    if matches!(&ev, Event::JobCompleted { job_id, .. } if job_id.as_str() == "peer")
+                    {
+                        return started.elapsed();
+                    }
+                }
+                Duration::MAX
+            })
+        };
+        let result = run_with_claimer(&graph, executor.clone(), &config, &bus, claimer, None)
+            .await
+            .unwrap();
+        assert_eq!(result.succeeded, 2);
+        let at = peer_completed_at.await.unwrap();
+        assert!(
+            at < Duration::from_secs(3),
+            "peer completion consumed at {at:?}, i.e. only after the slow local job"
+        );
+        drain(&mut rx);
+    }
+
+    /// A job claimed and then deferred (semaphore full) is claimed again on
+    /// its next dispatch attempt: the scheduler relies on the claim being
+    /// idempotent per session, and executes the job exactly once.
+    #[tokio::test]
+    async fn deferred_job_is_reclaimed_idempotently_and_runs_once() {
+        let jobs = vec![
+            make_job("A", "rA", vec![], vec!["a.txt"]),
+            make_job("B", "rB", vec![], vec!["b.txt"]),
+        ];
+        let graph = JobGraph::build(jobs).unwrap();
+        let executor = Arc::new(MockExecutor::new());
+        let bus = EventBus::new();
+        let claimer = Arc::new(ScriptedClaimer::new());
+        let config = SchedulerConfig {
+            max_jobs: 1,
+            ..Default::default()
+        };
+
+        let result = run_with_claimer(
+            &graph,
+            executor.clone(),
+            &config,
+            &bus,
+            claimer.clone(),
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result.succeeded, 2);
+        assert_eq!(executor.call_count.load(Ordering::SeqCst), 2);
+        let total = claimer.claims_for("A") + claimer.claims_for("B");
+        assert_eq!(
+            total, 3,
+            "one of the two jobs was deferred and claimed again"
+        );
     }
 }
