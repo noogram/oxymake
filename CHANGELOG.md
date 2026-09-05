@@ -18,6 +18,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   interrupted run are recorded `cancelled` rather than `failed`, and the run
   exits `130`. All writes stay scoped by `session_id`, so a live peer's row is
   never terminalized (ADR-012). `ox cancel` inherits the same contract.
+- **Ctrl+C is honoured while a run winds down after a failure.** Without
+  `--keep-going`, a failed job stops new dispatches and the jobs already
+  running are left to finish; a signal in that phase used to be ignored until
+  the force-exit second signal, leaving a `SIGTERM`-deaf sibling alive and its
+  row `running`. It now takes the same bounded shutdown path (#4).
 - **`ox status`, `ox top` and the dashboard no longer report abandoned jobs as
   running.** A job row left at `running` by a session that was interrupted,
   completed, or that stopped heartbeating is now reported as **orphaned**,

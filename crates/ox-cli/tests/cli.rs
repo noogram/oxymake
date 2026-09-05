@@ -3599,3 +3599,123 @@ fn double_interrupt_force_exits_without_leaving_running_rows() {
         let _ = StdCommand::new("kill").args(["-KILL", pid.trim()]).status();
     }
 }
+
+/// After a job fails (no `--keep-going`) the run stops dispatching and lets
+/// the jobs already running finish. A Ctrl+C in that phase must still cancel
+/// them with the bounded shutdown — it used to be ignored until the force-exit,
+/// leaving a SIGTERM-deaf sibling alive and its row `running` (#4, QA round 2).
+#[test]
+#[cfg(unix)]
+fn interrupt_during_post_failure_wait_cancels_running_siblings() {
+    use std::process::{Command as StdCommand, Stdio};
+    use std::time::{Duration, Instant};
+
+    let dir = TempDir::new().unwrap();
+    let oxymakefile = dir.path().join("Oxymakefile.toml");
+    fs::write(
+        &oxymakefile,
+        r#"ox_version = "0.1"
+
+[rule.all]
+input = ["fail.txt", "deaf.txt"]
+
+[rule.fail]
+output = ["fail.txt"]
+shell = "touch fail-started.txt; sleep 1; exit 1"
+
+[rule.deaf]
+output = ["deaf.txt"]
+shell = "echo $$ > job.pid; trap 'touch term-seen.txt' TERM; touch started.txt; while true; do sleep 0.2; done"
+"#,
+    )
+    .unwrap();
+
+    let mut child = StdCommand::new(env!("CARGO_BIN_EXE_oxymake"))
+        .args(["run", "-j", "2", "-f", oxymakefile.to_str().unwrap()])
+        .current_dir(dir.path())
+        .env("OX_SHUTDOWN_GRACE_SECS", "2")
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn ox run");
+
+    let db_path = dir.path().join(".oxymake/state.db");
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !dir.path().join("started.txt").exists() {
+        assert!(
+            Instant::now() < deadline,
+            "deaf job did not start within 30 s"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let job_pid: u32 = fs::read_to_string(dir.path().join("job.pid"))
+        .expect("job.pid")
+        .trim()
+        .parse()
+        .expect("job pid");
+
+    // Wait until `fail` has failed and the run is in its post-failure wait.
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let conn = rusqlite::Connection::open(&db_path).expect("open state.db");
+        let failed: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM jobs WHERE id = 'fail' AND status = 'failed'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+        if failed == 1 {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "fail job did not fail within 30 s"
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert!(
+        child.try_wait().expect("try_wait").is_none(),
+        "the run must still be waiting on the running sibling"
+    );
+
+    let signalled_at = Instant::now();
+    StdCommand::new("kill")
+        .args(["-INT", &child.id().to_string()])
+        .status()
+        .expect("send SIGINT");
+    let status = wait_for_exit(&mut child, 40);
+    let elapsed = signalled_at.elapsed();
+
+    // A job did fail: that verdict outranks the interruption in the exit code.
+    assert_eq!(status.code(), Some(1), "a run with a failed job exits 1");
+    assert!(
+        elapsed < Duration::from_secs(20),
+        "SIGINT during the post-failure wait was ignored: run took {elapsed:?} to exit"
+    );
+    assert!(
+        dir.path().join("term-seen.txt").exists(),
+        "the running sibling never saw SIGTERM"
+    );
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while pid_alive(job_pid) {
+        assert!(
+            Instant::now() < deadline,
+            "sibling {job_pid} is still alive after ox run exited"
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+
+    let (session_id, session_status) = only_session(&db_path);
+    assert_eq!(session_status, "interrupted");
+    let jobs = jobs_of_session(&db_path, &session_id);
+    assert!(
+        jobs.iter()
+            .any(|(id, st)| id == "deaf" && st == "cancelled"),
+        "the interrupted sibling must be recorded 'cancelled': {jobs:?}"
+    );
+    assert!(
+        !jobs.iter().any(|(_, st)| st == "running"),
+        "no row may stay 'running': {jobs:?}"
+    );
+}

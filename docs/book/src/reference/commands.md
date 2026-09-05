@@ -70,6 +70,11 @@ still-running rows on the way out. Either way no row of the interrupted
 session is left `running`, and rows owned by a *concurrent* session are never
 touched (ADR-012).
 
+A job failure without `--keep-going` is not an interruption: the run stops
+dispatching new jobs and lets the ones already running finish, then exits
+`1`. A Ctrl+C during that wait cancels them with the same bounded shutdown;
+the exit code stays `1`, since a job did fail.
+
 **Exit codes:**
 - `0` -- Success (all jobs succeeded or were cached)
 - `1` -- Runtime error or one or more jobs failed

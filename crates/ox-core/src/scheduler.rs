@@ -604,6 +604,12 @@ pub async fn run_scheduler_with_claims<E: Executor + 'static>(
     let mut join_set: JoinSet<Result<CompletionMsg, OxError>> = JoinSet::new();
     let mut in_flight = HashSet::<JobId>::new();
     let mut terminate_requested = false;
+    // The shutdown signal must stay observable while the run is already
+    // winding down after a failure (`terminate_requested` set, in-flight
+    // jobs left to finish): guarding the signal arm on `terminate_requested`
+    // made Ctrl+C a no-op in that phase, so a SIGTERM-deaf sibling could
+    // only be ended by the force-exit. Guard on this flag instead.
+    let mut shutdown_received = false;
     // Armed when graceful shutdown starts: the instant after which any job
     // still in flight is hard-killed. `None` once the escalation has fired
     // (or while no shutdown is in progress).
@@ -988,7 +994,8 @@ pub async fn run_scheduler_with_claims<E: Executor + 'static>(
                 biased;
 
                 // Shutdown signal received — graceful termination.
-                _ = shutdown_fut, if !terminate_requested => {
+                _ = shutdown_fut, if !shutdown_received => {
+                    shutdown_received = true;
                     terminate_requested = true;
                     // Mark every in-flight job Cancelled *before* signalling
                     // it. The status is what the B4 guard in
@@ -1129,7 +1136,8 @@ pub async fn run_scheduler_with_claims<E: Executor + 'static>(
             };
             tokio::select! {
                 biased;
-                _ = shutdown_fut, if !terminate_requested => {
+                _ = shutdown_fut, if !shutdown_received => {
+                    shutdown_received = true;
                     terminate_requested = true;
                 }
                 _ = tokio::time::sleep(GATE_POLL_INTERVAL) => {}
