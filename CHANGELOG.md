@@ -16,11 +16,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   cancellation is mirrored while that peer is live. Sessions now heartbeat
   (every third of a 90 s lease, `OX_SESSION_LEASE_SECS` overrides); a
   session killed mid-job is taken over by its waiter once the lease has
-  expired. Rows left in `state.db` by sessions that are no longer live are
-  reset when a run starts, so a fresh run re-evaluates them. The
+  expired. `running`, `failed` and `cancelled` rows left in `state.db` by
+  sessions that are no longer live are reset when a run starts, and an old
+  completion is reset when a job that executes claims it, so a fresh run
+  re-evaluates them (a completion recorded by a peer after this run
+  started is consumed instead). The
   per-output-path `flock` locks of #2 stay as defence in depth; the
   `ConcurrentExecution` error is only reached when a reclaimed job's
   orphaned shell is still writing (#3).
+
+### Fixed
+- A waiting session no longer takes over a live peer's job on a stale
+  observation: the reclaim of a dead session's running jobs is one
+  `state.db` transaction guarded by the peer's *current* heartbeat
+  (`StateDb::reclaim_stale_jobs_if_stale`), so a heartbeat landing between
+  the waiter's read and its reclaim keeps the owner's rows and session
+  intact. Previously the two steps were separate and both sessions could
+  end up executing the job (#3, round-1 QA finding 1). `ox clean` uses the
+  same guarded reclaim.
+- A warm `ox run` over a large graph no longer pays for the claim
+  protocol: the run-start reset of stale rows is one transaction and
+  leaves completed rows alone (they are reset lazily when a job that
+  executes claims them), so the 999 cache-hit writes of a 1001-job warm
+  run are no-ops again. Measured against the direct parent of the change
+  on the 1001-job bench fixture, a warm run with one invalidated job is
+  now within noise of the parent (#3, round-1 QA finding 4).
 - A run that stops waiting on a peer (Ctrl+C) no longer cancels the
   peer's running job in `state.db`; it records its own session as
   `interrupted` at the first signal and closes the session at exit (#3).

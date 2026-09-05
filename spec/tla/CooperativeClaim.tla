@@ -10,7 +10,8 @@
 \* Out of model (see docs/architecture/boundary.md):
 \*   - ExecutorHonest, NoOOMCascade
 \*   - StateDbAtomicCommit (assumed: SQLite COMMIT all-or-nothing,
-\*     so the reclaim_stale_jobs transaction at session.rs §159–172
+\*     so the reclaim_stale_jobs_if_stale transaction in session.rs
+\*     (one BEGIN IMMEDIATE: guarded UPDATE jobs + UPDATE sessions)
 \*     is atomic w.r.t. concurrent writes; the hazard the spec
 \*     exercises is the find_stale → reclaim gap, not the reclaim
 \*     transaction itself).
@@ -126,7 +127,16 @@ FindStale ==
 \* Reclaim(s_old) — re-checks staleness (mirroring the SQL WHERE
 \* clause) but cannot prevent a concurrent Heartbeat from s_old
 \* arriving immediately after — the zombie revival scenario.
-\* Models session.rs `reclaim_stale_jobs` (one transaction).
+\* Models session.rs `reclaim_stale_jobs_if_stale(s_old, cutoff)`
+\* (one transaction). Since 2026-09-05 (issue #3, round-1 QA finding
+\* 1) the code really does what this action says: the UPDATE of the
+\* jobs rows carries `AND NOT EXISTS (active session with heartbeat_at
+\* > cutoff)` and the session flip carries `AND heartbeat_at <= cutoff`,
+\* both inside one BEGIN IMMEDIATE, so a Heartbeat that lands between a
+\* peer's FindStale read and its Reclaim makes the Reclaim a no-op —
+\* exactly the `/\ IsStale(s_old)` guard below. Before that date the
+\* reclaim ran unguarded on the peer's earlier observation, which this
+\* model did not admit.
 \* Deliberately does NOT touch local_running[s_old]: reclaim runs in
 \* another process and cannot reach into the stale session's memory.
 \* From this point on, s_old's belief and the DB diverge — that

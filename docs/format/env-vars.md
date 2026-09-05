@@ -15,7 +15,7 @@ variables listed under **Stable** are subject to SemVer discipline.
 | Name | Where | Effect | Default |
 |------|-------|--------|---------|
 | `OX_CACHE_VALIDATION` | `ox run` | Override `--cache-validation`. Values: `mtime`, `mtime+hash`, `hash`. CLI flag wins when both are set. | (uses CLI flag, else `mtime+hash`) |
-| `OX_SESSION_LEASE_SECS` | `ox run` | Lease of a session's job claims, in seconds (ADR-012). The session heartbeats every third of it; a peer whose heartbeat is older than the lease is dead and its running jobs are reclaimed. Unstable. | `90` |
+| `OX_SESSION_LEASE_SECS` | `ox run` | Lease of a session's job claims, in seconds (ADR-012). The session heartbeats every third of it; a peer whose heartbeat is older than the lease is dead and its running jobs are reclaimed (the reclaim re-checks the heartbeat inside its transaction). Heartbeat and staleness are compared on the wall clock, assumed non-decreasing and shared by every session on the same `state.db` — the system clock on one host, NTP-synchronised clocks across hosts sharing the database; a skew or backward step larger than the lease is not detected (lengthen the lease where clocks are less trustworthy). A suspended run (laptop sleep, `SIGSTOP`) stops heartbeating and is reclaimed like a crashed one; when it resumes its terminal writes are rejected if a peer re-claimed the job, so it cannot overwrite the peer's result. Unstable. | `90` |
 
 ### Honoured external conventions
 

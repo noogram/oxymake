@@ -158,22 +158,61 @@ impl StateDb {
     ///
     /// Also marks the stale session as `interrupted`.  Returns the
     /// number of jobs reclaimed.
+    ///
+    /// This variant does **not** check the session's heartbeat: the caller
+    /// has decided the session is dead (an operator running `ox clean`, a
+    /// test). A caller acting on a heartbeat it *read* earlier must use
+    /// [`reclaim_stale_jobs_if_stale`](StateDb::reclaim_stale_jobs_if_stale)
+    /// instead, so that a heartbeat landing after the read is honoured.
     pub fn reclaim_stale_jobs(&self, session_id: &str) -> Result<usize, StateError> {
-        let tx = self.conn().unchecked_transaction()?;
-        let reclaimed = tx.execute(
-            "UPDATE jobs SET status = 'pending', session_id = NULL, locked_by = NULL,
-                             started_at = NULL
-             WHERE session_id = ?1 AND status = 'running'",
-            rusqlite::params![session_id],
-        )?;
-        // Only an `active` session is flipped: a session that already
-        // recorded its own terminal status keeps it.
-        tx.execute(
-            "UPDATE sessions SET status = 'interrupted' WHERE id = ?1 AND status = 'active'",
-            rusqlite::params![session_id],
-        )?;
-        tx.commit()?;
-        Ok(reclaimed)
+        // The largest cutoff SQLite can bind: every heartbeat is at or
+        // before it, so the guard is always satisfied.
+        self.reclaim_jobs_unless_live(session_id, i64::MAX as u64)
+    }
+
+    /// Reclaim the `running` jobs of `session_id` **only if** the session
+    /// is not live at the moment of the write: its row is not `active`
+    /// any more, or its `heartbeat_at` is at or before `cutoff` (the
+    /// caller's `now - lease`). The check and the reclaim are one
+    /// SQLite transaction, so a heartbeat that lands after the caller
+    /// read the row but before this call makes the reclaim a no-op — the
+    /// row's own heartbeat decides, not the caller's earlier observation
+    /// (issue #3, round-1 QA finding 1). Marks the session `interrupted`
+    /// when it was still `active`.
+    ///
+    /// Returns the number of jobs reclaimed; `0` means the owner is live
+    /// (or had no running rows) and the caller must keep treating it as
+    /// the owner.
+    pub fn reclaim_stale_jobs_if_stale(
+        &self,
+        session_id: &str,
+        cutoff: u64,
+    ) -> Result<usize, StateError> {
+        self.reclaim_jobs_unless_live(session_id, cutoff)
+    }
+
+    /// One `BEGIN IMMEDIATE` transaction: reset the `running` rows of
+    /// `session_id` unless an `active` session row with a heartbeat
+    /// younger than `cutoff` exists, and close that session row if it
+    /// was `active` with a heartbeat at or before `cutoff`. `i64::MAX`
+    /// as the cutoff makes the reclaim unconditional.
+    fn reclaim_jobs_unless_live(&self, session_id: &str, cutoff: u64) -> Result<usize, StateError> {
+        // IMMEDIATE takes the write lock up front, so a concurrent
+        // `heartbeat` UPDATE either committed before this snapshot (and
+        // the WHERE clauses below see it) or waits until we commit.
+        // (`rusqlite` 0.32 has no `unchecked_transaction_with_behavior`.)
+        let conn = self.conn();
+        conn.execute_batch("BEGIN IMMEDIATE")?;
+        match reclaim_jobs_unless_live_in(conn, session_id, cutoff) {
+            Ok(reclaimed) => {
+                conn.execute_batch("COMMIT")?;
+                Ok(reclaimed)
+            }
+            Err(e) => {
+                let _ = conn.execute_batch("ROLLBACK");
+                Err(e)
+            }
+        }
     }
 
     /// PID of the *active* session that owns (claimed) the given job.
@@ -235,6 +274,32 @@ impl StateDb {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/// The statements of [`StateDb::reclaim_stale_jobs_if_stale`], to be run
+/// inside a transaction the caller owns (`BEGIN IMMEDIATE`, so that the
+/// heartbeat read by the guards cannot move until the caller commits).
+pub(crate) fn reclaim_jobs_unless_live_in(
+    conn: &rusqlite::Connection,
+    session_id: &str,
+    cutoff: u64,
+) -> Result<usize, StateError> {
+    let reclaimed = conn.execute(
+        "UPDATE jobs SET status = 'pending', session_id = NULL, locked_by = NULL,
+                         started_at = NULL
+         WHERE session_id = ?1 AND status = 'running'
+           AND NOT EXISTS (SELECT 1 FROM sessions
+                           WHERE id = ?1 AND status = 'active' AND heartbeat_at > ?2)",
+        rusqlite::params![session_id, cutoff],
+    )?;
+    // Only an `active` session is flipped: a session that already
+    // recorded its own terminal status keeps it.
+    conn.execute(
+        "UPDATE sessions SET status = 'interrupted'
+         WHERE id = ?1 AND status = 'active' AND heartbeat_at <= ?2",
+        rusqlite::params![session_id, cutoff],
+    )?;
+    Ok(reclaimed)
+}
 
 /// Current UNIX timestamp in seconds.
 fn unix_now() -> u64 {

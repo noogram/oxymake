@@ -1,6 +1,6 @@
 TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)
-Running breadth-first search Model-Checking with fp 99 and seed 1169606545917368359 with 16 workers on 16 cores with 27300MB heap and 64MB offheap memory [pid: 1516] (Mac OS X 26.6.2 aarch64, Homebrew 21.0.11 x86_64, MSBDiskFPSet, DiskStateQueue).
-Parsing file /Users/eserie/galaxies/oxymake/.worktrees/task-20260905-3b3a/spec/tla/CooperativeClaim.tla
+Running breadth-first search Model-Checking with fp 0 and seed 0 with 1 worker on 16 cores with 27300MB heap and 64MB offheap memory [pid: 69470] (Mac OS X 26.6.2 aarch64, Eclipse Adoptium 21.0.12.1 x86_64, MSBDiskFPSet, DiskStateQueue).
+Parsing file /Users/eserie/galaxies/oxymake/.worktrees/task-20260905-83cb/spec/tla/CooperativeClaim.tla
 Parsing file /private/var/folders/_f/yp39_pl932l59d2ckz60rnq00000gn/T/Naturals.tla
 Parsing file /private/var/folders/_f/yp39_pl932l59d2ckz60rnq00000gn/T/FiniteSets.tla
 Parsing file /private/var/folders/_f/yp39_pl932l59d2ckz60rnq00000gn/T/TLC.tla
@@ -10,22 +10,26 @@ Semantic processing of module Sequences
 Semantic processing of module FiniteSets
 Semantic processing of module TLC
 Semantic processing of module CooperativeClaim
-Starting... (2026-09-05 11:54:31)
+Starting... (2026-09-05 12:41:04)
 Implied-temporal checking--satisfiability problem has 2 branches.
 Computing initial states...
-Finished computing initial states: 1 distinct state generated at 2026-09-05 11:54:31.
-Checking 2 branches of temporal properties for the current state space with 252490 total distinct states at (2026-09-05 11:54:34)
-Finished checking temporal properties in 01s at 2026-09-05 11:54:35
-Progress(12) at 2026-09-05 11:54:35: 715 826 states generated (715 826 s/min), 126 245 distinct states found (126 245 ds/min), 65 293 states left on queue.
-Progress(23) at 2026-09-05 11:55:19: 18 593 409 states generated, 1 663 056 distinct states found, 0 states left on queue.
-Checking 2 branches of temporal properties for the complete state space with 3326112 total distinct states at (2026-09-05 11:55:19)
-Finished checking temporal properties in 36s at 2026-09-05 11:55:56
+Finished computing initial states: 1 distinct state generated at 2026-09-05 12:41:04.
+Checking 2 branches of temporal properties for the current state space with 95744 total distinct states at (2026-09-05 12:41:07)
+Finished checking temporal properties in 00s at 2026-09-05 12:41:07
+Progress(10) at 2026-09-05 12:41:07: 236 353 states generated (236 353 s/min), 47 872 distinct states found (47 872 ds/min), 28 216 states left on queue.
+Checking 2 branches of temporal properties for the current state space with 1679354 total distinct states at (2026-09-05 12:42:07)
+Finished checking temporal properties in 17s at 2026-09-05 12:42:25
+Progress(15) at 2026-09-05 12:42:25: 6 752 784 states generated (6 516 431 s/min), 839 678 distinct states found (791 806 ds/min), 257 978 states left on queue.
+Progress(17) at 2026-09-05 12:43:25: 14 321 875 states generated (7 569 091 s/min), 1 449 490 distinct states found (609 812 ds/min), 195 932 states left on queue.
+Progress(22) at 2026-09-05 12:43:52: 18 593 409 states generated, 1 663 056 distinct states found, 0 states left on queue.
+Checking 2 branches of temporal properties for the complete state space with 3326112 total distinct states at (2026-09-05 12:43:52)
+Finished checking temporal properties in 37s at 2026-09-05 12:44:29
 Model checking completed. No error has been found.
   Estimates of the probability that TLC did not check all reachable states
   because two distinct states had the same fingerprint:
   calculated (optimistic):  val = 1.5E-6
-  based on the actual fingerprints:  val = 9.7E-8
+  based on the actual fingerprints:  val = 1.2E-7
 18593409 states generated, 1663056 distinct states found, 0 states left on queue.
-The depth of the complete state graph search is 23.
+The depth of the complete state graph search is 22.
 The average outdegree of the complete state graph is 1 (minimum is 0, the maximum 13 and the 95th percentile is 4).
-Finished in 01min 25s at (2026-09-05 11:55:56)
+Finished in 03min 25s at (2026-09-05 12:44:29)

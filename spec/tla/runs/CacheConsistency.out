@@ -1,6 +1,6 @@
 TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)
-Running breadth-first search Model-Checking with fp 36 and seed 8080607432676735978 with 16 workers on 16 cores with 27300MB heap and 64MB offheap memory [pid: 60691] (Mac OS X 26.5.1 aarch64, Homebrew 17.0.19 x86_64, MSBDiskFPSet, DiskStateQueue).
-Parsing file spec/tla/CacheConsistency.tla
+Running breadth-first search Model-Checking with fp 0 and seed 0 with 1 worker on 16 cores with 27300MB heap and 64MB offheap memory [pid: 60947] (Mac OS X 26.6.2 aarch64, Eclipse Adoptium 21.0.12.1 x86_64, MSBDiskFPSet, DiskStateQueue).
+Parsing file /Users/eserie/galaxies/oxymake/.worktrees/task-20260905-83cb/spec/tla/CacheConsistency.tla
 Parsing file /private/var/folders/_f/yp39_pl932l59d2ckz60rnq00000gn/T/Naturals.tla
 Parsing file /private/var/folders/_f/yp39_pl932l59d2ckz60rnq00000gn/T/FiniteSets.tla
 Parsing file /private/var/folders/_f/yp39_pl932l59d2ckz60rnq00000gn/T/Sequences.tla
@@ -10,13 +10,16 @@ Semantic processing of module Sequences
 Semantic processing of module FiniteSets
 Semantic processing of module TLC
 Semantic processing of module CacheConsistency
-Starting... (2026-06-10 06:19:16)
+Starting... (2026-09-05 12:40:49)
 Implied-temporal checking--satisfiability problem has 6 branches.
 Computing initial states...
-Finished computing initial states: 1 distinct state generated at 2026-06-10 06:19:17.
-Progress(16) at 2026-06-10 06:19:19: 32 257 states generated, 7 436 distinct states found, 0 states left on queue.
-Checking 6 branches of temporal properties for the complete state space with 44616 total distinct states at (2026-06-10 06:19:19)
-Finished checking temporal properties in 03s at 2026-06-10 06:19:22
+Finished computing initial states: 1 distinct state generated at 2026-09-05 12:40:49.
+Checking 6 branches of temporal properties for the current state space with 42870 total distinct states at (2026-09-05 12:40:52)
+Finished checking temporal properties in 04s at 2026-09-05 12:40:57
+Progress(15) at 2026-09-05 12:40:57: 30 263 states generated (30 263 s/min), 7 145 distinct states found (7 145 ds/min), 745 states left on queue.
+Progress(16) at 2026-09-05 12:40:57: 32 257 states generated, 7 436 distinct states found, 0 states left on queue.
+Checking 6 branches of temporal properties for the complete state space with 44616 total distinct states at (2026-09-05 12:40:57)
+Finished checking temporal properties in 05s at 2026-09-05 12:41:03
 Model checking completed. No error has been found.
   Estimates of the probability that TLC did not check all reachable states
   because two distinct states had the same fingerprint:
@@ -24,4 +27,4 @@ Model checking completed. No error has been found.
 32257 states generated, 7436 distinct states found, 0 states left on queue.
 The depth of the complete state graph search is 16.
 The average outdegree of the complete state graph is 1 (minimum is 0, the maximum 6 and the 95th percentile is 3).
-Finished in 06s at (2026-06-10 06:19:22)
+Finished in 14s at (2026-09-05 12:41:03)

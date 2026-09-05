@@ -13,8 +13,11 @@
 //! younger than the lease (`lease_secs`). `ox run` heartbeats every third of
 //! the lease; a session that stops heartbeating — `kill -9`, power loss —
 //! goes stale after one lease and its `running` rows are reclaimed by the
-//! first peer that looks at them ([`StateDb::reclaim_stale_jobs`], the same
-//! reclaim `ox clean` uses). There is exactly one lease, the heartbeat one.
+//! first peer that looks at them ([`StateDb::reclaim_stale_jobs_if_stale`],
+//! the same reclaim `ox clean` uses). The reclaim re-checks the heartbeat
+//! inside its own transaction: what a peer *observed* only decides whether
+//! to try, the row's heartbeat at write time decides whether it happens.
+//! There is exactly one lease, the heartbeat one.
 //!
 //! # What a losing session sees
 //!
@@ -30,20 +33,28 @@
 //! | `failed` / `cancelled`        | yes        | `Failed` / `Cancelled`        |
 //! | `failed` / `cancelled`        | no         | reset row → `Unclaimed`       |
 //!
-//! A completion is consumed whoever recorded it — the outputs are on disk.
-//! A failure or cancellation is only mirrored while its author is live: a
-//! verdict left behind by a finished or dead session is history, not a
-//! peer's decision, so the row is reset and the job re-run here.
+//! A completion recorded after this session started is consumed whoever
+//! recorded it — the outputs are on disk. A failure or cancellation is only
+//! mirrored while its author is live: a verdict left behind by a finished
+//! or dead session is history, not a peer's decision, so the row is reset
+//! and the job re-run here.
 //!
 //! # Fresh runs and old rows
 //!
 //! `register_jobs` keeps the status of rows that already exist, so without
 //! further care a job `completed` by *yesterday's* run would make today's
 //! claim lose and today's session consume a stale completion instead of
-//! re-evaluating the job. [`StateDb::reset_inactive_job_rows`] runs right
-//! after registration and resets every non-pending row of this run's jobs
-//! whose owner is not live. Rows owned by a live peer are left alone — that
-//! peer is the concurrent session this protocol exists for.
+//! re-evaluating the job. A completion is therefore consumed only while its
+//! author is live or when it was recorded strictly after this session
+//! started (in seconds; the same second counts as history); an older one is
+//! history and the claim resets the row and wins. This happens
+//! lazily, on the claim of a job that is about to execute — a cache hit
+//! never claims, so yesterday's rows of a warm run are not touched.
+//! [`StateDb::reset_inactive_job_rows`] runs right after registration for
+//! the other stale statuses (`running`, `failed`, `cancelled` left by a
+//! session that is not live), so that a dead peer's verdicts are not
+//! mirrored. Rows owned by a live peer are left alone — that peer is the
+//! concurrent session this protocol exists for.
 //!
 //! # Failure policy
 //!
@@ -87,6 +98,8 @@ struct JobRow {
     status: String,
     session_id: Option<String>,
     exit_code: Option<i32>,
+    /// When the row reached its terminal status (UNIX seconds).
+    completed_at: Option<u64>,
     /// `Some` when the owning session row exists: `(status, heartbeat_at)`.
     owner: Option<(String, u64)>,
 }
@@ -110,17 +123,19 @@ impl StateDb {
         let row = self
             .conn()
             .query_row(
-                "SELECT j.status, j.session_id, j.exit_code, s.status, s.heartbeat_at
+                "SELECT j.status, j.session_id, j.exit_code, j.completed_at,
+                        s.status, s.heartbeat_at
                  FROM jobs j LEFT JOIN sessions s ON s.id = j.session_id
                  WHERE j.id = ?1",
                 rusqlite::params![job_id],
                 |row| {
-                    let owner_status: Option<String> = row.get(3)?;
-                    let owner_heartbeat: Option<u64> = row.get(4)?;
+                    let owner_status: Option<String> = row.get(4)?;
+                    let owner_heartbeat: Option<u64> = row.get(5)?;
                     Ok(JobRow {
                         status: row.get(0)?,
                         session_id: row.get(1)?,
                         exit_code: row.get(2)?,
+                        completed_at: row.get(3)?,
                         owner: owner_status.zip(owner_heartbeat),
                     })
                 },
@@ -146,15 +161,21 @@ impl StateDb {
     /// Make the row of `job_id` claimable again if its owner is not live:
     /// a `running` row is reclaimed together with the rest of the dead
     /// owner's running rows, a `failed` / `cancelled` row is reset. Rows
-    /// owned by a live session, `pending` rows and (unless `reset_completed`)
-    /// `completed` rows are left alone. Returns whether the row is now
-    /// `pending`.
+    /// owned by a live session, `pending` rows and `completed` rows are
+    /// left alone (completions are handled by
+    /// [`claim_job_for_session`](StateDb::claim_job_for_session)). Returns
+    /// whether the row is now `pending`.
+    ///
+    /// `row` is what the caller *observed*; the decision to reclaim is
+    /// taken again inside the reclaim transaction on the current heartbeat
+    /// ([`StateDb::reclaim_stale_jobs_if_stale`]), so an owner that
+    /// heartbeated between the observation and this call keeps its rows
+    /// and this returns `false`.
     fn release_if_owner_dead(
         &self,
         job_id: &str,
         row: &JobRow,
         lease_secs: u64,
-        reset_completed: bool,
     ) -> Result<bool, StateError> {
         let now = unix_now();
         match row.status.as_str() {
@@ -162,12 +183,12 @@ impl StateDb {
             _ if row.owner_live(lease_secs, now) => Ok(false),
             "running" => match &row.session_id {
                 Some(owner) => {
-                    self.reclaim_stale_jobs(owner)?;
-                    Ok(true)
+                    let cutoff = now.saturating_sub(lease_secs);
+                    Ok(self.reclaim_stale_jobs_if_stale(owner, cutoff)? > 0)
                 }
                 None => self.reset_job_row(job_id, row),
             },
-            "completed" | "skipped" if !reset_completed => Ok(false),
+            "completed" | "skipped" => Ok(false),
             _ => self.reset_job_row(job_id, row),
         }
     }
@@ -179,9 +200,15 @@ impl StateDb {
     ///
     /// - a row this session already owns is `Won` again (idempotent claim,
     ///   and a `failed` row of ours goes back to `running` for a retry);
-    /// - a row whose owner is not live any more is released (reclaimed or
-    ///   reset, see the module docs) and the CAS retried once;
-    /// - a row owned by a live peer, or terminalized, is `Lost`.
+    /// - a `completed` row is history when its author is not live and it
+    ///   was not recorded strictly after this session started: the row is
+    ///   reset and the CAS retried once. A completion by a live peer, or
+    ///   recorded after this session started, is `Lost` and consumed by
+    ///   the waiter;
+    /// - a `running` / `failed` / `cancelled` row whose owner is not live
+    ///   any more is released (reclaimed or reset, see the module docs) and
+    ///   the CAS retried once;
+    /// - a row owned by a live peer, or terminalized by one, is `Lost`.
     pub fn claim_job_for_session(
         &self,
         job_id: &str,
@@ -212,9 +239,14 @@ impl StateDb {
                 _ => {}
             }
         }
-        if self.release_if_owner_dead(job_id, &row, lease_secs, false)?
-            && self.claim_job(job_id, session_id)?
-        {
+        let released = match row.status.as_str() {
+            "completed" | "skipped" => {
+                self.completion_is_history(&row, session_id, lease_secs)?
+                    && self.reset_job_row(job_id, &row)?
+            }
+            _ => self.release_if_owner_dead(job_id, &row, lease_secs)?,
+        };
+        if released && self.claim_job(job_id, session_id)? {
             return Ok(ClaimOutcome::Won);
         }
         // Re-read: the owner may have changed under us.
@@ -223,6 +255,38 @@ impl StateDb {
             .and_then(|r| r.session_id)
             .or(row.session_id);
         Ok(ClaimOutcome::Lost { owner })
+    }
+
+    /// A `completed` row is *history* for `session_id` — a verdict of an
+    /// earlier run to re-evaluate, not a peer's result to consume — unless
+    /// its author is live or it was recorded strictly after this session
+    /// started (UNIX seconds). A row completed in the same second as the
+    /// session start is history: two runs of one script can start and
+    /// finish within a second, and consuming a completion whose outputs
+    /// were removed in between would report a job done that was not run.
+    /// The cost of the strict comparison is one wasted re-execution when a
+    /// peer completes and exits within that second.
+    fn completion_is_history(
+        &self,
+        row: &JobRow,
+        session_id: &str,
+        lease_secs: u64,
+    ) -> Result<bool, StateError> {
+        if row.owner_live(lease_secs, unix_now()) {
+            return Ok(false);
+        }
+        let started_at: Option<u64> = self
+            .conn()
+            .query_row(
+                "SELECT started_at FROM sessions WHERE id = ?1",
+                rusqlite::params![session_id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        Ok(match (row.completed_at, started_at) {
+            (Some(completed_at), Some(started_at)) => completed_at <= started_at,
+            _ => true,
+        })
     }
 
     /// Observe a job owned by a peer — see the table in the module docs.
@@ -245,36 +309,108 @@ impl StateDb {
             "cancelled" if live => PeerJobState::Cancelled,
             _ => {
                 // running / failed / cancelled with a dead (or no) owner.
-                self.release_if_owner_dead(job_id, &row, lease_secs, false)?;
+                self.release_if_owner_dead(job_id, &row, lease_secs)?;
                 PeerJobState::Unclaimed
             }
         })
     }
 
-    /// Reset the rows of `job_ids` that a previous, no longer live session
-    /// left behind (any non-`pending` status, `completed` included), so a
-    /// fresh run re-evaluates them instead of consuming stale verdicts.
-    /// Rows owned by a live session are kept for the claim protocol.
+    /// Reset the `running`, `failed` and `cancelled` rows of `job_ids`
+    /// that a previous, no longer live session left behind, so a fresh run
+    /// re-evaluates them instead of mirroring stale verdicts. Rows owned by
+    /// a live session are kept for the claim protocol. `completed` rows are
+    /// left alone: a cache hit never claims, and a job that does execute
+    /// resets yesterday's completion lazily in
+    /// [`claim_job_for_session`](StateDb::claim_job_for_session) — resetting
+    /// every completed row of a 1001-job graph at run start turned its 999
+    /// cache-hit `skip_job` writes from no-ops into fsynced autocommits,
+    /// about 100 ms per warm run (issue #3, round-1 QA finding 4).
     /// Returns the number of rows made `pending`.
+    ///
+    /// One `BEGIN IMMEDIATE` transaction for the whole run: the `running`
+    /// rows of each dead owner are reclaimed through the guarded reclaim
+    /// (which also closes that session), every other stale row is reset by
+    /// one set-based `UPDATE` per chunk of ids.
     pub fn reset_inactive_job_rows(
         &self,
         job_ids: &[String],
         lease_secs: u64,
     ) -> Result<usize, StateError> {
-        let mut reset = 0;
-        for job_id in job_ids {
-            let Some(row) = self.job_row(job_id)? else {
-                continue;
-            };
-            if row.status == "pending" {
-                continue;
+        if job_ids.is_empty() {
+            return Ok(0);
+        }
+        let cutoff = unix_now().saturating_sub(lease_secs);
+        let conn = self.conn();
+        conn.execute_batch("BEGIN IMMEDIATE")?;
+        match reset_inactive_job_rows_in(conn, job_ids, cutoff) {
+            Ok(reset) => {
+                conn.execute_batch("COMMIT")?;
+                Ok(reset)
             }
-            if self.release_if_owner_dead(job_id, &row, lease_secs, true)? {
-                reset += 1;
+            Err(e) => {
+                let _ = conn.execute_batch("ROLLBACK");
+                Err(e)
             }
         }
-        Ok(reset)
     }
+}
+
+/// Bound variables per statement, well under SQLite's default limit.
+const ID_CHUNK: usize = 500;
+
+/// Body of [`StateDb::reset_inactive_job_rows`], inside the caller's
+/// transaction. `?1` is the cutoff, the ids follow.
+fn reset_inactive_job_rows_in(
+    conn: &rusqlite::Connection,
+    job_ids: &[String],
+    cutoff: u64,
+) -> Result<usize, StateError> {
+    let mut reset = 0;
+    for chunk in job_ids.chunks(ID_CHUNK) {
+        let placeholders = (0..chunk.len())
+            .map(|i| format!("?{}", i + 2))
+            .collect::<Vec<_>>()
+            .join(",");
+        let params: Vec<&dyn rusqlite::ToSql> = std::iter::once(&cutoff as &dyn rusqlite::ToSql)
+            .chain(chunk.iter().map(|id| id as &dyn rusqlite::ToSql))
+            .collect();
+
+        // Dead owners of `running` rows: reclaim all their running rows
+        // (as the claim path does) and close their session.
+        let owners: Vec<String> = {
+            let mut stmt = conn.prepare(&format!(
+                "SELECT DISTINCT session_id FROM jobs
+                 WHERE id IN ({placeholders}) AND status = 'running'
+                   AND session_id IS NOT NULL
+                   AND NOT EXISTS (SELECT 1 FROM sessions s
+                                   WHERE s.id = jobs.session_id AND s.status = 'active'
+                                     AND s.heartbeat_at > ?1)"
+            ))?;
+            let rows = stmt.query_map(rusqlite::params_from_iter(params.iter()), |r| r.get(0))?;
+            rows.collect::<Result<_, _>>()?
+        };
+        for owner in &owners {
+            reset += crate::session::reclaim_jobs_unless_live_in(conn, owner, cutoff)?;
+        }
+
+        // Every other non-pending row without a live owner (a running row
+        // with no session, a verdict or cache hit of a session that is
+        // gone) is reset in one statement.
+        reset += conn.execute(
+            &format!(
+                "UPDATE jobs SET status = 'pending', session_id = NULL, locked_by = NULL,
+                                 started_at = NULL, completed_at = NULL, exit_code = NULL,
+                                 output_hashes = NULL, cached = 0
+                 WHERE id IN ({placeholders})
+                   AND status NOT IN ('pending', 'completed', 'skipped')
+                   AND NOT EXISTS (SELECT 1 FROM sessions s
+                                   WHERE s.id = jobs.session_id AND s.status = 'active'
+                                     AND s.heartbeat_at > ?1)"
+            ),
+            rusqlite::params_from_iter(params.iter()),
+        )?;
+    }
+    Ok(reset)
 }
 
 /// Claimer that reads and writes the `jobs` / `sessions` tables of `state.db`.
@@ -283,6 +419,25 @@ impl StateDb {
 /// connection is `Send` but not `Sync`); every operation is a few short
 /// SQLite statements executed without awaiting, so the lock is never held
 /// across a suspension point.
+///
+/// # Clock assumption
+///
+/// The lease is measured on the wall clock (UNIX seconds): the owner's
+/// heartbeat stores its `now`, and this claimer compares that value against
+/// *its* `now`. Both are assumed to come from one non-decreasing clock — the
+/// system clock when every session runs on one host, NTP-synchronised
+/// clocks when hosts share a `state.db`. A skew or backward clock step
+/// larger than the lease makes a live owner read as dead, or a dead one as
+/// live, for one lease; nothing detects it. The reclaim re-checks the
+/// heartbeat inside its transaction ([`StateDb::reclaim_stale_jobs_if_stale`]),
+/// which closes the read-then-reclaim race but not a wrong clock.
+///
+/// A session that stops heartbeating because its process is suspended
+/// (laptop sleep, `SIGSTOP`) is reclaimed like a crashed one. On resume it
+/// fails closed: [`StateDb::heartbeat`] only touches an `active` row and
+/// [`StateDb::complete_job`] / [`StateDb::fail_job`] update zero rows once
+/// a peer has re-claimed the job, so the resumed owner never overwrites a
+/// peer's result (ADR-012, "Suspend / resume").
 pub struct StateJobClaimer {
     db: Mutex<StateDb>,
     session_id: String,
@@ -481,16 +636,37 @@ mod tests {
     #[test]
     fn cached_completion_counts_as_completed() {
         let (_tmp, db) = db_with_job("j");
+        let s2 = db.create_session(2, "h", None).unwrap();
         assert!(db.skip_job("j").unwrap());
         assert_eq!(
             db.peer_job_state("j", LEASE).unwrap(),
             PeerJobState::Completed
         );
-        let s2 = db.create_session(2, "h", None).unwrap();
+        // Recorded by a peer after this session started: consumed.
+        db.conn()
+            .execute(
+                "UPDATE jobs SET completed_at = (SELECT started_at + 1 FROM sessions WHERE id = ?1)
+                 WHERE id = 'j'",
+                rusqlite::params![s2],
+            )
+            .unwrap();
         assert!(matches!(
             db.claim_job_for_session("j", &s2, LEASE).unwrap(),
             ClaimOutcome::Lost { .. }
         ));
+        // Recorded at or before this session's start with no live owner
+        // (yesterday's cache hit): history, the claim resets it and wins.
+        db.conn()
+            .execute(
+                "UPDATE jobs SET completed_at = (SELECT started_at FROM sessions WHERE id = ?1)
+                 WHERE id = 'j'",
+                rusqlite::params![s2],
+            )
+            .unwrap();
+        assert_eq!(
+            db.claim_job_for_session("j", &s2, LEASE).unwrap(),
+            ClaimOutcome::Won
+        );
     }
 
     #[test]
@@ -525,6 +701,84 @@ mod tests {
         // is rejected by the zombie guard.
         assert!(db.active_sessions().unwrap().iter().all(|s| s.id != s1));
         assert!(!db.complete_job("j", &s1, 0, "").unwrap());
+    }
+
+    #[test]
+    fn heartbeat_between_observation_and_reclaim_keeps_the_live_owner() {
+        // Round-1 QA finding 1 (issue #3): the waiter observes a stale
+        // heartbeat, then the owner heartbeats, then the waiter reclaims.
+        // The reclaim must decide on the row's own heartbeat inside its
+        // transaction, so the now-live owner keeps its running rows.
+        let (tmp, owner_db) = db_with_job("j");
+        let waiter_db = StateDb::open(tmp.path()).unwrap();
+        let s1 = owner_db.create_session(1, "h", None).unwrap();
+        let s2 = owner_db.create_session(2, "h", None).unwrap();
+        owner_db.claim_job_for_session("j", &s1, LEASE).unwrap();
+        age_heartbeat(&owner_db, &s1, LEASE + 5);
+
+        // The waiter reads the row: the owner looks dead.
+        let observed = waiter_db.job_row("j").unwrap().unwrap();
+        assert!(!observed.owner_live(LEASE, unix_now()));
+
+        // The owner's heartbeat lands before the waiter acts on what it saw.
+        owner_db.heartbeat(&s1).unwrap();
+
+        // The reclaim must not go through on the stale observation.
+        assert!(
+            !waiter_db
+                .release_if_owner_dead("j", &observed, LEASE)
+                .unwrap()
+        );
+        assert_eq!(
+            waiter_db.claim_job_for_session("j", &s2, LEASE).unwrap(),
+            ClaimOutcome::Lost {
+                owner: Some(s1.clone())
+            }
+        );
+        assert_eq!(
+            owner_db.job_status("j").unwrap().as_deref(),
+            Some("running")
+        );
+        assert!(
+            owner_db
+                .active_sessions()
+                .unwrap()
+                .iter()
+                .any(|s| s.id == s1)
+        );
+        // The owner's terminal write still lands.
+        assert!(owner_db.complete_job("j", &s1, 0, "").unwrap());
+    }
+
+    #[test]
+    fn reclaim_if_stale_decides_on_the_row_heartbeat_in_one_transaction() {
+        let (_tmp, db) = db_with_job("j");
+        let s1 = db.create_session(1, "h", None).unwrap();
+        db.claim_job_for_session("j", &s1, LEASE).unwrap();
+        let now = unix_now();
+
+        // Live owner (heartbeat younger than the cutoff): nothing happens.
+        assert_eq!(db.reclaim_stale_jobs_if_stale(&s1, now - LEASE).unwrap(), 0);
+        assert_eq!(db.job_status("j").unwrap().as_deref(), Some("running"));
+        assert_eq!(db.active_sessions().unwrap().len(), 1);
+
+        // Stale owner: the row and the session flip together.
+        age_heartbeat(&db, &s1, LEASE);
+        assert_eq!(db.reclaim_stale_jobs_if_stale(&s1, now - LEASE).unwrap(), 1);
+        assert_eq!(db.job_status("j").unwrap().as_deref(), Some("pending"));
+        assert!(db.active_sessions().unwrap().is_empty());
+
+        // A session that already closed itself is not live either: its
+        // leftover running rows are reclaimable regardless of heartbeat.
+        let s2 = db.create_session(2, "h", None).unwrap();
+        db.claim_job_for_session("j", &s2, LEASE).unwrap();
+        db.interrupt_session(&s2).unwrap();
+        assert_eq!(
+            db.reclaim_stale_jobs_if_stale(&s2, unix_now() - LEASE)
+                .unwrap(),
+            1
+        );
+        assert_eq!(db.job_status("j").unwrap().as_deref(), Some("pending"));
     }
 
     #[test]
@@ -600,23 +854,167 @@ mod tests {
             .iter()
             .map(|s| s.to_string())
             .collect();
-        assert_eq!(db.reset_inactive_job_rows(&ids, LEASE).unwrap(), 3);
-        assert_eq!(
-            db.job_status("done_by_old").unwrap().as_deref(),
-            Some("pending")
-        );
-        assert_eq!(
-            db.job_status("cached_old").unwrap().as_deref(),
-            Some("pending")
-        );
+        assert_eq!(db.reset_inactive_job_rows(&ids, LEASE).unwrap(), 1);
         assert_eq!(
             db.job_status("running_dead").unwrap().as_deref(),
             Some("pending")
+        );
+        // Completions are left for the claim path (a cache hit never
+        // claims; an executing job resets history lazily, see
+        // `yesterdays_completion_is_history_for_a_new_session`).
+        assert_eq!(
+            db.job_status("done_by_old").unwrap().as_deref(),
+            Some("completed")
+        );
+        assert_eq!(
+            db.job_status("cached_old").unwrap().as_deref(),
+            Some("completed")
         );
         assert_eq!(
             db.job_status("done_by_live").unwrap().as_deref(),
             Some("completed"),
             "a live peer's completion is the concurrent case the claim protocol serves"
+        );
+    }
+
+    #[test]
+    fn reset_inactive_rows_handles_more_ids_than_one_chunk() {
+        // 1203 rows: two full chunks and a partial one, mixing a dead
+        // owner's running rows, old completions and one live peer row.
+        let (_tmp, db) = db_with_job("seed");
+        let n = ID_CHUNK * 2 + 203;
+        let ids: Vec<String> = (0..n).map(|i| format!("j{i}")).collect();
+        db.register_jobs(
+            &ids.iter()
+                .map(|id| JobRecord {
+                    id: id.clone(),
+                    rule_name: "r".into(),
+                    wildcards: "{}".into(),
+                    cache_key: None,
+                    run_id: None,
+                })
+                .collect::<Vec<_>>(),
+        )
+        .unwrap();
+        let old = db.create_session(1, "h", None).unwrap();
+        let dead = db.create_session(2, "h", None).unwrap();
+        let live = db.create_session(3, "h", None).unwrap();
+        for (i, id) in ids.iter().enumerate() {
+            match i % 3 {
+                0 => {
+                    db.claim_job_for_session(id, &old, LEASE).unwrap();
+                    db.complete_job(id, &old, 0, "").unwrap();
+                }
+                1 => {
+                    db.claim_job_for_session(id, &dead, LEASE).unwrap();
+                }
+                _ => {
+                    db.skip_job(id).unwrap();
+                }
+            }
+        }
+        db.complete_session(&old).unwrap();
+        age_heartbeat(&db, &dead, LEASE);
+        db.claim_job_for_session("seed", &live, LEASE).unwrap();
+
+        let mut all = ids.clone();
+        all.push("seed".into());
+        let dead_running = ids.iter().enumerate().filter(|(i, _)| i % 3 == 1).count();
+        assert_eq!(
+            db.reset_inactive_job_rows(&all, LEASE).unwrap(),
+            dead_running
+        );
+        for (i, id) in ids.iter().enumerate() {
+            let expected = if i % 3 == 1 { "pending" } else { "completed" };
+            assert_eq!(db.job_status(id).unwrap().as_deref(), Some(expected));
+        }
+        assert_eq!(db.job_status("seed").unwrap().as_deref(), Some("running"));
+        let statuses = db.session_statuses().unwrap();
+        assert!(statuses.contains(&(dead.clone(), "interrupted".into())));
+        assert!(statuses.contains(&(live.clone(), "active".into())));
+    }
+
+    #[test]
+    fn yesterdays_completion_is_history_for_a_new_session() {
+        // A row completed by a session that exited before this one started
+        // is reset and claimed; one completed by a live peer, or since this
+        // session started, is a peer's result to consume.
+        let (_tmp, db) = db_with_job("old");
+        for id in ["fresh", "same_second", "by_live"] {
+            db.register_jobs(&[JobRecord {
+                id: id.into(),
+                rule_name: "r".into(),
+                wildcards: "{}".into(),
+                cache_key: None,
+                run_id: None,
+            }])
+            .unwrap();
+        }
+        let yesterday = db.create_session(1, "h", None).unwrap();
+        db.claim_job_for_session("old", &yesterday, LEASE).unwrap();
+        db.complete_job("old", &yesterday, 0, "").unwrap();
+        db.complete_session(&yesterday).unwrap();
+        db.conn()
+            .execute(
+                "UPDATE jobs SET completed_at = completed_at - 3600 WHERE id = 'old'",
+                [],
+            )
+            .unwrap();
+
+        let me = db.create_session(2, "h", None).unwrap();
+        let live = db.create_session(3, "h", None).unwrap();
+        db.claim_job_for_session("by_live", &live, LEASE).unwrap();
+        db.complete_job("by_live", &live, 0, "").unwrap();
+        let peer_that_exited = db.create_session(4, "h", None).unwrap();
+        for id in ["fresh", "same_second"] {
+            db.claim_job_for_session(id, &peer_that_exited, LEASE)
+                .unwrap();
+            db.complete_job(id, &peer_that_exited, 0, "").unwrap();
+        }
+        db.complete_session(&peer_that_exited).unwrap();
+        // `same_second` keeps completed_at == my started_at (both this
+        // second); `fresh` is moved strictly after my start.
+        db.conn()
+            .execute(
+                "UPDATE jobs SET completed_at = (SELECT started_at + 1 FROM sessions WHERE id = ?1)
+                 WHERE id = 'fresh'",
+                rusqlite::params![me],
+            )
+            .unwrap();
+        db.conn()
+            .execute(
+                "UPDATE jobs SET completed_at = (SELECT started_at FROM sessions WHERE id = ?1)
+                 WHERE id = 'same_second'",
+                rusqlite::params![me],
+            )
+            .unwrap();
+
+        assert_eq!(
+            db.claim_job_for_session("old", &me, LEASE).unwrap(),
+            ClaimOutcome::Won,
+            "yesterday's completion is history"
+        );
+        assert_eq!(
+            db.claim_job_for_session("by_live", &me, LEASE).unwrap(),
+            ClaimOutcome::Lost {
+                owner: Some(live.clone())
+            }
+        );
+        assert_eq!(
+            db.claim_job_for_session("fresh", &me, LEASE).unwrap(),
+            ClaimOutcome::Lost {
+                owner: Some(peer_that_exited.clone())
+            },
+            "a completion recorded after this session started is consumed"
+        );
+        assert_eq!(
+            db.peer_job_state("fresh", LEASE).unwrap(),
+            PeerJobState::Completed
+        );
+        assert_eq!(
+            db.claim_job_for_session("same_second", &me, LEASE).unwrap(),
+            ClaimOutcome::Won,
+            "a completion in the same second as this session's start is history"
         );
     }
 
