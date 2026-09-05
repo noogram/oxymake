@@ -203,25 +203,7 @@ impl StateDb {
         // (`rusqlite` 0.32 has no `unchecked_transaction_with_behavior`.)
         let conn = self.conn();
         conn.execute_batch("BEGIN IMMEDIATE")?;
-        let result = (|| -> Result<usize, StateError> {
-            let reclaimed = conn.execute(
-                "UPDATE jobs SET status = 'pending', session_id = NULL, locked_by = NULL,
-                                 started_at = NULL
-                 WHERE session_id = ?1 AND status = 'running'
-                   AND NOT EXISTS (SELECT 1 FROM sessions
-                                   WHERE id = ?1 AND status = 'active' AND heartbeat_at > ?2)",
-                rusqlite::params![session_id, cutoff],
-            )?;
-            // Only an `active` session is flipped: a session that already
-            // recorded its own terminal status keeps it.
-            conn.execute(
-                "UPDATE sessions SET status = 'interrupted'
-                 WHERE id = ?1 AND status = 'active' AND heartbeat_at <= ?2",
-                rusqlite::params![session_id, cutoff],
-            )?;
-            Ok(reclaimed)
-        })();
-        match result {
+        match reclaim_jobs_unless_live_in(conn, session_id, cutoff) {
             Ok(reclaimed) => {
                 conn.execute_batch("COMMIT")?;
                 Ok(reclaimed)
@@ -292,6 +274,32 @@ impl StateDb {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/// The statements of [`StateDb::reclaim_stale_jobs_if_stale`], to be run
+/// inside a transaction the caller owns (`BEGIN IMMEDIATE`, so that the
+/// heartbeat read by the guards cannot move until the caller commits).
+pub(crate) fn reclaim_jobs_unless_live_in(
+    conn: &rusqlite::Connection,
+    session_id: &str,
+    cutoff: u64,
+) -> Result<usize, StateError> {
+    let reclaimed = conn.execute(
+        "UPDATE jobs SET status = 'pending', session_id = NULL, locked_by = NULL,
+                         started_at = NULL
+         WHERE session_id = ?1 AND status = 'running'
+           AND NOT EXISTS (SELECT 1 FROM sessions
+                           WHERE id = ?1 AND status = 'active' AND heartbeat_at > ?2)",
+        rusqlite::params![session_id, cutoff],
+    )?;
+    // Only an `active` session is flipped: a session that already
+    // recorded its own terminal status keeps it.
+    conn.execute(
+        "UPDATE sessions SET status = 'interrupted'
+         WHERE id = ?1 AND status = 'active' AND heartbeat_at <= ?2",
+        rusqlite::params![session_id, cutoff],
+    )?;
+    Ok(reclaimed)
+}
 
 /// Current UNIX timestamp in seconds.
 fn unix_now() -> u64 {

@@ -151,11 +151,21 @@ pattern as `GateCheck`: the trait lives in `ox-core`, the implementation
   the completion — the outputs it wrote are real, and a peer then consumes
   them as a completion. In no ordering does the resumed owner replace a
   peer's result.
-- **Old rows.** `register_jobs` keeps existing statuses, so after
-  registration `ox run` resets every row of its jobs whose owner is not
-  live (yesterday's completed run, a crashed peer, a cached row) — a fresh
-  run re-evaluates them instead of losing its claim to history. Rows owned
-  by a live peer are kept: that peer is the concurrent session this
+- **Old rows.** `register_jobs` keeps existing statuses, so a fresh run
+  must not lose its claim to history. Right after registration `ox run`
+  resets, in one transaction, the `running`, `failed` and `cancelled` rows
+  of its jobs whose owner is not live (a crashed or finished peer), so a
+  dead session's verdicts are not mirrored. `completed` rows (yesterday's
+  run, a cached row) are left in place and handled lazily by the claim:
+  a cache hit never claims, and a job that does execute finds the old
+  completion at claim time and resets it unless its author is live or it
+  was recorded *strictly after* this session started (UNIX seconds — a
+  completion in the same second as the start is history, so two runs
+  within one second cannot make the second consume a completion whose
+  outputs the first no longer guarantees). Resetting every completed row
+  eagerly cost a warm 1001-job run about 100 ms, because the 999 cache-hit
+  `skip_job` writes stopped being no-ops (#3, round-1 QA finding 4). Rows
+  owned by a live peer are kept: that peer is the concurrent session this
   protocol serves. A session that stops waiting (interrupt) cancels only
   unclaimed pending rows and its own running rows, never a peer's.
 - A session only ever reaches jobs in its own graph, so it never blocks on
