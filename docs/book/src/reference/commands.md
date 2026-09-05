@@ -157,6 +157,13 @@ Rules of the gate ledger:
   against pending records; with a single run waiting there is exactly one.
   If two runs wait on the same gate, the name is ambiguous and the command
   lists the ids to use instead.
+- **Two approved runs both execute the guarded job.** *Known limitation.*
+  The cooperative claim protocol of `state.db` (ADR-012) is not yet the
+  scheduling gate, so approving both ids runs the job in both sessions. The
+  outputs are committed once: the session that loses the atomic commit
+  adopts the other's outputs (noted in its job log) and reports success,
+  but the work was done twice. Approve one id and reject the other to run
+  it once.
 - **`after` adds no dependency edge.** A gate is evaluated once a guarded
   job's own inputs are ready, so list in `after` rules that are upstream of
   the `before` rules through the DAG.

@@ -335,6 +335,67 @@ fn temp_path(path: &std::path::Path) -> PathBuf {
     PathBuf::from(s)
 }
 
+/// How long `finalize_workspace` waits for a concurrent session that is
+/// committing the same outputs to finish before giving up on adopting them.
+const CONCURRENT_COMMIT_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Wait for a concurrent session's commit of `outputs` to land: every
+/// output present at its final path and no `.oxytmp` left.
+///
+/// Two `ox run` sessions approved for the same gate execute the same job
+/// (the claim protocol of ADR-012 is not yet the scheduling gate) and
+/// race the two-phase rename on the same paths. The session that loses a
+/// rename must not fail the job over outputs its peer is committing —
+/// they are the outputs of the same job spec. Returns `true` once the
+/// peer's commit is visible, `false` after [`CONCURRENT_COMMIT_WAIT`].
+async fn wait_for_concurrent_commit(outputs: &[PathBuf]) -> bool {
+    let deadline = tokio::time::Instant::now() + CONCURRENT_COMMIT_WAIT;
+    loop {
+        let committed = outputs.iter().all(|p| p.exists() && !temp_path(p).exists());
+        if committed {
+            return true;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return false;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+}
+
+/// Record, in the job's log file when there is one, that this session
+/// adopted outputs committed by a concurrent session. The CLI installs no
+/// `tracing` subscriber, so the log file is where an operator can see it.
+async fn note_adopted_outputs(result: &JobResult, path: &std::path::Path) {
+    warn!(
+        target: "ox.exec.local",
+        job_id = %result.job_id,
+        path = %path.display(),
+        "outputs were committed by a concurrent session; adopting them"
+    );
+    if let Some(log_path) = &result.log_path {
+        if let Ok(mut f) = tokio::fs::OpenOptions::new()
+            .append(true)
+            .open(log_path)
+            .await
+        {
+            use tokio::io::AsyncWriteExt;
+            let _ = f
+                .write_all(
+                    format!(
+                        "\n[oxymake] {} was committed by a concurrent session running the same job; \
+                         this session adopted those outputs\n",
+                        path.display()
+                    )
+                    .as_bytes(),
+                )
+                .await;
+            // A tokio `File` hands writes to a background task; flush so
+            // the note is on disk before the job is reported complete.
+            let _ = f.flush().await;
+        }
+    }
+}
+
 /// Returns `true` if the conda `env` value looks like a YAML file spec
 /// (ends with `.yaml` or `.yml`) rather than a named environment.
 fn is_conda_file_spec(env: &str) -> bool {
@@ -1051,6 +1112,11 @@ impl Executor for LocalExecutor {
     ///
     ///   This ensures multi-output rules are all-or-nothing: either every
     ///   output is visible at its final path or none are.
+    ///
+    /// When a rename fails because a concurrent session is committing the
+    /// same outputs (the same job approved in two `ox run` sessions), this
+    /// session waits for that commit and adopts it instead of failing the
+    /// job (see `wait_for_concurrent_commit`).
     async fn finalize_workspace(
         &self,
         workspace: Workspace,
@@ -1077,6 +1143,13 @@ impl Executor for LocalExecutor {
         // Success: verify all outputs exist.
         for path in &state.output_files {
             if !path.exists() {
+                // A peer's staged copy means the output was produced and a
+                // concurrent session is committing it: adopt its commit.
+                if temp_path(path).exists() && wait_for_concurrent_commit(&state.output_files).await
+                {
+                    note_adopted_outputs(result, path).await;
+                    return Ok(());
+                }
                 // Clean up any outputs that WERE produced.
                 for p in &state.output_files {
                     let _ = tokio::fs::remove_file(p).await;
@@ -1097,6 +1170,14 @@ impl Executor for LocalExecutor {
                 for staged_path in &staged {
                     let _ = tokio::fs::rename(&temp_path(staged_path), staged_path.as_path()).await;
                 }
+                // The output existed a moment ago: a concurrent session
+                // staged it. Wait for its commit and adopt it.
+                if e.kind() == std::io::ErrorKind::NotFound
+                    && wait_for_concurrent_commit(&state.output_files).await
+                {
+                    note_adopted_outputs(result, path).await;
+                    return Ok(());
+                }
                 return Err(ExecLocalError::AtomicWriteFailed {
                     path: path.display().to_string(),
                     reason: format!("stage rename failed: {e}"),
@@ -1110,6 +1191,15 @@ impl Executor for LocalExecutor {
         for path in &state.output_files {
             let tmp = temp_path(path);
             if let Err(e) = tokio::fs::rename(&tmp, path).await {
+                // Our staged copy is gone: a concurrent session staged over
+                // it and is committing. Adopt its commit rather than delete
+                // the outputs it just made visible.
+                if e.kind() == std::io::ErrorKind::NotFound
+                    && wait_for_concurrent_commit(&state.output_files).await
+                {
+                    note_adopted_outputs(result, path).await;
+                    return Ok(());
+                }
                 // Best-effort cleanup of remaining .oxytmp files.
                 for p in &state.output_files {
                     let _ = tokio::fs::remove_file(&temp_path(p)).await;
@@ -1717,6 +1807,83 @@ mod tests {
             matches!(err, ExecLocalError::OutputMissing { .. }),
             "expected OutputMissing, got: {err:?}"
         );
+    }
+
+    /// Verification finding 4: the output is missing at its final path but
+    /// a concurrent session's staged copy exists — that session is
+    /// committing the same job's outputs. Finalisation waits for the
+    /// commit, adopts it and succeeds, recording the adoption in the job
+    /// log.
+    #[tokio::test]
+    async fn finalize_adopts_outputs_committed_by_a_concurrent_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("result.csv");
+        let log = dir.path().join("job.log");
+        std::fs::write(&log, "job output\n").unwrap();
+        // The peer has staged the output; ours is gone.
+        std::fs::write(temp_path(&out), "peer-data").unwrap();
+
+        // The peer commits at the first yield point of this current-thread
+        // runtime, i.e. once finalisation has observed the missing output
+        // and started waiting for the commit (deterministic under load).
+        let peer_out = out.clone();
+        tokio::spawn(async move {
+            tokio::fs::rename(temp_path(&peer_out), &peer_out)
+                .await
+                .unwrap();
+        });
+
+        let ws = make_atomic_workspace(dir.path().to_path_buf(), vec![out.clone()]);
+        let exec = LocalExecutor::new();
+        let result = JobResult {
+            log_path: Some(log.clone()),
+            ..make_result(0)
+        };
+        exec.finalize_workspace(ws, &result).await.unwrap();
+
+        assert_eq!(std::fs::read_to_string(&out).unwrap(), "peer-data");
+        assert!(!temp_path(&out).exists());
+        let log_text = std::fs::read_to_string(&log).unwrap();
+        assert!(
+            log_text.contains("committed by a concurrent session"),
+            "adoption is recorded in the job log: {log_text}"
+        );
+    }
+
+    /// A staged copy that is never committed is not adopted: after the
+    /// wait the missing output is reported as before.
+    #[tokio::test(start_paused = true)]
+    async fn finalize_does_not_adopt_an_abandoned_stage() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("result.csv");
+        std::fs::write(temp_path(&out), "abandoned").unwrap();
+
+        let ws = make_atomic_workspace(dir.path().to_path_buf(), vec![out.clone()]);
+        let exec = LocalExecutor::new();
+        let err = exec
+            .finalize_workspace(ws, &make_result(0))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, ExecLocalError::OutputMissing { .. }),
+            "expected OutputMissing, got: {err:?}"
+        );
+    }
+
+    /// `wait_for_concurrent_commit` resolves only once every output is at
+    /// its final path with no `.oxytmp` left, and gives up after the wait.
+    #[tokio::test(start_paused = true)]
+    async fn wait_for_concurrent_commit_requires_all_outputs_committed() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = dir.path().join("a.csv");
+        let b = dir.path().join("b.csv");
+        std::fs::write(&a, "a").unwrap();
+        // b is still staged by the peer: not committed.
+        std::fs::write(temp_path(&b), "b").unwrap();
+        assert!(!wait_for_concurrent_commit(&[a.clone(), b.clone()]).await);
+
+        std::fs::rename(temp_path(&b), &b).unwrap();
+        assert!(wait_for_concurrent_commit(&[a, b]).await);
     }
 
     #[tokio::test]

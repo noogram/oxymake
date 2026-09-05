@@ -73,8 +73,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `state.db` schema migration (one of them failed with "duplicate column
   name"): the version is read and all migrations are applied under a single
   write transaction, so the second run waits and finds the schema ready. The
-  cache manifest open waits for a peer's lock the same way instead of
-  reporting "cache manifest corrupted: database is locked".
+  WAL switch of both `state.db` and the cache manifest, which SQLite does
+  not cover with the busy timeout, is retried instead of failing the open
+  with "database is locked".
+- Two `ox run` approved for the same gate both execute the guarded job
+  (known limitation: the claim protocol is not yet the scheduling gate,
+  ADR-012); the session that lost the atomic output commit failed with
+  "stage rename failed". It now waits for its peer's commit, adopts those
+  outputs, notes the adoption in the job log and reports success. The
+  duplicate execution itself remains.
 - `ox gate reject` confirms with "rejected by", not "rejectd by".
 - The terminal progress summary now counts cancelled jobs (gate rejected,
   interrupted) as `N cancelled` instead of folding them into `N skipped`;

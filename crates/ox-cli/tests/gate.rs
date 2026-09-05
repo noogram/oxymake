@@ -252,6 +252,101 @@ fn rejected_gate_cancels_the_guarded_job() {
     );
 }
 
+/// Verification finding 4: two `ox run` sessions waiting on the same gate,
+/// both approved by id, both execute the guarded job (the claim protocol
+/// of ADR-012 is not yet the scheduling gate) and race the atomic commit
+/// of the same output. Neither session may fail: the one that loses the
+/// rename adopts the other's committed outputs. A barrier file makes both
+/// shells finish together so the two finalisations overlap.
+#[test]
+fn two_approved_runs_of_the_same_gated_job_both_succeed() {
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path();
+    fs::write(
+        dir.join("Oxymakefile.toml"),
+        OXYMAKEFILE.replace(
+            "shell = \"echo RAN > out.txt\"",
+            "shell = \"while [ ! -f go ]; do sleep 0.01; done; echo RAN > out.txt\"",
+        ),
+    )
+    .unwrap();
+
+    let spawn = |tag: &str| {
+        Command::new(ox_bin())
+            .args(["run", "out.txt"])
+            .current_dir(dir)
+            .stdout(Stdio::from(
+                fs::File::create(dir.join(format!("run-{tag}.out"))).unwrap(),
+            ))
+            .stderr(Stdio::from(
+                fs::File::create(dir.join(format!("run-{tag}.err"))).unwrap(),
+            ))
+            .spawn()
+            .expect("spawn ox run")
+    };
+    let mut a = KillOnDrop(spawn("a"));
+    let mut b = KillOnDrop(spawn("b"));
+
+    // Both runs register their own pending record.
+    let start = Instant::now();
+    let ids: Vec<i64> = loop {
+        let pending: Vec<i64> = gate_rows(dir)
+            .into_iter()
+            .filter(|g| g["name"] == "approval" && g["status"] == "pending")
+            .filter_map(|g| g["id"].as_i64())
+            .collect();
+        if pending.len() == 2 {
+            break pending;
+        }
+        for (tag, child) in [("a", &mut a.0), ("b", &mut b.0)] {
+            assert!(
+                child.try_wait().unwrap().is_none(),
+                "run {tag} exited before its gate became pending:\n{}",
+                fs::read_to_string(dir.join(format!("run-{tag}.err"))).unwrap_or_default()
+            );
+        }
+        assert!(start.elapsed() < WAIT, "two pending gates never appeared");
+        std::thread::sleep(Duration::from_millis(100));
+    };
+
+    for id in &ids {
+        let out = Command::new(ox_bin())
+            .args(["gate", "approve", &id.to_string(), "--approver", "test"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+    // Let both shells start, then release them together.
+    std::thread::sleep(Duration::from_millis(1500));
+    fs::write(dir.join("go"), "").unwrap();
+
+    let mut read = |tag: &str, child: &mut Child| {
+        let exit = wait_for_exit(dir, child);
+        let err = fs::read_to_string(dir.join(format!("run-{tag}.err"))).unwrap_or_default();
+        let out = fs::read_to_string(dir.join(format!("run-{tag}.out"))).unwrap_or_default();
+        assert!(exit.success(), "run {tag} failed:\n{out}\n{err}");
+        assert!(
+            !err.contains("finalize_workspace"),
+            "run {tag} reported a finalisation failure:\n{err}"
+        );
+        assert!(out.contains("1 succeeded"), "run {tag}: {out}");
+    };
+    read("a", &mut a.0);
+    read("b", &mut b.0);
+
+    assert_eq!(
+        fs::read_to_string(dir.join("out.txt")).unwrap().trim(),
+        "RAN"
+    );
+    assert!(!dir.join("out.txt.oxytmp").exists());
+    assert_eq!(job_status(dir, "guarded").as_deref(), Some("completed"));
+}
+
 /// Verification finding 1: when the gate record cannot be written to
 /// state.db while reads still work, the guarded rule must not run. The
 /// write failure is injected with a `BEFORE INSERT` trigger on `gates`;
