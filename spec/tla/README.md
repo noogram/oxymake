@@ -163,7 +163,8 @@ the red runs stopped at different state counts). A committed `.out` is
 
 The script prints exactly these lines. Two consecutive `--all` runs on
 2026-09-05 agreed on all of them for the five configurations (the green
-`CooperativeClaim` run takes about five minutes with one worker;
+`CooperativeClaim` run takes about five minutes with one worker on an
+Apple M-series host;
 `TLC_WORKERS=<n>` speeds a local check up at the cost of comparability).
 
 Two **red configurations** are committed alongside the green ones:
