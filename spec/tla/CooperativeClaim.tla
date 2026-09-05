@@ -22,6 +22,21 @@
 \*     requirement that .oxymake/ reside on local disk (paper §6.2,
 \*     "SQLite on network filesystems"), not by SQLite alone. Point
 \*     the state DB at NFS and every invariant below loses its premise.
+\* 2026-09-05 (issue #3, dispatch-time claim): the scheduler now calls
+\* Claim(s, j) BEFORE launching j (ox-core scheduler.rs, through the
+\* JobClaim trait implemented in ox-state claim.rs). Until then the code
+\* recorded the claim from the JobStarted event, i.e. after dispatch, so
+\* a session could execute j with j \notin local_running[s] in this model's
+\* terms — the implementation diverged from the spec; the spec was right.
+\* The change closes that gap and adds no transition: a session that
+\* loses Claim(s, j) never adds j to local_running[s], it polls status[j]
+\* / done_by[j] (a read, mutating nothing modelled here) and, on
+\* status[j] = "pending" after Reclaim, retries Claim — every step of the
+\* wait is already an action below. Terminal states other than "done"
+\* (failed / cancelled) and their reset once the owner is dead are out
+\* of model, as before. The suite was re-run unchanged and stays green
+\* (runs/CooperativeClaim.out); the red configuration still refutes
+\* DoneByClaimHolder.
 \* Note: variable `alive` extends the four state elements named in
 \* ADR-015's preamble template — Crash(s) requires a state predicate
 \* to be enforceable; the deviation is documented here so the choice
