@@ -64,6 +64,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   local index (a remote computation-key manifest is future work).
 
 ### Fixed
+- A gate whose ledger record cannot be written no longer opens. The run
+  reports that the gate "could not be registered", keeps the guarded jobs
+  blocked and retries the registration on every poll; previously the
+  registration error was swallowed and the absent record was treated as an
+  approval (#2).
+- Two `ox run` starting together in a fresh directory no longer race the
+  `state.db` schema migration (one of them failed with "duplicate column
+  name"): the version is read and all migrations are applied under a single
+  write transaction, so the second run waits and finds the schema ready. The
+  cache manifest open waits for a peer's lock the same way instead of
+  reporting "cache manifest corrupted: database is locked".
 - `ox gate reject` confirms with "rejected by", not "rejectd by".
 - The terminal progress summary now counts cancelled jobs (gate rejected,
   interrupted) as `N cancelled` instead of folding them into `N skipped`;

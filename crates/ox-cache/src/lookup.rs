@@ -77,6 +77,27 @@ pub struct CacheStore {
     input_memo: HashMap<PathBuf, ContentHash>,
 }
 
+/// `PRAGMA journal_mode=wal`, retried for up to ~30 s while another
+/// connection holds the lock the switch needs (SQLITE_BUSY / SQLITE_LOCKED
+/// are not routed through `busy_timeout` for this pragma).
+fn set_wal_journal_mode(conn: &Connection) -> Result<(), CacheError> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        match conn.pragma_update(None, "journal_mode", "wal") {
+            Ok(()) => return Ok(()),
+            Err(rusqlite::Error::SqliteFailure(err, _))
+                if matches!(
+                    err.code,
+                    rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked
+                ) && std::time::Instant::now() < deadline =>
+            {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            Err(e) => return Err(CacheError::Manifest(format!("sqlite pragma: {e}"))),
+        }
+    }
+}
+
 impl CacheStore {
     /// Open or create the cache store.
     ///
@@ -97,9 +118,18 @@ impl CacheStore {
         let conn = Connection::open(&db_path)
             .map_err(|e| CacheError::Manifest(format!("sqlite open: {e}")))?;
 
+        // Wait for a peer's lock instead of failing: two `ox run` starting
+        // together in a fresh directory otherwise race the WAL switch and
+        // the schema creation below, and the loser reports the manifest
+        // as "corrupted: database is locked".
+        conn.busy_timeout(std::time::Duration::from_secs(30))
+            .map_err(|e| CacheError::Manifest(format!("sqlite busy_timeout: {e}")))?;
+
         // WAL mode for concurrent reads + single-writer performance.
-        conn.pragma_update(None, "journal_mode", "wal")
-            .map_err(|e| CacheError::Manifest(format!("sqlite pragma: {e}")))?;
+        // Switching the journal mode needs an exclusive lock and SQLite does
+        // not run the busy handler for it, so retry while a peer that is
+        // opening the same fresh manifest holds the file.
+        set_wal_journal_mode(&conn)?;
 
         // NOTE: The `mtime_secs` column now stores nanoseconds (not seconds)
         // for sub-second precision. The column name is kept for backward
@@ -820,6 +850,31 @@ mod tests {
 
     fn make_store(dir: &Path) -> CacheStore {
         CacheStore::open(dir).unwrap()
+    }
+
+    /// Two sessions opening the manifest of a fresh cache directory at the
+    /// same time must both succeed: the connection waits for the peer's
+    /// lock (busy_timeout) instead of reporting "database is locked".
+    #[test]
+    fn concurrent_open_of_a_fresh_cache_directory_succeeds() {
+        for _round in 0..5 {
+            let tmp = tempfile::tempdir().unwrap();
+            let dir = tmp.path().to_path_buf();
+            let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+            let workers: Vec<_> = (0..2)
+                .map(|_| {
+                    let dir = dir.clone();
+                    let barrier = barrier.clone();
+                    std::thread::spawn(move || {
+                        barrier.wait();
+                        CacheStore::open(&dir).map(|_| ())
+                    })
+                })
+                .collect();
+            for w in workers {
+                w.join().unwrap().expect("concurrent open must succeed");
+            }
+        }
     }
 
     #[test]
