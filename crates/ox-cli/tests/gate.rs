@@ -325,7 +325,7 @@ fn two_approved_runs_of_the_same_gated_job_both_succeed() {
     std::thread::sleep(Duration::from_millis(1500));
     fs::write(dir.join("go"), "").unwrap();
 
-    let mut read = |tag: &str, child: &mut Child| {
+    let read = |tag: &str, child: &mut Child| {
         let exit = wait_for_exit(dir, child);
         let err = fs::read_to_string(dir.join(format!("run-{tag}.err"))).unwrap_or_default();
         let out = fs::read_to_string(dir.join(format!("run-{tag}.out"))).unwrap_or_default();
