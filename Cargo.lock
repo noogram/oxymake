@@ -2025,6 +2025,7 @@ dependencies = [
  "ox-translate",
  "predicates",
  "regex",
+ "rusqlite",
  "serde_json",
  "tempfile",
  "tokio",

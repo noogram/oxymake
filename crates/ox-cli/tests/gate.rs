@@ -230,6 +230,255 @@ fn rejected_gate_cancels_the_guarded_job() {
         (stderr.clone() + &stdout).contains("cancelled"),
         "cancellation not reported\n{stdout}\n{stderr}"
     );
+    // The progress summary counts the rejected job as cancelled, not as
+    // skipped (verification finding 7); the final line agrees.
+    assert!(
+        stderr.contains("1 cancelled"),
+        "progress summary must say `1 cancelled`\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("1 skipped"),
+        "progress summary must not report the rejected job as skipped\n{stderr}"
+    );
+    assert!(
+        stdout.contains("0 skipped, 1 cancelled"),
+        "final summary line\n{stdout}"
+    );
+    // Gate reject confirmation uses an explicit past-tense verb (finding 6).
+    assert!(
+        String::from_utf8_lossy(&reject.stdout).contains("rejected by"),
+        "reject confirmation: {}",
+        String::from_utf8_lossy(&reject.stdout)
+    );
+}
+
+/// Verification finding 4: two `ox run` sessions waiting on the same gate,
+/// both approved by id, both execute the guarded job (the claim protocol
+/// of ADR-012 is not yet the scheduling gate) and race the atomic commit
+/// of the same output. Neither session may fail: the one that loses the
+/// rename adopts the other's committed outputs. A barrier file makes both
+/// shells finish together so the two finalisations overlap.
+#[test]
+fn two_approved_runs_of_the_same_gated_job_both_succeed() {
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path();
+    fs::write(
+        dir.join("Oxymakefile.toml"),
+        OXYMAKEFILE.replace(
+            "shell = \"echo RAN > out.txt\"",
+            "shell = \"while [ ! -f go ]; do sleep 0.01; done; echo RAN > out.txt\"",
+        ),
+    )
+    .unwrap();
+
+    let spawn = |tag: &str| {
+        Command::new(ox_bin())
+            .args(["run", "out.txt"])
+            .current_dir(dir)
+            .stdout(Stdio::from(
+                fs::File::create(dir.join(format!("run-{tag}.out"))).unwrap(),
+            ))
+            .stderr(Stdio::from(
+                fs::File::create(dir.join(format!("run-{tag}.err"))).unwrap(),
+            ))
+            .spawn()
+            .expect("spawn ox run")
+    };
+    let mut a = KillOnDrop(spawn("a"));
+    let mut b = KillOnDrop(spawn("b"));
+
+    // Both runs register their own pending record.
+    let start = Instant::now();
+    let ids: Vec<i64> = loop {
+        let pending: Vec<i64> = gate_rows(dir)
+            .into_iter()
+            .filter(|g| g["name"] == "approval" && g["status"] == "pending")
+            .filter_map(|g| g["id"].as_i64())
+            .collect();
+        if pending.len() == 2 {
+            break pending;
+        }
+        for (tag, child) in [("a", &mut a.0), ("b", &mut b.0)] {
+            assert!(
+                child.try_wait().unwrap().is_none(),
+                "run {tag} exited before its gate became pending:\n{}",
+                fs::read_to_string(dir.join(format!("run-{tag}.err"))).unwrap_or_default()
+            );
+        }
+        assert!(start.elapsed() < WAIT, "two pending gates never appeared");
+        std::thread::sleep(Duration::from_millis(100));
+    };
+
+    for id in &ids {
+        let out = Command::new(ox_bin())
+            .args(["gate", "approve", &id.to_string(), "--approver", "test"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+    // Let both shells start, then release them together.
+    std::thread::sleep(Duration::from_millis(1500));
+    fs::write(dir.join("go"), "").unwrap();
+
+    let mut read = |tag: &str, child: &mut Child| {
+        let exit = wait_for_exit(dir, child);
+        let err = fs::read_to_string(dir.join(format!("run-{tag}.err"))).unwrap_or_default();
+        let out = fs::read_to_string(dir.join(format!("run-{tag}.out"))).unwrap_or_default();
+        assert!(exit.success(), "run {tag} failed:\n{out}\n{err}");
+        assert!(
+            !err.contains("finalize_workspace"),
+            "run {tag} reported a finalisation failure:\n{err}"
+        );
+        assert!(out.contains("1 succeeded"), "run {tag}: {out}");
+    };
+    read("a", &mut a.0);
+    read("b", &mut b.0);
+
+    assert_eq!(
+        fs::read_to_string(dir.join("out.txt")).unwrap().trim(),
+        "RAN"
+    );
+    assert!(!dir.join("out.txt.oxytmp").exists());
+    assert_eq!(job_status(dir, "guarded").as_deref(), Some("completed"));
+}
+
+/// Verification finding 1: when the gate record cannot be written to
+/// state.db while reads still work, the guarded rule must not run. The
+/// write failure is injected with a `BEFORE INSERT` trigger on `gates`;
+/// once the trigger is dropped the run's retried registration succeeds,
+/// the gate becomes pending and approval completes the run.
+#[test]
+fn gate_registration_failure_keeps_the_guarded_job_blocked() {
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path();
+
+    // Initialise a healthy state.db with an ungated run.
+    fs::write(
+        dir.join("Oxymakefile.toml"),
+        r#"ox_version = "0.1"
+format_version = "1"
+
+[rule.init]
+input = []
+output = ["init.txt"]
+shell = "echo INIT > init.txt"
+"#,
+    )
+    .unwrap();
+    let init = Command::new(ox_bin())
+        .args(["run", "init.txt"])
+        .current_dir(dir)
+        .output()
+        .unwrap();
+    assert!(
+        init.status.success(),
+        "{}",
+        String::from_utf8_lossy(&init.stderr)
+    );
+
+    let db_path = dir.join(".oxymake/state.db");
+    {
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        conn.execute_batch(
+            "CREATE TRIGGER deny_gate_insert BEFORE INSERT ON gates
+             BEGIN SELECT RAISE(ABORT, 'deny gate insert'); END;",
+        )
+        .unwrap();
+    }
+
+    fs::write(dir.join("Oxymakefile.toml"), OXYMAKEFILE).unwrap();
+    let mut run = KillOnDrop(spawn_run(dir));
+
+    // Several gate polls (500 ms each) later the run is still blocked: no
+    // output, no gate row, job pending, process alive.
+    std::thread::sleep(Duration::from_secs(3));
+    assert!(
+        run.0.try_wait().unwrap().is_none(),
+        "ox run exited while gate registration was failing\n--- stdout\n{}\n--- stderr\n{}",
+        fs::read_to_string(dir.join("run.out")).unwrap_or_default(),
+        fs::read_to_string(dir.join("run.err")).unwrap_or_default(),
+    );
+    assert!(
+        !dir.join("out.txt").exists(),
+        "guarded rule ran although its gate could not be registered"
+    );
+    assert!(
+        gate_rows(dir).is_empty(),
+        "no gate row can exist: inserts are denied"
+    );
+    assert_eq!(job_status(dir, "guarded").as_deref(), Some("pending"));
+    let stderr = fs::read_to_string(dir.join("run.err")).unwrap_or_default();
+    assert!(
+        stderr.contains("could not be registered"),
+        "the blocked-on-registration condition is reported: {stderr}"
+    );
+
+    // Lift the write failure: the retried registration succeeds.
+    {
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        conn.execute_batch("DROP TRIGGER deny_gate_insert;")
+            .unwrap();
+    }
+    wait_for_gate(dir, &mut run.0, "approval", "pending");
+    assert!(!dir.join("out.txt").exists());
+
+    let approve = Command::new(ox_bin())
+        .args(["gate", "approve", "approval", "--approver", "test"])
+        .current_dir(dir)
+        .output()
+        .unwrap();
+    assert!(
+        approve.status.success(),
+        "{}",
+        String::from_utf8_lossy(&approve.stderr)
+    );
+
+    let exit = wait_for_exit(dir, &mut run.0);
+    assert!(exit.success());
+    assert_eq!(
+        fs::read_to_string(dir.join("out.txt")).unwrap().trim(),
+        "RAN"
+    );
+    assert_eq!(job_status(dir, "guarded").as_deref(), Some("completed"));
+}
+
+/// A gate whose `before` names a rule that does not exist refuses to run
+/// (verification finding 2): with the typo, no job would be attached to the
+/// gate and the rule the author meant to guard would run unapproved.
+#[test]
+fn run_refuses_gate_naming_unknown_rule() {
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path();
+    fs::write(
+        dir.join("Oxymakefile.toml"),
+        OXYMAKEFILE.replace("before = [\"guarded\"]", "before = [\"typo_rule\"]"),
+    )
+    .unwrap();
+
+    let out = Command::new(ox_bin())
+        .args(["run", "out.txt"])
+        .current_dir(dir)
+        .output()
+        .unwrap();
+    assert!(
+        !out.status.success(),
+        "run with a misspelled gate rule must be refused"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("gate `approval` lists unknown rule `typo_rule` in `before`"),
+        "unexpected error: {stderr}"
+    );
+    assert!(
+        !dir.join("out.txt").exists(),
+        "guarded rule ran despite the refusal"
+    );
+    assert!(gate_rows(dir).is_empty());
 }
 
 /// Gates are enforced by the scheduler; the SLURM/Ray DAG submission path

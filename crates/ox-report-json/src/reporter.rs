@@ -47,6 +47,7 @@ struct SummaryEvent {
     succeeded: usize,
     failed: usize,
     skipped: usize,
+    cancelled: usize,
     duration_ms: u64,
 }
 
@@ -58,6 +59,7 @@ impl From<&RunSummary> for SummaryEvent {
             succeeded: s.succeeded,
             failed: s.failed,
             skipped: s.skipped,
+            cancelled: s.cancelled,
             duration_ms: s.duration_ms,
         }
     }
@@ -392,6 +394,7 @@ mod tests {
             succeeded: 98,
             failed: 1,
             skipped: 1,
+            cancelled: 0,
             duration_ms: 60_000,
         };
         r.finish(&summary).await;
@@ -403,6 +406,7 @@ mod tests {
         assert_eq!(v["succeeded"], 98);
         assert_eq!(v["failed"], 1);
         assert_eq!(v["skipped"], 1);
+        assert_eq!(v["cancelled"], 0);
         assert_eq!(v["duration_ms"], 60_000);
     }
 
@@ -447,6 +451,7 @@ mod tests {
             succeeded: 1,
             failed: 0,
             skipped: 0,
+            cancelled: 0,
             duration_ms: 100,
         };
         // Must not panic even when the writer fails.

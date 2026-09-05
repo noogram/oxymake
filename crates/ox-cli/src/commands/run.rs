@@ -2205,7 +2205,8 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
                         total_jobs: r.total_jobs,
                         succeeded: r.succeeded,
                         failed: r.failed,
-                        skipped: r.skipped + r.cancelled,
+                        skipped: r.skipped,
+                        cancelled: r.cancelled,
                         duration_ms: r.duration.as_millis() as u64,
                     },
                     Err(_) => RunSummary {
@@ -2213,6 +2214,7 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
                         succeeded: 0,
                         failed: 0,
                         skipped: 0,
+                        cancelled: 0,
                         duration_ms: 0,
                     },
                 };

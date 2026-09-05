@@ -23,6 +23,10 @@ pub struct RunSummary {
     pub failed: usize,
     /// Jobs skipped (cached or downstream of failure).
     pub skipped: usize,
+    /// Jobs cancelled (gate rejected, Ctrl+C, or downstream of a
+    /// cancellation). Counted apart from `skipped`: a cancelled job was
+    /// meant to run and did not.
+    pub cancelled: usize,
     /// Total wall-clock duration of the run.
     pub duration_ms: u64,
 }

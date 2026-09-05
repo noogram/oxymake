@@ -66,6 +66,17 @@ pool and can be claimed by any active session.
   level. At very high session counts (>10 concurrent), this could become a
   throughput bottleneck.
 
+## Known limitation (2026-09-05)
+
+The claim protocol is not yet consulted by the scheduler before it launches
+a job: `claim_job` is recorded from the `JobStarted` event, after dispatch.
+Two sessions that both reach a job (for example two `ox run` approved for
+the same gate) therefore both execute it. The local executor makes the
+duplicate harmless at commit time — the session that loses the atomic
+rename adopts its peer's committed outputs instead of failing — but the
+work itself is still done twice. Making the claim the scheduling gate is the
+open follow-up.
+
 ## Alternatives Considered
 
 **File-based advisory locks (flock/fcntl)**: One lock file per job. Simple but

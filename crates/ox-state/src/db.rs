@@ -433,6 +433,27 @@ fn is_corruption(err: &rusqlite::Error) -> bool {
     )
 }
 
+/// `PRAGMA journal_mode=WAL`, retried for up to ~30 s while another
+/// connection holds the lock the switch needs (SQLITE_BUSY / SQLITE_LOCKED
+/// bypass `busy_timeout` for this pragma).
+fn set_wal_journal_mode(conn: &Connection) -> Result<(), StateError> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        match conn.execute_batch("PRAGMA journal_mode=WAL;") {
+            Ok(()) => return Ok(()),
+            Err(rusqlite::Error::SqliteFailure(err, _))
+                if matches!(
+                    err.code,
+                    rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked
+                ) && std::time::Instant::now() < deadline =>
+            {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            Err(e) => return Err(e.into()),
+        }
+    }
+}
+
 impl StateDb {
     /// Open (or create) the state database at `path`.
     ///
@@ -465,8 +486,11 @@ impl StateDb {
         // "atomic SQLite claims" concurrency model on first contention.
         conn.execute_batch("PRAGMA busy_timeout=30000;")?;
         // WAL mode allows concurrent readers and a single writer —
-        // essential for the cooperative multi-session model.
-        conn.execute_batch("PRAGMA journal_mode=WAL;")?;
+        // essential for the cooperative multi-session model. Switching the
+        // journal mode needs an exclusive lock that SQLite does not route
+        // through the busy handler, so retry while a peer opening the same
+        // fresh database holds the file (two cold-start `ox run`).
+        set_wal_journal_mode(&conn)?;
         conn.execute_batch("PRAGMA foreign_keys=ON;")?;
         // synchronous=FULL: fsync on every commit AND on every WAL checkpoint.
         // The SQLite default with WAL is NORMAL, which skips the per-commit
@@ -2173,6 +2197,31 @@ mod tests {
     fn open_creates_schema() {
         let (_tmp, db) = temp_db();
         assert_eq!(db.schema_version().unwrap(), 10);
+    }
+
+    /// Two sessions opening a fresh `state.db` at the same time must both
+    /// succeed (WAL switch and schema migration included).
+    #[test]
+    fn concurrent_open_of_a_fresh_database_succeeds() {
+        for _round in 0..5 {
+            let tmp = NamedTempFile::new().unwrap();
+            let path = tmp.path().to_path_buf();
+            let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+            let workers: Vec<_> = (0..2)
+                .map(|_| {
+                    let path = path.clone();
+                    let barrier = barrier.clone();
+                    std::thread::spawn(move || {
+                        barrier.wait();
+                        StateDb::open(&path).map(|db| db.schema_version().unwrap())
+                    })
+                })
+                .collect();
+            for w in workers {
+                let version = w.join().unwrap().expect("concurrent open must succeed");
+                assert_eq!(version, 10);
+            }
+        }
     }
 
     #[test]

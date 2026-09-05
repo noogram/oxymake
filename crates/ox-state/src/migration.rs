@@ -2,8 +2,10 @@
 //!
 //! OxyMake uses forward-only migrations to evolve the database schema.
 //! Each migration is a function that transforms the schema from version N
-//! to version N+1.  Migrations run inside a transaction so that a failure
-//! never leaves the database in a half-migrated state.
+//! to version N+1.  All pending migrations run inside one write
+//! transaction (each step being a savepoint) so that a failure never
+//! leaves the database in a half-migrated state and two connections
+//! opening the same fresh database cannot interleave their steps.
 //!
 //! The current schema version is stored in the `schema_version` table
 //! (a single-row table with one `INTEGER` column).  A freshly created
@@ -12,7 +14,9 @@
 //!
 //! # Adding a new migration
 //!
-//! 1. Write a `migrate_vN_to_vN1` function.
+//! 1. Write a `migrate_vN_to_vN1` function (wrap its SQL in
+//!    `SAVEPOINT migration_step; … RELEASE migration_step;`, not
+//!    `BEGIN … COMMIT`: it runs inside the transaction [`migrate`] holds).
 //! 2. Add it to the match arm in [`migrate`].
 //! 3. Bump `LATEST_VERSION`.
 
@@ -26,12 +30,38 @@ const LATEST_VERSION: u32 = 10;
 /// Run all pending migrations, bringing the database up to
 /// `LATEST_VERSION`.
 ///
-/// Each migration runs in its own transaction.  If a migration fails
-/// the database is left at the last successfully applied version.
+/// The version is read and every pending step is applied under a single
+/// `BEGIN IMMEDIATE` transaction, so two connections migrating the same
+/// fresh database serialise on SQLite's write lock: the second one waits
+/// (`busy_timeout`), then re-reads the version its peer committed and
+/// finds nothing left to do.  Reading the version *before* taking the
+/// lock let the loser replay `ALTER TABLE` steps against the schema its
+/// peer had just created (verification finding 3).
+///
+/// Each step is a savepoint inside that transaction.  If a step fails the
+/// whole transaction is rolled back and the database is left at the
+/// version it had before this call.
 pub fn migrate(conn: &Connection) -> Result<(), StateError> {
+    conn.execute_batch("BEGIN IMMEDIATE;")?;
+    match migrate_locked(conn) {
+        Ok(()) => {
+            conn.execute_batch("COMMIT;")?;
+            Ok(())
+        }
+        Err(e) => {
+            let _ = conn.execute_batch("ROLLBACK;");
+            Err(e)
+        }
+    }
+}
+
+/// The body of [`migrate`], run while the caller holds the write lock.
+fn migrate_locked(conn: &Connection) -> Result<(), StateError> {
     // Ensure the version-tracking table exists.
     conn.execute_batch("CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);")?;
 
+    // Read the version only now, under the lock: a peer that migrated
+    // while we waited has already committed its result.
     let current: u32 = conn
         .query_row(
             "SELECT COALESCE(MAX(version), 0) FROM schema_version",
@@ -77,7 +107,7 @@ pub fn migrate(conn: &Connection) -> Result<(), StateError> {
 fn migrate_v0_to_v1(conn: &Connection) -> Result<(), StateError> {
     conn.execute_batch(
         "
-        BEGIN;
+        SAVEPOINT migration_step;
 
         CREATE TABLE IF NOT EXISTS sessions (
             id TEXT PRIMARY KEY,
@@ -140,7 +170,7 @@ fn migrate_v0_to_v1(conn: &Connection) -> Result<(), StateError> {
         DELETE FROM schema_version;
         INSERT INTO schema_version (version) VALUES (1);
 
-        COMMIT;
+        RELEASE migration_step;
         ",
     )
     .map_err(|e| StateError::Migration {
@@ -161,7 +191,7 @@ fn migrate_v0_to_v1(conn: &Connection) -> Result<(), StateError> {
 fn migrate_v1_to_v2(conn: &Connection) -> Result<(), StateError> {
     conn.execute_batch(
         "
-        BEGIN;
+        SAVEPOINT migration_step;
 
         CREATE TABLE jobs_v2 (
             id TEXT PRIMARY KEY,
@@ -188,7 +218,7 @@ fn migrate_v1_to_v2(conn: &Connection) -> Result<(), StateError> {
         DELETE FROM schema_version;
         INSERT INTO schema_version (version) VALUES (2);
 
-        COMMIT;
+        RELEASE migration_step;
         ",
     )
     .map_err(|e| StateError::Migration {
@@ -208,7 +238,7 @@ fn migrate_v1_to_v2(conn: &Connection) -> Result<(), StateError> {
 fn migrate_v2_to_v3(conn: &Connection) -> Result<(), StateError> {
     conn.execute_batch(
         "
-        BEGIN;
+        SAVEPOINT migration_step;
 
         CREATE TABLE IF NOT EXISTS snapshots (
             name TEXT PRIMARY KEY,
@@ -233,7 +263,7 @@ fn migrate_v2_to_v3(conn: &Connection) -> Result<(), StateError> {
         DELETE FROM schema_version;
         INSERT INTO schema_version (version) VALUES (3);
 
-        COMMIT;
+        RELEASE migration_step;
         ",
     )
     .map_err(|e| StateError::Migration {
@@ -252,7 +282,7 @@ fn migrate_v2_to_v3(conn: &Connection) -> Result<(), StateError> {
 fn migrate_v3_to_v4(conn: &Connection) -> Result<(), StateError> {
     conn.execute_batch(
         "
-        BEGIN;
+        SAVEPOINT migration_step;
 
         CREATE TABLE IF NOT EXISTS gates (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -271,7 +301,7 @@ fn migrate_v3_to_v4(conn: &Connection) -> Result<(), StateError> {
         DELETE FROM schema_version;
         INSERT INTO schema_version (version) VALUES (4);
 
-        COMMIT;
+        RELEASE migration_step;
         ",
     )
     .map_err(|e| StateError::Migration {
@@ -291,7 +321,7 @@ fn migrate_v3_to_v4(conn: &Connection) -> Result<(), StateError> {
 fn migrate_v4_to_v5(conn: &Connection) -> Result<(), StateError> {
     conn.execute_batch(
         "
-        BEGIN;
+        SAVEPOINT migration_step;
 
         CREATE TABLE IF NOT EXISTS job_edges (
             from_job TEXT NOT NULL,
@@ -306,7 +336,7 @@ fn migrate_v4_to_v5(conn: &Connection) -> Result<(), StateError> {
         DELETE FROM schema_version;
         INSERT INTO schema_version (version) VALUES (5);
 
-        COMMIT;
+        RELEASE migration_step;
         ",
     )
     .map_err(|e| StateError::Migration {
@@ -328,7 +358,7 @@ fn migrate_v4_to_v5(conn: &Connection) -> Result<(), StateError> {
 fn migrate_v5_to_v6(conn: &Connection) -> Result<(), StateError> {
     conn.execute_batch(
         "
-        BEGIN;
+        SAVEPOINT migration_step;
 
         CREATE TABLE IF NOT EXISTS dag_submissions (
             run_id TEXT PRIMARY KEY,
@@ -346,7 +376,7 @@ fn migrate_v5_to_v6(conn: &Connection) -> Result<(), StateError> {
         DELETE FROM schema_version;
         INSERT INTO schema_version (version) VALUES (6);
 
-        COMMIT;
+        RELEASE migration_step;
         ",
     )
     .map_err(|e| StateError::Migration {
@@ -367,7 +397,7 @@ fn migrate_v5_to_v6(conn: &Connection) -> Result<(), StateError> {
 fn migrate_v6_to_v7(conn: &Connection) -> Result<(), StateError> {
     conn.execute_batch(
         "
-        BEGIN;
+        SAVEPOINT migration_step;
 
         ALTER TABLE jobs ADD COLUMN run_id TEXT REFERENCES runs(id);
 
@@ -376,7 +406,7 @@ fn migrate_v6_to_v7(conn: &Connection) -> Result<(), StateError> {
         DELETE FROM schema_version;
         INSERT INTO schema_version (version) VALUES (7);
 
-        COMMIT;
+        RELEASE migration_step;
         ",
     )
     .map_err(|e| StateError::Migration {
@@ -395,7 +425,7 @@ fn migrate_v6_to_v7(conn: &Connection) -> Result<(), StateError> {
 fn migrate_v7_to_v8(conn: &Connection) -> Result<(), StateError> {
     conn.execute_batch(
         "
-        BEGIN;
+        SAVEPOINT migration_step;
 
         ALTER TABLE job_history ADD COLUMN reproducibility_class TEXT;
         ALTER TABLE job_history ADD COLUMN artifact_provenance_json TEXT;
@@ -403,7 +433,7 @@ fn migrate_v7_to_v8(conn: &Connection) -> Result<(), StateError> {
         DELETE FROM schema_version;
         INSERT INTO schema_version (version) VALUES (8);
 
-        COMMIT;
+        RELEASE migration_step;
         ",
     )
     .map_err(|e| StateError::Migration {
@@ -423,7 +453,7 @@ fn migrate_v7_to_v8(conn: &Connection) -> Result<(), StateError> {
 fn migrate_v8_to_v9(conn: &Connection) -> Result<(), StateError> {
     conn.execute_batch(
         "
-        BEGIN;
+        SAVEPOINT migration_step;
 
         ALTER TABLE jobs ADD COLUMN cached INTEGER NOT NULL DEFAULT 0;
 
@@ -432,7 +462,7 @@ fn migrate_v8_to_v9(conn: &Connection) -> Result<(), StateError> {
         DELETE FROM schema_version;
         INSERT INTO schema_version (version) VALUES (9);
 
-        COMMIT;
+        RELEASE migration_step;
         ",
     )
     .map_err(|e| StateError::Migration {
@@ -465,7 +495,7 @@ fn migrate_v8_to_v9(conn: &Connection) -> Result<(), StateError> {
 fn migrate_v9_to_v10(conn: &Connection) -> Result<(), StateError> {
     conn.execute_batch(
         "
-        BEGIN;
+        SAVEPOINT migration_step;
 
         CREATE TABLE gates_v10 (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -497,7 +527,7 @@ fn migrate_v9_to_v10(conn: &Connection) -> Result<(), StateError> {
         DELETE FROM schema_version;
         INSERT INTO schema_version (version) VALUES (10);
 
-        COMMIT;
+        RELEASE migration_step;
         ",
     )
     .map_err(|e| StateError::Migration {
@@ -536,6 +566,91 @@ mod tests {
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
         assert_eq!(version, 10);
+    }
+
+    /// Verification finding 3: two connections migrating the same fresh
+    /// file database concurrently must both succeed and agree on the
+    /// latest version.  Before the version read was taken under the write
+    /// lock, the loser replayed `ALTER TABLE` steps its peer had applied
+    /// and failed with "duplicate column name".
+    #[test]
+    fn concurrent_fresh_database_migration_is_serialised() {
+        for _round in 0..5 {
+            let tmp = tempfile::NamedTempFile::new().unwrap();
+            let path = tmp.path().to_path_buf();
+            let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+
+            let workers: Vec<_> = (0..2)
+                .map(|_| {
+                    let path = path.clone();
+                    let barrier = barrier.clone();
+                    std::thread::spawn(move || {
+                        let conn = Connection::open(&path).unwrap();
+                        conn.busy_timeout(std::time::Duration::from_secs(30))
+                            .unwrap();
+                        barrier.wait();
+                        migrate(&conn).map(|()| {
+                            conn.query_row("SELECT version FROM schema_version", [], |row| {
+                                row.get::<_, u32>(0)
+                            })
+                            .unwrap()
+                        })
+                    })
+                })
+                .collect();
+
+            for w in workers {
+                let version = w
+                    .join()
+                    .unwrap()
+                    .expect("concurrent migration must succeed");
+                assert_eq!(version, LATEST_VERSION);
+            }
+        }
+    }
+
+    /// Deterministic form of the race above: connection A holds the write
+    /// lock and applies every migration; connection B calls [`migrate`]
+    /// meanwhile.  B must wait for A's commit, then re-read the version and
+    /// apply nothing — never replay A's steps.
+    #[test]
+    fn migration_waits_for_the_peer_holding_the_write_lock() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let path = tmp.path().to_path_buf();
+
+        let a = Connection::open(&path).unwrap();
+        a.busy_timeout(std::time::Duration::from_secs(30)).unwrap();
+        a.execute_batch("BEGIN IMMEDIATE;").unwrap();
+
+        let b_path = path.clone();
+        let b = std::thread::spawn(move || {
+            let conn = Connection::open(&b_path).unwrap();
+            conn.busy_timeout(std::time::Duration::from_secs(30))
+                .unwrap();
+            migrate(&conn).map(|()| {
+                let version: u32 = conn
+                    .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
+                    .unwrap();
+                let columns: i64 = conn
+                    .query_row(
+                        "SELECT COUNT(*) FROM pragma_table_info('jobs') WHERE name = 'executor_submission_id'",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .unwrap();
+                (version, columns)
+            })
+        });
+
+        // Give B time to block on the lock, then let A do the whole
+        // migration and commit.
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        migrate_locked(&a).unwrap();
+        a.execute_batch("COMMIT;").unwrap();
+
+        let (version, columns) = b.join().unwrap().expect("B must succeed after A commits");
+        assert_eq!(version, LATEST_VERSION);
+        assert_eq!(columns, 1, "B must not replay A's ALTER TABLE steps");
     }
 
     #[test]
