@@ -241,7 +241,7 @@ fn lint_json_missing_file_outputs_json() {
     let parsed: serde_json::Value =
         serde_json::from_str(&stdout).expect("stdout should be valid JSON");
     assert_eq!(parsed["valid"], false);
-    assert!(parsed["errors"].as_array().unwrap().len() > 0);
+    assert!(!parsed["errors"].as_array().unwrap().is_empty());
 }
 
 /// A `[gate.*]` whose `before` names a rule that does not exist is a
@@ -363,7 +363,7 @@ fn lint_json_invalid_toml_outputs_json() {
     let parsed: serde_json::Value =
         serde_json::from_str(&stdout).expect("stdout should be valid JSON");
     assert_eq!(parsed["valid"], false);
-    assert!(parsed["errors"].as_array().unwrap().len() > 0);
+    assert!(!parsed["errors"].as_array().unwrap().is_empty());
 }
 
 // ---------------------------------------------------------------------------

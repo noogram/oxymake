@@ -252,28 +252,50 @@ fn rejected_gate_cancels_the_guarded_job() {
     );
 }
 
-/// Verification finding 4: two `ox run` sessions waiting on the same gate,
-/// both approved by id, both execute the guarded job (the claim protocol
-/// of ADR-012 is not yet the scheduling gate) and race the atomic commit
-/// of the same output. Neither session may fail: the one that loses the
-/// rename adopts the other's committed outputs. A barrier file makes both
-/// shells finish together so the two finalisations overlap.
+/// A two-output rule guarded by a gate. Each execution writes its own shell
+/// PID into both outputs; the write order is flipped by PID parity so that
+/// two *concurrent* executions would interleave and leave a mixed set
+/// (`a.txt != b.txt`). A `go` barrier file holds the shell so the winning
+/// session keeps the output-set lock while the second session tries to run.
+const TWO_OUTPUT_OXYMAKEFILE: &str = r#"ox_version = "0.1"
+format_version = "1"
+
+[gate.approval]
+after = []
+before = ["guarded"]
+message = "Should block until approved."
+
+[rule.guarded]
+input = []
+output = ["a.txt", "b.txt"]
+shell = "while [ ! -f go ]; do sleep 0.01; done; id=$$; if [ $((id % 2)) -eq 0 ]; then printf '%s\n' \"$id\" > a.txt; sleep 0.2; printf '%s\n' \"$id\" > b.txt; else printf '%s\n' \"$id\" > b.txt; sleep 0.2; printf '%s\n' \"$id\" > a.txt; fi"
+"#;
+
+/// Round-2 finding 1 (serious): two `ox run` sessions approved for the same
+/// gate both reach the guarded job, because the cooperative claim protocol
+/// (ADR-012) is not yet the scheduling gate. The earlier workaround let the
+/// loser *adopt* the peer's committed files, which for a non-deterministic /
+/// multi-output rule could commit a set mixing files from two physical
+/// executions and report success for it.
+///
+/// The fix fails closed: the session that does not win the output-set lock
+/// refuses to execute the job concurrently. This test asserts the two
+/// properties the mission requires — `a.txt == b.txt` after both sessions
+/// finish (the committed set is one execution's set, never mixed), and no
+/// session reports success for a set it did not fully produce.
+///
+/// It also keeps the round-1 property that neither session dies with a raw
+/// rename failure: the loser exits with the documented concurrent-execution
+/// error, not "stage rename failed".
 #[test]
-fn two_approved_runs_of_the_same_gated_job_both_succeed() {
+fn two_approved_runs_never_commit_a_mixed_set() {
     let tmp = TempDir::new().unwrap();
     let dir = tmp.path();
-    fs::write(
-        dir.join("Oxymakefile.toml"),
-        OXYMAKEFILE.replace(
-            "shell = \"echo RAN > out.txt\"",
-            "shell = \"while [ ! -f go ]; do sleep 0.01; done; echo RAN > out.txt\"",
-        ),
-    )
-    .unwrap();
+    fs::write(dir.join("Oxymakefile.toml"), TWO_OUTPUT_OXYMAKEFILE).unwrap();
 
     let spawn = |tag: &str| {
         Command::new(ox_bin())
-            .args(["run", "out.txt"])
+            .args(["run", "a.txt", "b.txt"])
             .current_dir(dir)
             .stdout(Stdio::from(
                 fs::File::create(dir.join(format!("run-{tag}.out"))).unwrap(),
@@ -287,7 +309,7 @@ fn two_approved_runs_of_the_same_gated_job_both_succeed() {
     let mut a = KillOnDrop(spawn("a"));
     let mut b = KillOnDrop(spawn("b"));
 
-    // Both runs register their own pending record.
+    // Wait for both runs to register their own pending gate record.
     let start = Instant::now();
     let ids: Vec<i64> = loop {
         let pending: Vec<i64> = gate_rows(dir)
@@ -321,30 +343,87 @@ fn two_approved_runs_of_the_same_gated_job_both_succeed() {
             String::from_utf8_lossy(&out.stderr)
         );
     }
-    // Let both shells start, then release them together.
-    std::thread::sleep(Duration::from_millis(1500));
-    fs::write(dir.join("go"), "").unwrap();
 
-    let read = |tag: &str, child: &mut Child| {
-        let exit = wait_for_exit(dir, child);
-        let err = fs::read_to_string(dir.join(format!("run-{tag}.err"))).unwrap_or_default();
-        let out = fs::read_to_string(dir.join(format!("run-{tag}.out"))).unwrap_or_default();
-        assert!(exit.success(), "run {tag} failed:\n{out}\n{err}");
+    // After approval, one session wins the output-set lock and blocks on the
+    // `go` barrier (holding the lock); the other fails closed at prepare
+    // time, before `go` even exists. Wait for that loser to exit.
+    let loser_tag = loop {
+        let a_done = a.0.try_wait().unwrap().is_some();
+        let b_done = b.0.try_wait().unwrap().is_some();
+        if a_done {
+            break "a";
+        }
+        if b_done {
+            break "b";
+        }
         assert!(
-            !err.contains("finalize_workspace"),
-            "run {tag} reported a finalisation failure:\n{err}"
+            start.elapsed() < WAIT,
+            "neither session failed closed; both may have acquired the lock"
         );
-        assert!(out.contains("1 succeeded"), "run {tag}: {out}");
+        std::thread::sleep(Duration::from_millis(50));
     };
-    read("a", &mut a.0);
-    read("b", &mut b.0);
+    let winner_tag = if loser_tag == "a" { "b" } else { "a" };
 
-    assert_eq!(
-        fs::read_to_string(dir.join("out.txt")).unwrap().trim(),
-        "RAN"
+    // Release the winner's shell and wait for it to finish.
+    fs::write(dir.join("go"), "").unwrap();
+    let winner_child = if winner_tag == "a" {
+        &mut a.0
+    } else {
+        &mut b.0
+    };
+    let winner_exit = wait_for_exit(dir, winner_child);
+
+    let read = |tag: &str| -> (String, String) {
+        (
+            fs::read_to_string(dir.join(format!("run-{tag}.out"))).unwrap_or_default(),
+            fs::read_to_string(dir.join(format!("run-{tag}.err"))).unwrap_or_default(),
+        )
+    };
+    let (winner_out, winner_err) = read(winner_tag);
+    let (loser_out, loser_err) = read(loser_tag);
+
+    // The winner produced the whole set and reports success.
+    assert!(
+        winner_exit.success(),
+        "winner {winner_tag} did not succeed:\n{winner_out}\n{winner_err}"
     );
-    assert!(!dir.join("out.txt.oxytmp").exists());
-    assert_eq!(job_status(dir, "guarded").as_deref(), Some("completed"));
+    assert!(
+        winner_out.contains("1 succeeded"),
+        "winner {winner_tag}: {winner_out}"
+    );
+
+    // The loser fails closed with the documented concurrent-execution error
+    // — never a raw rename failure, and never a false success.
+    assert!(
+        loser_err.contains("already being executed by another session"),
+        "loser {loser_tag} did not report concurrent execution:\n{loser_err}"
+    );
+    assert!(
+        !loser_err.contains("stage rename failed") && !loser_err.contains("commit rename failed"),
+        "loser {loser_tag} died with a raw rename failure:\n{loser_err}"
+    );
+    assert!(
+        !loser_out.contains("1 succeeded"),
+        "loser {loser_tag} reported success for a set it did not produce:\n{loser_out}"
+    );
+
+    // The committed set is coherent: both outputs come from the same physical
+    // execution (the winner), never a mix of two.
+    let a_txt = fs::read_to_string(dir.join("a.txt")).unwrap();
+    let b_txt = fs::read_to_string(dir.join("b.txt")).unwrap();
+    assert_eq!(
+        a_txt.trim(),
+        b_txt.trim(),
+        "committed set is mixed: a.txt={a_txt:?} b.txt={b_txt:?}"
+    );
+    assert!(!dir.join("a.txt.oxytmp").exists());
+    assert!(!dir.join("b.txt.oxytmp").exists());
+    // NB: the shared `state.db` `guarded` row is claimed by whichever session
+    // wins the `claim_job` CAS, which is independent of the output-set lock
+    // winner, so its final status may read `completed` or `failed`. That
+    // decoupling is the known root cause (the claim is not yet the scheduling
+    // gate, ADR-012) and is out of scope here; the invariant this test guards
+    // is the committed *files*, asserted above.
 }
 
 /// Verification finding 1: when the gate record cannot be written to

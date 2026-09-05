@@ -76,12 +76,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   WAL switch of both `state.db` and the cache manifest, which SQLite does
   not cover with the busy timeout, is retried instead of failing the open
   with "database is locked".
-- Two `ox run` approved for the same gate both execute the guarded job
-  (known limitation: the claim protocol is not yet the scheduling gate,
-  ADR-012); the session that lost the atomic output commit failed with
-  "stage rename failed". It now waits for its peer's commit, adopts those
-  outputs, notes the adoption in the job log and reports success. The
-  duplicate execution itself remains.
+- Two `ox run` approved for the same gate no longer risk committing a mixed
+  output set. The claim protocol is not yet the scheduling gate (known
+  limitation, ADR-012), so both sessions reach the guarded job; a previous
+  release had the losing session *adopt* its peer's committed outputs, which
+  for a non-deterministic or multi-output rule could commit a set mixing
+  files from two physical executions and report success. That adoption is
+  reverted. The local executor now fails closed: it takes an exclusive lock
+  on the job's output set, so the session that wins it executes and commits
+  while a concurrent session aborts that job with an error naming the holding
+  session's PID (`already being executed by another session`). The committed
+  set is always one execution's outputs, never a mix (#2).
 - `ox gate reject` confirms with "rejected by", not "rejectd by".
 - The terminal progress summary now counts cancelled jobs (gate rejected,
   interrupted) as `N cancelled` instead of folding them into `N skipped`;
