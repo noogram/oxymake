@@ -8,6 +8,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- **Two `ox run` on the same job execute it once.** The cooperative claim
+  protocol of `state.db` (ADR-012) is now the scheduling gate: a job is
+  claimed before it is dispatched, and a session that loses the claim
+  waits for the owning session's result instead of running the job — or
+  failing it. Both sessions report the job done; a peer's failure or
+  cancellation is mirrored while that peer is live. Sessions now heartbeat
+  (every third of a 90 s lease, `OX_SESSION_LEASE_SECS` overrides); a
+  session killed mid-job is taken over by its waiter once the lease has
+  expired. Rows left in `state.db` by sessions that are no longer live are
+  reset when a run starts, so a fresh run re-evaluates them. The
+  per-output-path `flock` locks of #2 stay as defence in depth; the
+  `ConcurrentExecution` error is only reached when a reclaimed job's
+  orphaned shell is still writing (#3).
+- A run that stops waiting on a peer (Ctrl+C) no longer cancels the
+  peer's running job in `state.db`; it records its own session as
+  `interrupted` at the first signal and closes the session at exit (#3).
 - **Gates now block.** A `[gate.<name>]` whose `before` names a rule holds
   that rule's jobs until `ox gate approve <name>`; `ox gate reject <name>`
   cancels them. Previously the gate was parsed and listed but the scheduler

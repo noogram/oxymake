@@ -90,9 +90,11 @@ are already doing, skips what they have finished, and picks up the rest.
 ### Stale Session Recovery
 
 If a session crashes (power failure, OOM kill), its jobs are not stuck
-forever. Each session sends a heartbeat every few seconds. If the heartbeat
-is older than 2 minutes, the session is considered dead, and its running
-jobs are reset to `pending` for other sessions to claim.
+forever. Each session sends a heartbeat every third of its lease (90 s by
+default; `OX_SESSION_LEASE_SECS` overrides). If the heartbeat is older than
+the lease, the session is considered dead: the first session waiting on one
+of its jobs resets that session's running jobs to `pending` and claims the
+one it needs.
 
 No manual cleanup required.
 

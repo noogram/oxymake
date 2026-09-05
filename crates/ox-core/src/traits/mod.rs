@@ -5,6 +5,7 @@
 
 pub mod benchmark;
 pub mod cache;
+pub mod claim;
 pub mod environment;
 pub mod executor;
 pub mod format_codec;

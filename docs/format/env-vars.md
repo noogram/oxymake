@@ -15,6 +15,7 @@ variables listed under **Stable** are subject to SemVer discipline.
 | Name | Where | Effect | Default |
 |------|-------|--------|---------|
 | `OX_CACHE_VALIDATION` | `ox run` | Override `--cache-validation`. Values: `mtime`, `mtime+hash`, `hash`. CLI flag wins when both are set. | (uses CLI flag, else `mtime+hash`) |
+| `OX_SESSION_LEASE_SECS` | `ox run` | Lease of a session's job claims, in seconds (ADR-012). The session heartbeats every third of it; a peer whose heartbeat is older than the lease is dead and its running jobs are reclaimed. Unstable. | `90` |
 
 ### Honoured external conventions
 

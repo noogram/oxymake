@@ -2,19 +2,20 @@
 //!
 //! # Why this exists
 //!
-//! Two `ox run` sessions approved for the same gate both reach the guarded
-//! job, because the cooperative claim protocol (`StateDb::claim_job`,
-//! ADR-012) is not yet consulted by the scheduler before dispatch. If both
-//! sessions then *execute* the job into the same output paths, their writes
-//! interleave and the committed set can mix files from two physical
-//! executions — a corrupt, non-reproducible result that is nonetheless
-//! reported as success and cached (issue #2, round-2 finding 1).
+//! If two `ox run` sessions *execute* the same job into the same output
+//! paths, their writes interleave and the committed set can mix files from
+//! two physical executions — a corrupt, non-reproducible result that is
+//! nonetheless reported as success and cached (issue #2, round-2 finding 1).
 //!
-//! The sound fix is to make the claim the scheduling gate; that is the open
-//! follow-up. Until then these locks **fail closed**: a session that cannot
-//! lock every output path of a job refuses to execute it concurrently,
-//! rather than racing into a mixed set. Exactly one physical execution ever
-//! writes a given output path at a time.
+//! The scheduler prevents the double execution upstream: it claims every
+//! job in `state.db` before dispatch and a session that loses the claim
+//! waits for its peer (ADR-012, issue #3). These locks are the **defence in
+//! depth** behind that claim, for the cases the claim cannot see — a
+//! reclaimed job whose killed owner's orphaned shell is still writing, a
+//! `state.db` that could not be opened. They **fail closed**: a session that
+//! cannot lock every output path of a job refuses to execute it
+//! concurrently, rather than racing into a mixed set. Exactly one physical
+//! execution ever writes a given output path at a time.
 //!
 //! # Semantics
 //!
