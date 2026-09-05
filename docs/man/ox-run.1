@@ -4,7 +4,7 @@
 .SH NAME
 ox\-run \- Execute a workflow, ensuring requested outputs exist
 .SH SYNOPSIS
-\fBox\-run\fR [\fB\-j\fR|\fB\-\-jobs\fR] [\fB\-\-rule\fR] [\fB\-\-json\fR] [\fB\-\-report\-json\fR] [\fB\-n\fR|\fB\-\-dry\-run\fR] [\fB\-k\fR|\fB\-\-keep\-going\fR] [\fB\-\-note\fR] [\fB\-\-set\fR] [\fB\-\-executor\fR] [\fB\-\-partition\fR] [\fB\-\-account\fR] [\fB\-\-qos\fR] [\fB\-\-slurm\-api\fR] [\fB\-\-ray\-address\fR] [\fB\-\-follow\fR] [\fB\-f\fR|\fB\-\-file\fR] [\fB\-\-no\-cache\fR] [\fB\-\-cache\-validation\fR] [\fB\-v\fR|\fB\-\-verbose\fR]... [\fB\-\-until\fR] [\fB\-\-omit\-from\fR] [\fB\-\-touch\fR] [\fB\-\-forcerun\fR] [\fB\-\-profile\fR] [\fB\-\-timings\fR] [\fB\-\-open\-dashboard\fR] [\fB\-\-memory\-budget\fR] [\fB\-\-warm\-workers\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fITARGETS\fR] 
+\fBox\-run\fR [\fB\-j\fR|\fB\-\-jobs\fR] [\fB\-\-rule\fR] [\fB\-\-json\fR] [\fB\-\-report\-json\fR] [\fB\-n\fR|\fB\-\-dry\-run\fR] [\fB\-k\fR|\fB\-\-keep\-going\fR] [\fB\-\-note\fR] [\fB\-\-set\fR] [\fB\-\-executor\fR] [\fB\-\-partition\fR] [\fB\-\-account\fR] [\fB\-\-qos\fR] [\fB\-\-slurm\-api\fR] [\fB\-\-ray\-address\fR] [\fB\-\-follow\fR] [\fB\-f\fR|\fB\-\-file\fR] [\fB\-\-no\-cache\fR] [\fB\-\-cache\-validation\fR] [\fB\-\-cache\-remote\fR] [\fB\-v\fR|\fB\-\-verbose\fR]... [\fB\-\-until\fR] [\fB\-\-omit\-from\fR] [\fB\-\-touch\fR] [\fB\-\-forcerun\fR] [\fB\-\-profile\fR] [\fB\-\-timings\fR] [\fB\-\-open\-dashboard\fR] [\fB\-\-memory\-budget\fR] [\fB\-\-warm\-workers\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fITARGETS\fR] 
 .SH DESCRIPTION
 Execute a workflow, ensuring requested outputs exist
 .PP
@@ -74,6 +74,11 @@ Cache validation strategy: mtime, mtime+hash (default), or hash
 `mtime` checks timestamps only and never verifies content — opt\-in only, avoid on shared caches. `mtime+hash` re\-hashes a file only when its timestamp or size changed. `hash` always verifies content.
 
 Resolution order (highest wins): this flag, the OX_CACHE_VALIDATION environment variable, `cache_validation` under `[config]` in the Oxymakefile, `cache_validation` in `~/.config/oxymake/config.toml` (or `$XDG_CONFIG_HOME/oxymake/config.toml`), then the built\-in default `mtime+hash`.
+.TP
+\fB\-\-cache\-remote\fR \fI<DIR>\fR
+Shared directory for content\-addressed cache artifacts.
+
+Existing local cache entries can restore missing outputs from this directory. Remote caches always use content\-hash validation.
 .TP
 \fB\-v\fR, \fB\-\-verbose\fR
 Verbose output (\-v: job start/end/duration/exit codes, \-vv: also show stdout/stderr)

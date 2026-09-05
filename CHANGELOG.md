@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-09-05
+
+Gates now hold, two sessions never execute the same job twice, and outputs can
+be shared through a directory remote cache. This release also carries the paper
+revision (arXiv v3) and the corrections it forced on the documentation.
+
+Highlights:
+- **Gates are enforced.** `[gate.<name>]` pauses the rules it guards until
+  `ox gate approve <name>`; a rejected gate cancels them. Declared but unwired
+  in 0.1.0 (issue #2).
+- **One execution per job across sessions.** The cooperative claim protocol
+  (ADR-012) is the scheduling gate: a second `ox run` waits for its peer's result
+  instead of racing it; a crashed owner's lease is reclaimed (issue #3).
+- **`ox run --cache-remote <dir>`** — a directory blob store shared between
+  checkouts on the same platform.
+- **`state.db` schema v10** (migrated in place, serialised): gates carry a name
+  and a run id; sessions heartbeat.
+
+
 ### Changed
 - **Two `ox run` on the same job execute it once.** The cooperative claim
   protocol of `state.db` (ADR-012) is now the scheduling gate: a job is
