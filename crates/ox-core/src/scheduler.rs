@@ -454,7 +454,7 @@ pub async fn run_scheduler_with_cache<E: Executor + 'static>(
 /// When a `claimer` is provided, every job is claimed through
 /// [`JobClaim::claim`] **before** it is dispatched. A job whose claim is lost
 /// is never launched by this session: it stays `Pending` while the scheduler
-/// polls [`JobClaim::peer_state`] every [`GATE_POLL_INTERVAL`] (observing the
+/// polls [`JobClaim::peer_state`] every gate poll interval (500 ms, observing the
 /// `shutdown` signal like a pending gate) and then consumes the owner's
 /// terminal state as its own — a peer completion promotes the downstream jobs
 /// exactly as a local success would, a peer failure or cancellation is
