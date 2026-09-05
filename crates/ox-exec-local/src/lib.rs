@@ -19,5 +19,6 @@
 pub mod call_mode;
 pub mod error;
 pub mod executor;
+pub(crate) mod lock;
 pub mod process;
 pub mod worker_pool;

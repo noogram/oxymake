@@ -54,4 +54,23 @@ pub enum ExecLocalError {
         /// Description of what went wrong.
         reason: String,
     },
+
+    /// Another `ox run` session is already executing this job's output set.
+    ///
+    /// Two sessions approved for the same gate both reach the job because
+    /// the cooperative claim protocol (`StateDb::claim_job`, ADR-012) is not
+    /// yet the scheduling gate. Rather than execute concurrently into the
+    /// same paths and risk committing a mixed output set (issue #2), the
+    /// session that does not hold the output-set lock fails closed here.
+    #[error(
+        "job '{job}' is already being executed by another session (pid {holder}); \
+         refusing to run it concurrently, which could commit a mixed output set \
+         (the claim protocol is not yet the scheduling gate — see ADR-012)"
+    )]
+    ConcurrentExecution {
+        /// The job whose output set is already locked.
+        job: String,
+        /// PID of the session holding the lock (or `unknown`).
+        holder: String,
+    },
 }

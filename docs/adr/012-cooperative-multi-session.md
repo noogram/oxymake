@@ -71,11 +71,31 @@ pool and can be claimed by any active session.
 The claim protocol is not yet consulted by the scheduler before it launches
 a job: `claim_job` is recorded from the `JobStarted` event, after dispatch.
 Two sessions that both reach a job (for example two `ox run` approved for
-the same gate) therefore both execute it. The local executor makes the
-duplicate harmless at commit time — the session that loses the atomic
-rename adopts its peer's committed outputs instead of failing — but the
-work itself is still done twice. Making the claim the scheduling gate is the
-open follow-up.
+the same gate) therefore both try to execute it.
+
+Because their outputs share the same final paths, letting both run would
+interleave their writes and could commit an output set mixing files from two
+physical executions — a corrupt, non-reproducible result reported as success
+(issue #2, round-2 finding 1). An earlier revision tried to make the
+duplicate harmless by having the loser *adopt* its peer's committed outputs;
+that is unsound for a non-deterministic or multi-output job and has been
+reverted.
+
+The local executor now **fails closed** instead: `prepare_workspace` takes an
+exclusive, non-blocking advisory lock (`flock`) over the job's output set
+before touching any file, held until `finalize_workspace` commits. The
+session that wins the lock is the only one that executes and commits; a
+concurrent session that does not win it aborts that job with
+`ExecLocalError::ConcurrentExecution` (exit status 1), naming the holder's
+PID, without disturbing the winner's outputs. Under no circumstance do two
+physical executions contribute files to one committed set. The lock is tied
+to an open file description, so the kernel releases it if a session crashes.
+
+This is conservative: the losing session fails its run rather than sharing
+the work. The complete fix is to make `claim_job` the scheduling gate so the
+scheduler defers to the owning session before dispatch (the loser then waits
+for and consumes the peer's terminal state instead of re-running). That is
+the open follow-up.
 
 ## Alternatives Considered
 

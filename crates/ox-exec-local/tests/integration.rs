@@ -1084,7 +1084,7 @@ async fn cancel_mid_write_cleans_partial_output() {
     let ctx2 = ExecContext {
         global_job_limit: 1,
         run_id: "test-recovery".into(),
-        log_dir: log_dir,
+        log_dir,
         project_dir: dir.path().to_path_buf(),
         trusted_dirs: vec![],
         input_data: std::collections::HashMap::new(),
