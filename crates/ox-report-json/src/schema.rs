@@ -151,7 +151,7 @@
 //! consumers a single object summarizing the entire run.
 //!
 //! ```json
-//! {"event":"run_summary","total_jobs":100,"succeeded":98,"failed":1,"skipped":1,"duration_ms":60000}
+//! {"event":"run_summary","total_jobs":100,"succeeded":98,"failed":1,"skipped":1,"cancelled":0,"duration_ms":60000}
 //! ```
 //!
 //! | Field         | Type  | Description                        |
@@ -160,6 +160,7 @@
 //! | `succeeded`   | `u64` | Jobs that succeeded                |
 //! | `failed`      | `u64` | Jobs that failed                   |
 //! | `skipped`     | `u64` | Jobs that were skipped             |
+//! | `cancelled`   | `u64` | Jobs that were cancelled (gate rejected, interrupted) |
 //! | `duration_ms` | `u64` | Total wall-clock duration in ms    |
 //!
 //! # Forward compatibility

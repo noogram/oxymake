@@ -21,6 +21,7 @@ pub fn validate(workflow: &Workflow) -> Result<(), Vec<ParseError>> {
     check_duplicate_rules(workflow, &mut errors);
     check_execution_modes(workflow, &mut errors);
     check_output_wildcards(workflow, &mut errors);
+    check_gate_rules(workflow, &mut errors);
 
     if errors.is_empty() {
         Ok(())
@@ -76,6 +77,29 @@ fn check_output_wildcards(workflow: &Workflow, _errors: &mut Vec<ParseError>) {
                     // (we can't fully resolve this at parse time, so we skip
                     // wildcards that look like config references)
                     // For now, this is informational — not an error.
+                }
+            }
+        }
+    }
+}
+
+/// Check that every rule named by a `[gate.*]` (`before` and `after`)
+/// exists in the workflow.
+///
+/// Gates attach to jobs by rule name at run time; a name that matches no
+/// rule attaches nothing. Failing closed here is what makes a typo in
+/// `before` an error instead of a silently unguarded rule (issue #2).
+fn check_gate_rules(workflow: &Workflow, errors: &mut Vec<ParseError>) {
+    let rules: HashSet<&str> = workflow.rules.iter().map(|r| r.name.as_str()).collect();
+    for gate in &workflow.gates {
+        for (field, names) in [("before", &gate.before), ("after", &gate.after)] {
+            for rule in names {
+                if !rules.contains(rule.as_str()) {
+                    errors.push(ParseError::GateUnknownRule {
+                        gate: gate.name.clone(),
+                        field: field.to_string(),
+                        rule: rule.clone(),
+                    });
                 }
             }
         }
@@ -188,6 +212,75 @@ shell = "process {input} > {output}"
 "#;
         let wf = parse_workflow(toml, Path::new("test.toml")).unwrap();
         // Currently this is informational only (not an error), so validate should pass.
+        assert!(validate(&wf).is_ok());
+    }
+
+    #[test]
+    fn gate_naming_an_unknown_rule_is_an_error() {
+        let toml = r#"
+ox_version = "0.1"
+
+[gate.approval]
+after = []
+before = ["typo_rule"]
+
+[rule.guarded]
+input = []
+output = ["out.txt"]
+shell = "echo RAN > out.txt"
+"#;
+        let wf = parse_workflow(toml, Path::new("test.toml")).unwrap();
+        let errs = validate(&wf).unwrap_err();
+        assert_eq!(errs.len(), 1);
+        let msg = errs[0].to_string();
+        assert!(msg.contains("gate `approval`"), "{msg}");
+        assert!(msg.contains("unknown rule `typo_rule`"), "{msg}");
+        assert!(msg.contains("`before`"), "{msg}");
+    }
+
+    #[test]
+    fn gate_after_naming_an_unknown_rule_is_an_error() {
+        let toml = r#"
+ox_version = "0.1"
+
+[gate.approval]
+after = ["nope"]
+before = ["guarded"]
+
+[rule.guarded]
+input = []
+output = ["out.txt"]
+shell = "echo RAN > out.txt"
+"#;
+        let wf = parse_workflow(toml, Path::new("test.toml")).unwrap();
+        let errs = validate(&wf).unwrap_err();
+        assert_eq!(errs.len(), 1);
+        let msg = errs[0].to_string();
+        assert!(msg.contains("gate `approval`"), "{msg}");
+        assert!(msg.contains("unknown rule `nope`"), "{msg}");
+        assert!(msg.contains("`after`"), "{msg}");
+    }
+
+    #[test]
+    fn gate_naming_existing_rules_is_valid() {
+        let toml = r#"
+ox_version = "0.1"
+
+[gate.approval]
+after = ["prep"]
+before = ["guarded"]
+
+[rule.prep]
+input = []
+output = ["prep.txt"]
+shell = "echo PREP > prep.txt"
+
+[rule.guarded]
+input = ["prep.txt"]
+output = ["out.txt"]
+shell = "echo RAN > out.txt"
+"#;
+        let wf = parse_workflow(toml, Path::new("test.toml")).unwrap();
         assert!(validate(&wf).is_ok());
     }
 

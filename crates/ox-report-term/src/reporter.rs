@@ -133,6 +133,73 @@ impl TermReporter {
     /// that indicatif can suspend and redraw progress bars around the write.
     /// This prevents duplication and interleaving of log lines with the
     /// progress bar (see ox-ssnl).
+    /// The two completion lines printed by [`Reporter::finish`]: the
+    /// `Completed n/total in …` header and the per-outcome counts.
+    /// Cancelled jobs are counted and rendered apart from skipped ones.
+    fn summary_lines(&self, summary: &RunSummary) -> Vec<String> {
+        let mut parts = Vec::new();
+        if summary.succeeded > 0 {
+            parts.push(format!(
+                "{}",
+                self.theme
+                    .success
+                    .apply_to(format!("{} succeeded", summary.succeeded)),
+            ));
+        }
+        if summary.failed > 0 {
+            parts.push(format!(
+                "{}",
+                self.theme
+                    .error
+                    .apply_to(format!("{} failed", summary.failed)),
+            ));
+        }
+        if summary.skipped > 0 {
+            parts.push(format!(
+                "{}",
+                self.theme
+                    .muted
+                    .apply_to(format!("{} skipped", summary.skipped)),
+            ));
+        }
+        if summary.cancelled > 0 {
+            parts.push(format!(
+                "{}",
+                self.theme
+                    .warning
+                    .apply_to(format!("{} cancelled", summary.cancelled)),
+            ));
+        }
+
+        let done = summary.succeeded + summary.failed + summary.skipped + summary.cancelled;
+
+        // Compute throughput for the summary.
+        let elapsed_secs = summary.duration_ms as f64 / 1000.0;
+        let throughput = if elapsed_secs > 0.0 {
+            format!(" ({:.1} jobs/s)", done as f64 / elapsed_secs)
+        } else {
+            String::new()
+        };
+
+        let status_icon = if summary.failed == 0 {
+            self.theme.success.apply_to("\u{2713}").to_string()
+        } else {
+            self.theme.error.apply_to("\u{2717}").to_string()
+        };
+
+        vec![
+            format!(
+                "  {} Completed {}/{} in {}{}",
+                status_icon,
+                done,
+                summary.total_jobs,
+                format_duration(summary.duration_ms),
+                self.theme.muted.apply_to(&throughput),
+            ),
+            format!("    {}", parts.join(", ")),
+        ]
+    }
+
     fn eprintln(&self, msg: &str) {
         if self.is_tty {
             let _ = self.multi.println(msg);
@@ -619,56 +686,9 @@ impl Reporter for TermReporter {
                 self.main_bar.finish_and_clear();
             }
 
-            let mut parts = Vec::new();
-            if summary.succeeded > 0 {
-                parts.push(format!(
-                    "{}",
-                    self.theme
-                        .success
-                        .apply_to(format!("{} succeeded", summary.succeeded)),
-                ));
+            for line in self.summary_lines(summary) {
+                self.eprintln(&line);
             }
-            if summary.failed > 0 {
-                parts.push(format!(
-                    "{}",
-                    self.theme
-                        .error
-                        .apply_to(format!("{} failed", summary.failed)),
-                ));
-            }
-            if summary.skipped > 0 {
-                parts.push(format!(
-                    "{}",
-                    self.theme
-                        .muted
-                        .apply_to(format!("{} skipped", summary.skipped)),
-                ));
-            }
-
-            // Compute throughput for the summary.
-            let elapsed_secs = summary.duration_ms as f64 / 1000.0;
-            let total_done = (summary.succeeded + summary.failed + summary.skipped) as f64;
-            let throughput = if elapsed_secs > 0.0 {
-                format!(" ({:.1} jobs/s)", total_done / elapsed_secs)
-            } else {
-                String::new()
-            };
-
-            let status_icon = if summary.failed == 0 {
-                self.theme.success.apply_to("\u{2713}").to_string()
-            } else {
-                self.theme.error.apply_to("\u{2717}").to_string()
-            };
-
-            self.eprintln(&format!(
-                "  {} Completed {}/{} in {}{}",
-                status_icon,
-                summary.succeeded + summary.failed + summary.skipped,
-                summary.total_jobs,
-                format_duration(summary.duration_ms),
-                self.theme.muted.apply_to(&throughput),
-            ));
-            self.eprintln(&format!("    {}", parts.join(", ")));
 
             // Show failed job names in the summary if any.
             let names = self.failed_names.lock().unwrap();
@@ -966,8 +986,29 @@ mod tests {
             succeeded: 1,
             failed: 1,
             skipped: 1,
+            cancelled: 0,
             duration_ms: 600,
         };
         reporter.finish(&summary).await;
+    }
+
+    /// A cancelled job (gate rejected) is reported as cancelled, not
+    /// skipped, in the completion summary (verification finding 7).
+    #[tokio::test]
+    async fn finish_reports_cancelled_jobs_separately() {
+        let reporter = TermReporter::new();
+
+        let summary = RunSummary {
+            total_jobs: 1,
+            succeeded: 0,
+            failed: 0,
+            skipped: 0,
+            cancelled: 1,
+            duration_ms: 5_000,
+        };
+        let out = reporter.summary_lines(&summary).join("\n");
+        assert!(out.contains("Completed 1/1"), "{out}");
+        assert!(out.contains("1 cancelled"), "{out}");
+        assert!(!out.contains("skipped"), "{out}");
     }
 }

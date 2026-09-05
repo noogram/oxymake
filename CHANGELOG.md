@@ -46,11 +46,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   crates.io name-reservation crate), and the rebuilt PDF and arXiv tarball.
 
 ### Added
-- `ox lint` now warns (without failing) when an Oxymakefile declares one or
-  more `[gate.*]` sections: gate enforcement is not wired into the run path
-  in this version, so guarded rules currently execute without approval (see
-  issue #2). The warning appears in human output and, as `warnings`, in
-  `--json` output.
+- A `[gate.<name>]` whose `before` or `after` names a rule that the
+  Oxymakefile does not define is now a validation **error**: `ox lint` fails
+  and `ox run` refuses to start, naming the gate and the unknown rule. A
+  misspelled `before` previously attached the gate to nothing and the rule it
+  meant to guard ran unapproved (#2). The "gate enforcement is not wired"
+  lint warning of the interim release is gone: gates block now.
 - `docs/paper/ERRATUM.md` — an append-only record of every paper claim
   corrected after publication, with the superseded wording and the primary
   source for each correction. The paper carries a matching "Revision note
@@ -63,6 +64,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   local index (a remote computation-key manifest is future work).
 
 ### Fixed
+- `ox gate reject` confirms with "rejected by", not "rejectd by".
+- The terminal progress summary now counts cancelled jobs (gate rejected,
+  interrupted) as `N cancelled` instead of folding them into `N skipped`;
+  the `run_summary` line of `--report-json` gains a `cancelled` field.
 - Paper and docs: corrected a fourth contradicted claim, raised by a review
   panel and verified against the code before any text moved
   (`ops/audits/panel-findings-verification-2026-08.md`, which also records the

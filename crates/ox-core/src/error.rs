@@ -92,6 +92,18 @@ pub enum ParseError {
         column: String,
         available: String,
     },
+
+    /// A `[gate.<gate>]` names, in `before` or `after`, a rule that the
+    /// workflow does not define. Rejected rather than ignored: a misspelled
+    /// `before` would otherwise leave the rule it meant to guard unguarded.
+    #[error(
+        "gate `{gate}` lists unknown rule `{rule}` in `{field}` (a gate must name rules that exist; check for a typo)"
+    )]
+    GateUnknownRule {
+        gate: String,
+        field: String,
+        rule: String,
+    },
 }
 
 /// An invalid hash literal was rejected at the type boundary.

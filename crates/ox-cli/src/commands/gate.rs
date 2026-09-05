@@ -108,11 +108,13 @@ pub fn cmd_gate(args: GateArgs) -> Result<()> {
             let gate_id = db.resolve_pending_gate(gate)?;
             let approver = args.approver.as_deref().unwrap_or("unknown");
             let reason = args.reason.as_deref().unwrap_or("");
-            if action == "approve" {
+            let verb = if action == "approve" {
                 db.approve_gate(gate_id, approver, reason)?;
+                "approved"
             } else {
                 db.reject_gate(gate_id, approver, reason)?;
-            }
+                "rejected"
+            };
             let record = db.list_gates()?.into_iter().find(|g| g.id == gate_id);
             let name = record.map(|g| g.name).unwrap_or_else(|| gate.to_string());
             if args.json {
@@ -121,13 +123,13 @@ pub fn cmd_gate(args: GateArgs) -> Result<()> {
                     serde_json::json!({
                         "id": gate_id,
                         "name": name,
-                        "status": if action == "approve" { "approved" } else { "rejected" },
+                        "status": verb,
                         "decided_by": approver,
                         "reason": reason,
                     })
                 );
             } else {
-                println!("Gate '{name}' (id {gate_id}) {action}d by {approver}");
+                println!("Gate '{name}' (id {gate_id}) {verb} by {approver}");
             }
         }
         other => {

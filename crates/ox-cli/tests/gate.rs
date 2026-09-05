@@ -230,6 +230,60 @@ fn rejected_gate_cancels_the_guarded_job() {
         (stderr.clone() + &stdout).contains("cancelled"),
         "cancellation not reported\n{stdout}\n{stderr}"
     );
+    // The progress summary counts the rejected job as cancelled, not as
+    // skipped (verification finding 7); the final line agrees.
+    assert!(
+        stderr.contains("1 cancelled"),
+        "progress summary must say `1 cancelled`\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("1 skipped"),
+        "progress summary must not report the rejected job as skipped\n{stderr}"
+    );
+    assert!(
+        stdout.contains("0 skipped, 1 cancelled"),
+        "final summary line\n{stdout}"
+    );
+    // Gate reject confirmation uses an explicit past-tense verb (finding 6).
+    assert!(
+        String::from_utf8_lossy(&reject.stdout).contains("rejected by"),
+        "reject confirmation: {}",
+        String::from_utf8_lossy(&reject.stdout)
+    );
+}
+
+/// A gate whose `before` names a rule that does not exist refuses to run
+/// (verification finding 2): with the typo, no job would be attached to the
+/// gate and the rule the author meant to guard would run unapproved.
+#[test]
+fn run_refuses_gate_naming_unknown_rule() {
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path();
+    fs::write(
+        dir.join("Oxymakefile.toml"),
+        OXYMAKEFILE.replace("before = [\"guarded\"]", "before = [\"typo_rule\"]"),
+    )
+    .unwrap();
+
+    let out = Command::new(ox_bin())
+        .args(["run", "out.txt"])
+        .current_dir(dir)
+        .output()
+        .unwrap();
+    assert!(
+        !out.status.success(),
+        "run with a misspelled gate rule must be refused"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("gate `approval` lists unknown rule `typo_rule` in `before`"),
+        "unexpected error: {stderr}"
+    );
+    assert!(
+        !dir.join("out.txt").exists(),
+        "guarded rule ran despite the refusal"
+    );
+    assert!(gate_rows(dir).is_empty());
 }
 
 /// Gates are enforced by the scheduler; the SLURM/Ray DAG submission path

@@ -244,12 +244,12 @@ fn lint_json_missing_file_outputs_json() {
     assert!(parsed["errors"].as_array().unwrap().len() > 0);
 }
 
-/// `ox lint` warns when a `[gate.*]` section is present, because gate
-/// enforcement is not wired into the run path (issue #2): the warning must
-/// not fail the lint (a gate is valid TOML) and must name the gate and the
-/// rule(s) it guards.
+/// A `[gate.*]` whose `before` names a rule that does not exist is a
+/// validation error (issue #2, verification finding 2): a misspelled rule
+/// name must not leave the rule it meant to guard unguarded. The message
+/// names the gate and the unknown rule, in human and `--json` output.
 #[test]
-fn lint_warns_on_unenforced_gate() {
+fn lint_rejects_gate_naming_unknown_rule() {
     let dir = TempDir::new().unwrap();
     let file = dir.path().join("Oxymakefile.toml");
     fs::write(
@@ -259,8 +259,7 @@ format_version = "1"
 
 [gate.approval]
 after = []
-before = ["guarded"]
-message = "Should block until approved."
+before = ["typo_rule"]
 
 [rule.guarded]
 input = []
@@ -272,10 +271,53 @@ shell = "echo RAN > out.txt"
 
     ox().args(["lint", "-f", file.to_str().unwrap()])
         .assert()
-        .success()
-        .stdout(predicates::str::contains(
-            "gate `approval` guards rule(s) `guarded`, but gate enforcement is not wired in this version: guarded rules run without approval (see issue #2)",
+        .failure()
+        .stderr(predicates::str::contains(
+            "gate `approval` lists unknown rule `typo_rule` in `before`",
         ));
+
+    let output = ox()
+        .args(["lint", "--json", "-f", file.to_str().unwrap()])
+        .output()
+        .expect("command should run");
+    assert!(!output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: serde_json::Value =
+        serde_json::from_str(&stdout).expect("stdout should be valid JSON");
+    assert_eq!(parsed["valid"], false);
+    let errors = parsed["errors"].as_array().unwrap();
+    assert_eq!(errors.len(), 1);
+    assert!(
+        errors[0]
+            .as_str()
+            .unwrap()
+            .contains("gate `approval` lists unknown rule `typo_rule` in `before`"),
+        "{errors:?}"
+    );
+}
+
+/// A well-formed gate produces no warning: the "enforcement is not wired"
+/// stopgap warning was removed once gates started to block.
+#[test]
+fn lint_valid_gate_produces_no_warning() {
+    let dir = TempDir::new().unwrap();
+    let file = dir.path().join("Oxymakefile.toml");
+    fs::write(
+        &file,
+        r#"ox_version = "0.1"
+format_version = "1"
+
+[gate.approval]
+after = []
+before = ["guarded"]
+
+[rule.guarded]
+input = []
+output = ["out.txt"]
+shell = "echo RAN > out.txt"
+"#,
+    )
+    .unwrap();
 
     let output = ox()
         .args(["lint", "--json", "-f", file.to_str().unwrap()])
@@ -286,14 +328,8 @@ shell = "echo RAN > out.txt"
     let parsed: serde_json::Value =
         serde_json::from_str(&stdout).expect("stdout should be valid JSON");
     assert_eq!(parsed["valid"], true);
-    let warnings = parsed["warnings"].as_array().unwrap();
-    assert_eq!(warnings.len(), 1);
-    assert!(
-        warnings[0]
-            .as_str()
-            .unwrap()
-            .contains("gate `approval` guards rule(s) `guarded`")
-    );
+    assert!(parsed["warnings"].as_array().unwrap().is_empty());
+    assert!(!stdout.contains("not wired"));
 }
 
 /// An Oxymakefile without any `[gate.*]` section produces no gate-related
