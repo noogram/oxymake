@@ -1,6 +1,6 @@
 TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)
-Running breadth-first search Model-Checking with fp 58 and seed -261575559758558190 with 16 workers on 16 cores with 27300MB heap and 64MB offheap memory [pid: 94688] (Mac OS X 26.5.1 aarch64, Homebrew 17.0.19 x86_64, MSBDiskFPSet, DiskStateQueue).
-Parsing file spec/tla/CacheConsistency.tla
+Running breadth-first search Model-Checking with fp 0 and seed 0 with 1 worker on 16 cores with 27300MB heap and 64MB offheap memory [pid: 15803] (Mac OS X 26.6.2 aarch64, Eclipse Adoptium 21.0.12.1 x86_64, MSBDiskFPSet, DiskStateQueue).
+Parsing file /Users/eserie/galaxies/oxymake/.worktrees/task-20260905-83cb/spec/tla/CacheConsistency.tla
 Parsing file /private/var/folders/_f/yp39_pl932l59d2ckz60rnq00000gn/T/Naturals.tla
 Parsing file /private/var/folders/_f/yp39_pl932l59d2ckz60rnq00000gn/T/FiniteSets.tla
 Parsing file /private/var/folders/_f/yp39_pl932l59d2ckz60rnq00000gn/T/Sequences.tla
@@ -10,9 +10,9 @@ Semantic processing of module Sequences
 Semantic processing of module FiniteSets
 Semantic processing of module TLC
 Semantic processing of module CacheConsistency
-Starting... (2026-06-10 06:21:41)
+Starting... (2026-09-05 12:44:34)
 Computing initial states...
-Finished computing initial states: 1 distinct state generated at 2026-06-10 06:21:41.
+Finished computing initial states: 1 distinct state generated at 2026-09-05 12:44:34.
 Error: Invariant CacheKeyDeterminism is violated.
 Error: The behavior up to this point is:
 State 1: <Initial predicate>
@@ -63,7 +63,7 @@ State 6: <Materialize line 89, col 5 to line 95, col 55 of module CacheConsisten
 /\ claim = (w1 :> r1 @@ w2 :> NoClaim)
 /\ materialized = {<<w1, r1>>}
 
-258 states generated, 133 distinct states found, 91 states left on queue.
-The depth of the complete state graph search is 7.
-The average outdegree of the complete state graph is 4 (minimum is 1, the maximum 6 and the 95th percentile is 6).
-Finished in 00s at (2026-06-10 06:21:41)
+545 states generated, 219 distinct states found, 144 states left on queue.
+The depth of the complete state graph search is 6.
+The average outdegree of the complete state graph is 3 (minimum is 1, the maximum 6 and the 95th percentile is 6).
+Finished in 00s at (2026-09-05 12:44:34)

@@ -147,6 +147,25 @@ gitignored) and archives each run's full output under `spec/tla/runs/`
 depth — must be reproducible from these artifacts; the committed
 `runs/*.out` files are the reference outputs (premortem finding H19).
 
+TLC is run with `-workers 1 -fp 0 -seed 0` so that those numbers are
+the same on every host (issue #3, round-1 QA finding 3: with `-workers
+auto` and a random fingerprint seed the graph depth drifted by one and
+the red runs stopped at different state counts). A committed `.out` is
+**not** byte-comparable — it carries the host banner, pid, timestamps,
+`Progress(...)` lines and states/minute rates. The lines to compare are:
+
+| Line | Suite |
+|------|-------|
+| `<n> states generated, <n> distinct states found, <n> states left on queue.` (the final one, not the `Progress(...)` ones) | both |
+| `The depth of the complete state graph search is <n>.` | both |
+| `Model checking completed. No error has been found.` | green |
+| `Error: Invariant <Name> is violated.` and the trace states after it | red |
+
+The script prints exactly these lines. Two consecutive `--all` runs on
+2026-09-05 agreed on all of them for the five configurations (the green
+`CooperativeClaim` run takes about five minutes with one worker;
+`TLC_WORKERS=<n>` speeds a local check up at the cost of comparability).
+
 Two **red configurations** are committed alongside the green ones:
 
 | Config | Models | Refutes |

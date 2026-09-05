@@ -13,6 +13,26 @@
 #   ./run-tlc.sh --all      # both
 #
 # Requirements: java 11+ (e.g. `brew install openjdk`), curl.
+#
+# Determinism (issue #3, round-1 QA finding 3). TLC is run with
+# `-workers 1 -fp 0 -seed 0`: one worker so the BFS visits states in one
+# fixed order (with several workers the reported graph depth drifts by
+# one and a red run stops at a different state count), and a pinned
+# fingerprint function / seed. With these the following lines of a
+# committed runs/*.out are reproducible on any host and are the ones to
+# compare (they are also what this script prints):
+#   "<n> states generated, <n> distinct states found, <n> states left on queue."
+#   "The depth of the complete state graph search is <n>."
+#   "Error: Invariant <Name> is violated."   (red suite; and the trace
+#                                              states that follow it)
+#   "Model checking completed. No error has been found."   (green suite)
+# Everything else in the file is host- or run-specific and is NOT
+# comparable: the TLC banner (heap, core count, OS, pid, absolute
+# paths), timestamps, "Finished computing initial states" timings, the
+# states/minute rates, the "Progress(...)" lines, and the Java/TLC
+# platform lines. TLC_WORKERS=<n> overrides the worker count for a fast
+# local check whose numbers are then not comparable with the committed
+# files.
 
 set -euo pipefail
 cd "$(dirname "$0")"
@@ -23,6 +43,10 @@ TLA_SHA256="936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88"
 CACHE_DIR="${TLC_CACHE_DIR:-.tlc-cache}"
 JAR="$CACHE_DIR/tla2tools-${TLA_VERSION}.jar"
 RUNS_DIR="runs"
+# Pinned so that runs/*.out are comparable across hosts (see header).
+TLC_WORKERS="${TLC_WORKERS:-1}"
+TLC_FP="0"
+TLC_SEED="0"
 
 # --- locate java -----------------------------------------------------------
 find_java() {
@@ -63,7 +87,8 @@ run_one() {
     echo "==> TLC $module ($config, expect $expect)"
     set +e
     "$JAVA_BIN" -XX:+UseParallelGC -cp "$JAR" tlc2.TLC \
-        -deadlock -workers auto -metadir "$scratch" \
+        -deadlock -workers "$TLC_WORKERS" -fp "$TLC_FP" -seed "$TLC_SEED" \
+        -metadir "$scratch" \
         -config "$config" "$module" > "$out" 2>&1
     local rc=$?
     set -e
@@ -74,13 +99,13 @@ run_one() {
             tail -5 "$out" >&2
             return 1
         fi
-        grep -E "distinct states|depth of the complete state graph" "$out" | sed 's/^/    /'
+        grep -E "distinct states|depth of the complete state graph|No error has been found" "$out" | sed 's/^/    /'
     else
         if ! grep -q "Invariant.*is violated" "$out"; then
             echo "FAIL: $config was expected to violate an invariant (see $out)" >&2
             return 1
         fi
-        grep -E "Invariant.*is violated" "$out" | sed 's/^/    /'
+        grep -E "Invariant.*is violated|distinct states|depth of the complete state graph" "$out" | sed 's/^/    /'
     fi
 }
 
