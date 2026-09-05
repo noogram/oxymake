@@ -114,14 +114,17 @@ fn run_json_events_match_docs() {
         .stdout(contains(r#""job_id":"process-"#));
 }
 
-/// `ox --version` must report `ox 0.1.0` (the binary name, not `oxymake`), as
-/// `installation.md` and `quickstart.md` state.
+/// `ox --version` must report `ox <workspace version>` (the binary name, not
+/// `oxymake`), as `installation.md` and `quickstart.md` state. The expected
+/// string is derived from the crate version so a release bump cannot leave this
+/// test asserting the previous version.
 #[test]
 fn version_string_matches_docs() {
+    let expected = format!("ox {}", env!("CARGO_PKG_VERSION"));
     ox().arg("--version")
         .assert()
         .success()
-        .stdout(contains("ox 0.1.0"));
+        .stdout(contains(expected.as_str()));
 }
 
 /// Returns true if a `python` interpreter is on PATH (the flagship tutorial
