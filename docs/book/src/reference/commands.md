@@ -42,6 +42,12 @@ ox run --no-cache               # Ignore the cache, re-run everything
   (forces `hash` validation; see below)
 - `--executor EXEC` -- Choose executor: `local` (default), `slurm`, `ray`
 
+**Concurrent sessions.** Several `ox run` may share a workspace: each job
+is claimed in `.oxymake/state.db` before it is dispatched, so a job is
+executed by one session and the others wait for its result (see
+[`ox gate`](#ox-gate) for the behaviour and `OX_SESSION_LEASE_SECS` for the
+lease after which a dead session's jobs are taken over).
+
 **`--cache-remote <dir>`** stores each job's output blobs in the given
 directory (content-addressed, BLAKE3-verified on restore) and restores
 missing outputs from it. Validation is always promoted to `hash` when the
@@ -157,28 +163,26 @@ Rules of the gate ledger:
   against pending records; with a single run waiting there is exactly one.
   If two runs wait on the same gate, the name is ambiguous and the command
   lists the ids to use instead.
-- **Two approved runs of the same job fail closed.** *Known limitation.*
-  The cooperative claim protocol of `state.db` (ADR-012) is not yet the
-  scheduling gate, so approving both ids makes both sessions try to run the
-  job. Rather than let two executions interleave and commit a mixed output
-  set, the local executor takes an exclusive `flock(2)` lock on **each
-  output path** of the job (under `.oxymake/locks/`) before it touches any
-  file, and holds them until the outputs are committed. Two jobs contend as
-  soon as their output sets overlap, whatever the spelling of the path
-  (symlinked directories are resolved). The session that wins executes and
-  commits; the other aborts that job with an error (exit status 1) naming
-  the holder and the locked path (`job '<id>' is already being executed by
-  another session (pid N): output '<path>' is locked`). The job's own
-  subprocess inherits the locks, so a session killed mid-job (`kill -9`)
-  does not free them while its orphaned job is still writing: a replacement
-  run fails closed in the same way, naming the exited session, until that
-  job exits. To run the job exactly once, approve one id and reject the
-  other. **Scope of the guarantee:** it holds on local filesystems with a
-  working `flock(2)`. On NFS and other distributed filesystems the lock may
-  not be visible between hosts, and `ox` cannot detect that; sessions on
-  different hosts sharing such a directory are not protected. On platforms
-  without `flock` (non-Unix) a job with file outputs is refused rather than
-  run unprotected.
+- **Two approved runs of the same job execute it once.** Before it
+  dispatches a job, `ox run` claims it in `state.db` (the cooperative claim
+  protocol of ADR-012). Approving both ids therefore makes one session
+  execute the job and the other wait: it prints `<job> is being executed
+  by <session>; waiting for its result instead of running it here`, then
+  takes over the owner's result — a completion counts as done in both
+  sessions (both exit 0, exactly one execution happened), a failure or
+  cancellation by a live owner is mirrored. Sessions heartbeat every third
+  of a lease (default 90 s, `OX_SESSION_LEASE_SECS` overrides); if the
+  owner is killed mid-job, the waiting session reclaims the job once the
+  lease has expired and executes it itself. A waiting run stops on the
+  first Ctrl+C / SIGTERM without touching the peer's job. **Defence in
+  depth:** the local executor also takes an exclusive `flock(2)` on each
+  output path under `.oxymake/locks/` for the duration of execution and
+  commit, and a job whose paths are locked by another live process fails
+  closed (`job '<id>' is already being executed by another session (pid
+  N): output '<path>' is locked`) — for instance a reclaimed job whose
+  killed owner's orphaned shell is still writing. That lock holds on local
+  filesystems with a working `flock(2)`; the claim protocol holds wherever
+  SQLite does, hosts included.
 - **`after` adds no dependency edge.** A gate is evaluated once a guarded
   job's own inputs are ready, so list in `after` rules that are upstream of
   the `before` rules through the DAG.

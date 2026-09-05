@@ -50,79 +50,107 @@ pool and can be claimed by any active session.
 
 **Easier:**
 - No lock servers, no ZooKeeper: SQLite is the coordination primitive for
-  *claiming* jobs. (Until the claim is the scheduling gate, the local
-  executor additionally uses per-output-path `flock` files under
-  `.oxymake/locks/` — see *Known limitation* below.)
+  *claiming* jobs. The local executor additionally holds per-output-path
+  `flock` files under `.oxymake/locks/` as defence in depth (see
+  *Dispatch-time claim* below).
 - Crash recovery is automatic: stale heartbeat → reclaim. No manual cleanup
   required.
 - The claim protocol works on NFS/network filesystems where SQLite WAL is
-  supported (same guarantees as local disk). The interim output-path locks
-  do **not** carry that guarantee (see below).
+  supported (same guarantees as local disk). The output-path locks do
+  **not** carry that guarantee (see below); they are no longer what the
+  exactly-once property rests on.
 - Session identity includes UUIDv4 suffix, preventing PID-reuse collisions.
 
 **Harder:**
-- Heartbeat interval determines crash detection latency. A 30s heartbeat means
-  up to 30s + threshold before orphaned jobs are reclaimed.
+- Heartbeat interval determines crash detection latency. With the default
+  lease of 90 s (heartbeat every 30 s) a peer waits up to 90 s after a crash
+  before it reclaims the dead session's jobs.
+- A peer's *failure* is mirrored while that peer is live. With
+  `ErrorStrategy::Retry` the waiting session therefore sees the failed
+  attempt, retries its claim, loses it again to the retrying owner and
+  consumes the owner's next verdict — its own retry budget is spent on
+  mirrored attempts, not on executions.
+- A session that loses a claim waits for the owner even when it wanted to
+  `--forcerun` the job: with a live owner executing the job, forcing a
+  second concurrent execution would reintroduce the mixed-output race.
 - No work stealing: sessions only claim pending jobs. A long-running job on a
   slow session cannot be redistributed.
 - SQLite's single-writer lock means claim contention serializes at the database
   level. At very high session counts (>10 concurrent), this could become a
   throughput bottleneck.
 
-## Known limitation (2026-09-05)
+## Dispatch-time claim (2026-09-05, issue #3)
 
-The claim protocol is not yet consulted by the scheduler before it launches
-a job: `claim_job` is recorded from the `JobStarted` event, after dispatch.
-Two sessions that both reach a job (for example two `ox run` approved for
-the same gate) therefore both try to execute it.
+The claim **is** the scheduling gate. Before it dispatches a job the
+scheduler (`ox-core`) calls the `JobClaim` trait — the same injection
+pattern as `GateCheck`: the trait lives in `ox-core`, the implementation
+(`StateJobClaimer`, `ox-state/src/claim.rs`) is built by `ox run` over
+`state.db`, and `ox-core` keeps no dependency on `ox-state`.
 
-Because their outputs share the same final paths, letting both run would
-interleave their writes and could commit an output set mixing files from two
-physical executions — a corrupt, non-reproducible result reported as success
-(issue #2, round-2 finding 1). An earlier revision tried to make the
-duplicate harmless by having the loser *adopt* its peer's committed outputs;
-that is unsound for a non-deterministic or multi-output job and has been
-reverted.
+- **Won** → this session executes the job. The claim is idempotent per
+  session, so a job deferred by the resource budget or `-j` is claimed
+  again on its next dispatch attempt.
+- **Lost** → the job is *not* launched here. It leaves the ready frontier
+  and is polled every 500 ms (the gate poll interval, observing Ctrl+C /
+  SIGTERM like a pending gate — a waiting run stops on the first signal),
+  also while this session's own jobs are in flight. `ox run` prints
+  `<job> is being executed by <session>; waiting for its result instead of
+  running it here`.
+- The owner's terminal state is then **consumed** as this session's own:
+  `completed` promotes the downstream jobs and records the cache exactly as
+  a local success would (the job shows as done in both sessions, exactly
+  one execution happened); `failed` is mirrored through the job's error
+  strategy; `cancelled` is mirrored and cancels downstream. A failure or
+  cancellation is mirrored only while its author is **live** — an
+  `active` session with a heartbeat younger than the lease. A verdict left
+  by a finished, interrupted or dead session is history: the row is reset
+  and the job re-run here. (`ox run` records `interrupted` on its first
+  signal, before its killed jobs are terminalized, so a peer never mirrors
+  an interruption as a failure.)
+- **Lease.** `ox run` heartbeats its session every third of the lease
+  (default 90 s, `OX_SESSION_LEASE_SECS` overrides). When the owner's
+  heartbeat goes stale the waiting session reclaims its running jobs with
+  the existing `reclaim_stale_jobs` — there is exactly one lease — and the
+  next claim wins: a session killed with `kill -9` mid-job is replaced by
+  its waiter after at most one lease. If the killed session's orphaned job
+  shell is still writing at that moment, the output-path locks below make
+  the replacement fail closed rather than commit next to it.
+- **Old rows.** `register_jobs` keeps existing statuses, so after
+  registration `ox run` resets every row of its jobs whose owner is not
+  live (yesterday's completed run, a crashed peer, a cached row) — a fresh
+  run re-evaluates them instead of losing its claim to history. Rows owned
+  by a live peer are kept: that peer is the concurrent session this
+  protocol serves. A session that stops waiting (interrupt) cancels only
+  unclaimed pending rows and its own running rows, never a peer's.
+- A session only ever reaches jobs in its own graph, so it never blocks on
+  a peer's job whose outputs it does not need.
 
-The local executor now **fails closed** instead: `prepare_workspace` takes an
-exclusive, non-blocking advisory lock (`flock`) on **each output path** of
-the job before touching any file, and holds them until `finalize_workspace`
-commits. Locks are taken in globally sorted order of the path's key so two
-sessions can never deadlock; on the first contended path the session
-releases what it took and aborts that job with
-`ExecLocalError::ConcurrentExecution` (exit status 1), naming the holder and
-the locked path, without disturbing the winner's outputs. Because the lock
-is per path, two jobs contend as soon as their output sets *intersect*, not
-only when they are equal; and the key is derived from the canonicalised
-deepest existing ancestor of the path, so two spellings of one file through
-a symlinked directory contend too (round-3 finding 2).
+`spec/tla/CooperativeClaim.tla` models exactly this order — `Claim`
+before `Terminalize`, `Reclaim` after staleness; the pre-#3 code recorded
+the claim from the `JobStarted` event, *after* dispatch, and thereby
+diverged from the spec. The change adds no transition (the waiter's poll
+is a read of `status` / `done_by`; a retry after `Reclaim` is another
+`Claim`), the suite was re-run unchanged and stays green.
 
-Each lock is tied to an open file description, so the kernel releases it
-when the last descriptor closes — a crashed session leaves no stale lock.
-The job subprocess inherits a duplicate of every lock descriptor (made in
-the child only, after `fork`), so a session killed with `SIGKILL` mid-job
-does **not** release the locks while its orphaned job shell can still write
-the final paths: a replacement run fails closed, naming the exited session,
-until that job exits (round-3 finding 1). The lock files live under
-`.oxymake/locks/` and are inert once unlocked; they are never a stale
-marker.
+**Defence in depth: per-output-path locks.** The local executor keeps the
+locks landed for issue #2: `prepare_workspace` takes an exclusive,
+non-blocking `flock` on **each output path** of the job before touching
+any file and holds it until `finalize_workspace` commits; locks are taken
+in sorted key order (deadlock-free), keyed on the canonicalised deepest
+existing ancestor of the path (two spellings of one file contend); on the
+first contended path the session aborts that job with
+`ExecLocalError::ConcurrentExecution`, naming the holder and the path. The
+job subprocess inherits a duplicate of every lock descriptor, so a
+`SIGKILL`ed session's orphaned job keeps the locks until it exits. On a
+local filesystem with a working `flock(2)` this guarantees that two
+physical executions never contribute files to one committed set even if
+the claim were bypassed; on NFS and other distributed filesystems `flock`
+may not be visible between hosts — there the claim protocol above is the
+guarantee. On targets without `flock` (non-Unix) a job with file outputs
+is refused (`ExecLocalError::LockUnsupported`).
 
-**Scope of the guarantee.** On a local filesystem with a working `flock(2)`,
-two physical executions never contribute files to one committed set. On
-NFS and other distributed filesystems `flock` may not be mutually visible
-between hosts (or may be emulated per host), and the executor cannot detect
-that; sessions on *different hosts* sharing such a directory are not
-protected by these locks (the claim protocol above still is, once it gates
-scheduling). On targets without `flock` (non-Unix) the executor refuses to
-run a job with file outputs (`ExecLocalError::LockUnsupported`) rather than
-pretend the lock is held (round-3 finding 3).
-
-This is conservative: the losing session fails its run rather than sharing
-the work. The complete fix is to make `claim_job` the scheduling gate so the
-scheduler defers to the owning session before dispatch (the loser then waits
-for and consumes the peer's terminal state instead of re-running); the
-output-path locks then become a defence in depth rather than the guarantee.
-That is the open follow-up.
+**Out of scope.** Distributed executors (`--executor slurm` / `ray`)
+submit the DAG without the scheduler and keep refusing gated workflows.
 
 ## Alternatives Considered
 
@@ -131,11 +159,10 @@ One lock file per job for *claiming* work. Doesn't work reliably on all NFS
 implementations and scales poorly with job count, so it was rejected as the
 *claim* mechanism in favour of SQLite. (The concern that a crashed holder
 strands the lock does not apply to `flock`, which the kernel releases with
-the last descriptor.) The per-output-path `flock` of the *Known limitation*
+the last descriptor.) The per-output-path `flock` of *Dispatch-time claim*
 above is not a reversal of this decision: it is a local-filesystem
-fail-closed guard against the one race the unfinished claim protocol still
-allows, explicitly scoped to hosts with a working `flock`, and it is meant
-to become defence in depth once the claim gates scheduling.
+fail-closed guard kept as defence in depth behind the claim, explicitly
+scoped to hosts with a working `flock`.
 
 **Postgres/distributed database**: Full MVCC, row-level locking, LISTEN/NOTIFY
 for real-time coordination. Far more capable but introduces an external

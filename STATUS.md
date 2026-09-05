@@ -290,6 +290,8 @@ canonical list lives in `docs/format/env-vars.md`.
 
 ### Unstable
 
+- `OX_SESSION_LEASE_SECS` — lease (seconds) of an `ox run` session's job
+  claims before a peer may reclaim them (ADR-012); default 90.
 - Anything else prefixed with `OX_` not in this list. If you read or
   set it, expect it to change.
 

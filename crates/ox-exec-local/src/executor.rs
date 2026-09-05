@@ -688,12 +688,13 @@ impl Executor for LocalExecutor {
         }
 
         // Lock every output path BEFORE deleting any existing output or
-        // staging file. Two `ox run` sessions approved for the same gate both
-        // reach this job (the claim protocol of ADR-012 is not yet the
-        // scheduling gate); executing both into the same paths would
-        // interleave writes and commit a mixed set (issue #2). A session that
-        // cannot lock all of its output paths fails closed here, before
-        // touching the filesystem, so the peer's outputs are never disturbed.
+        // staging file. The scheduler's dispatch-time claim (ADR-012, #3)
+        // keeps two sessions from executing the same job; these locks are
+        // the defence in depth behind it — a reclaimed job whose killed
+        // owner's orphaned shell is still writing would otherwise interleave
+        // writes and commit a mixed set (issue #2). A session that cannot
+        // lock all of its output paths fails closed here, before touching
+        // the filesystem, so the peer's outputs are never disturbed.
         // The guards are stored in the workspace state and released only
         // after `finalize_workspace` commits, so the locks span execution +
         // commit; the job child inherits duplicates in `execute`.
