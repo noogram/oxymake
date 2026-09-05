@@ -921,8 +921,11 @@ pub async fn run_scheduler_with_claims<E: Executor + 'static>(
         // 2. Check if we're done.
         {
             let s = state.lock().await;
+            // `Cancelled` is terminal, but a cancelled job may still be in
+            // flight (its process was only asked to stop): returning here
+            // would leak it and skip the SIGKILL escalation below.
             let all_terminal = s.statuses.values().all(|st| st.is_terminal());
-            if all_terminal {
+            if all_terminal && in_flight.is_empty() {
                 break;
             }
 
@@ -941,6 +944,21 @@ pub async fn run_scheduler_with_claims<E: Executor + 'static>(
                 .any(|st| matches!(st, JobLifecycle::Pending | JobLifecycle::Ready));
             if !has_pending && in_flight.is_empty() {
                 break;
+            }
+        }
+
+        // A job cancelled while in flight — by the shutdown below or by
+        // `cancel_downstream` after an upstream failure — was sent SIGTERM;
+        // arm the escalation so it is SIGKILLed once the grace period
+        // elapses. Re-armed after each escalation fires, so a process that
+        // outlives one SIGKILL delivery is signalled again.
+        if hard_kill_at.is_none() && !in_flight.is_empty() {
+            let s = state.lock().await;
+            let cancelled_in_flight = in_flight
+                .iter()
+                .any(|j| matches!(s.get_status(j), Some(JobLifecycle::Cancelled)));
+            if cancelled_in_flight {
+                hard_kill_at = Some(Instant::now() + shutdown_grace());
             }
         }
 

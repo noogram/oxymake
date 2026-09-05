@@ -3412,9 +3412,10 @@ fn spawn_sigterm_deaf_run(
     use std::time::{Duration, Instant};
 
     let oxymakefile = dir.join("Oxymakefile.toml");
-    // `trap '' TERM` makes the job's shell deaf to SIGTERM; the inner sleeps
-    // die on the group signal but the loop keeps the shell (and the process
-    // group) alive, so only SIGKILL ends it.
+    // The trap makes the job's shell deaf to SIGTERM: it records the signal
+    // in `term-seen.txt` and keeps looping; the inner sleeps die on the group
+    // signal but the shell (and the process group) stays alive, so only
+    // SIGKILL ends it. `job.pid` lets the test check the process is gone.
     fs::write(
         &oxymakefile,
         r#"ox_version = "0.1"
@@ -3424,7 +3425,7 @@ input = ["out.txt"]
 
 [rule.deaf]
 output = ["out.txt"]
-shell = "trap '' TERM; touch started.txt; while true; do sleep 0.2; done"
+shell = "echo $$ > job.pid; trap 'touch term-seen.txt' TERM; touch started.txt; while true; do sleep 0.2; done"
 "#,
     )
     .unwrap();
@@ -3453,6 +3454,18 @@ shell = "trap '' TERM; touch started.txt; while true; do sleep 0.2; done"
     (child, dir.join(".oxymake/state.db"))
 }
 
+/// `kill -0`: true while a process with this PID exists (zombies included,
+/// which is why callers poll — the parent `ox run` is gone and init reaps).
+#[cfg(unix)]
+fn pid_alive(pid: u32) -> bool {
+    std::process::Command::new("kill")
+        .args(["-0", &pid.to_string()])
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
 #[cfg(unix)]
 fn wait_for_exit(child: &mut std::process::Child, secs: u64) -> std::process::ExitStatus {
     use std::time::{Duration, Instant};
@@ -3478,9 +3491,17 @@ fn wait_for_exit(child: &mut std::process::Child, secs: u64) -> std::process::Ex
 fn interrupt_escalates_to_sigkill_and_leaves_no_running_row() {
     use std::process::Command as StdCommand;
 
+    use std::time::{Duration, Instant};
+
     let dir = TempDir::new().unwrap();
     let (mut child, db_path) = spawn_sigterm_deaf_run(dir.path(), "2");
+    let job_pid: u32 = fs::read_to_string(dir.path().join("job.pid"))
+        .expect("job.pid")
+        .trim()
+        .parse()
+        .expect("job pid");
 
+    let signalled_at = Instant::now();
     StdCommand::new("kill")
         .args(["-INT", &child.id().to_string()])
         .status()
@@ -3488,6 +3509,28 @@ fn interrupt_escalates_to_sigkill_and_leaves_no_running_row() {
 
     // Grace is 2 s; allow generous margin for CI scheduling.
     wait_for_exit(&mut child, 40);
+    let elapsed = signalled_at.elapsed();
+
+    // The run must have waited out the grace period before killing: exiting
+    // earlier means the child was never escalated and is leaked. (A lower
+    // bound with a little slack for timer granularity.)
+    assert!(
+        elapsed >= Duration::from_millis(1800),
+        "ox run exited {elapsed:?} after SIGINT, before the 2 s grace elapsed — no escalation happened"
+    );
+    // SIGTERM was delivered first (the trap ran), then SIGKILL ended the shell.
+    assert!(
+        dir.path().join("term-seen.txt").exists(),
+        "the job never saw SIGTERM: graceful cancellation did not reach it"
+    );
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while pid_alive(job_pid) {
+        assert!(
+            Instant::now() < deadline,
+            "job process {job_pid} is still alive after ox run exited: it was not SIGKILLed"
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
 
     let (session_id, session_status) = only_session(&db_path);
     assert_eq!(
@@ -3552,7 +3595,7 @@ fn double_interrupt_force_exits_without_leaving_running_rows() {
 
     // The orphaned job's process group is not this test's business (the
     // force-exit path is deliberately ledger-only), but leave nothing behind.
-    let _ = StdCommand::new("pkill")
-        .args(["-f", "trap '' TERM"])
-        .status();
+    if let Ok(pid) = fs::read_to_string(dir.path().join("job.pid")) {
+        let _ = StdCommand::new("kill").args(["-KILL", pid.trim()]).status();
+    }
 }
