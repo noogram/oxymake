@@ -70,6 +70,7 @@
 //! ```
 
 pub mod backend;
+pub mod claim;
 pub mod db;
 pub mod error;
 pub mod gate;

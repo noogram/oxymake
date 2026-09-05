@@ -116,10 +116,12 @@ impl StateDb {
         Ok(())
     }
 
-    /// Mark a session as `completed` (normal exit).
+    /// Mark a session as `completed` (normal exit). A session already
+    /// recorded as `interrupted` (signal, or reclaimed by a peer after its
+    /// lease expired) keeps that status.
     pub fn complete_session(&self, session_id: &str) -> Result<(), StateError> {
         self.conn().execute(
-            "UPDATE sessions SET status = 'completed' WHERE id = ?1",
+            "UPDATE sessions SET status = 'completed' WHERE id = ?1 AND status = 'active'",
             rusqlite::params![session_id],
         )?;
         Ok(())
@@ -164,8 +166,10 @@ impl StateDb {
              WHERE session_id = ?1 AND status = 'running'",
             rusqlite::params![session_id],
         )?;
+        // Only an `active` session is flipped: a session that already
+        // recorded its own terminal status keeps it.
         tx.execute(
-            "UPDATE sessions SET status = 'interrupted' WHERE id = ?1",
+            "UPDATE sessions SET status = 'interrupted' WHERE id = ?1 AND status = 'active'",
             rusqlite::params![session_id],
         )?;
         tx.commit()?;
@@ -189,6 +193,19 @@ impl StateDb {
             Some(row) => Ok(Some(row.get(0)?)),
             None => Ok(None),
         }
+    }
+
+    /// `(id, status)` of every session, oldest first.
+    pub fn session_statuses(&self) -> Result<Vec<(String, String)>, StateError> {
+        let mut stmt = self
+            .conn()
+            .prepare("SELECT id, status FROM sessions ORDER BY started_at, id")?;
+        let rows = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
     }
 
     /// List all sessions with status `active`.

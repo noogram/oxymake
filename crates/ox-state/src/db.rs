@@ -734,6 +734,38 @@ impl StateDb {
         Ok(cancelled)
     }
 
+    /// Cancel specific jobs by their IDs, touching only rows this session
+    /// may decide about: unclaimed `pending` rows and `running` rows that
+    /// `session_id` owns. A `running` row owned by a *peer* session is left
+    /// alone — under the dispatch-time claim (ADR-012) a session that lost a
+    /// claim and stops waiting must not cancel the job its peer is still
+    /// executing. Returns the IDs that were actually cancelled.
+    pub fn cancel_job_ids_for_session(
+        &self,
+        ids: &[String],
+        session_id: &str,
+    ) -> Result<Vec<String>, StateError> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let now = unix_now();
+        let mut cancelled = Vec::new();
+        let tx = self.conn.unchecked_transaction()?;
+        for id in ids {
+            let affected = tx.execute(
+                "UPDATE jobs SET status = 'cancelled', completed_at = ?1
+                 WHERE id = ?2
+                   AND (status = 'pending' OR (status = 'running' AND session_id = ?3))",
+                rusqlite::params![now, id, session_id],
+            )?;
+            if affected > 0 {
+                cancelled.push(id.clone());
+            }
+        }
+        tx.commit()?;
+        Ok(cancelled)
+    }
+
     /// Return IDs of running/pending jobs matching the given filters.
     fn cancellable_job_ids(
         &self,
