@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-09-09
+
+An interruption now leaves the ledger describing a state that still exists,
+every reader tells apart a job that is running from one that was abandoned,
+and a rule can own an incremental cache of an external source.
+
+**Upgrading invalidates your cache.** The per-rule output cleanup policy is
+part of a job's identity, so the cache key format moves from v4 to v5: the
+first run after this upgrade recomputes everything, once.
+
+Highlights:
+- **A Ctrl+C is bounded.** `SIGTERM` escalates to `SIGKILL` after a grace
+  period, the force-exit writes before it exits, and a signal during the
+  post-failure wait is honoured — so no run leaves a `running` row behind or
+  a job process alive (issue #4).
+- **`ox status`, `ox top` and the dashboard report orphaned jobs as
+  orphaned**, from one read-only derivation shared by every reader: a job is
+  running only while its session is alive (issue #5).
+- **`clean_outputs = "always" | "on-failure" | "never"`** lets a script own
+  its outputs, so an interrupted 4 GB download is not discarded on the next
+  run (issue #6).
+
 ### Fixed
 - **An interrupted `ox run` no longer leaves `running` rows behind** (issue #4).
   Graceful shutdown is now bounded: after `SIGTERM`, the scheduler escalates to
