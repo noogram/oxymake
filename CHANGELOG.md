@@ -32,6 +32,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   younger than the lease (90 s, `OX_SESSION_LEASE_SECS` overrides). Readers
   stay read-only — reclaiming still happens at the start of the next
   `ox run`.
+- **The dashboard no longer counts an abandoned job's age as time spent
+  working.** A rule's `earliest_started_at` in `GET /api/stats/rules` now
+  ignores orphaned rows, so the per-rule strip — and the header's elapsed
+  clock and throughput, which are derived from it — date a rule from work
+  that is actually progressing. The per-rule strip also names the orphans
+  instead of leaving them to look like a rule that is merely behind, and the
+  timeline's rule-colour legend gained an `orphaned` key: those bars override
+  the rule colour, so without it a purple bar read as just another rule.
+- The dashboard serves an inline icon, so a page load no longer logs a 404 for
+  `/favicon.ico`.
 
 ### Added
 - `OX_SHUTDOWN_GRACE_SECS` — seconds a cancelled job may take to exit before

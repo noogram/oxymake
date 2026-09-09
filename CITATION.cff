@@ -16,8 +16,8 @@ abstract: >-
 license:
   - MIT
   - Apache-2.0
-version: "0.1.0-alpha"
-date-released: "2026-05-29"
+version: "0.2.0"
+date-released: "2026-09-05"
 keywords:
   - workflow-orchestration
   - content-addressable
@@ -31,5 +31,12 @@ preferred-citation:
   authors:
     - family-names: "Sérié"
       given-names: "Emmanuel"
+      affiliation: "CMAP, CNRS, École Polytechnique, Institut Polytechnique de Paris"
   year: 2026
-  url: "https://oxymake.noogram.dev"
+  month: 6
+  url: "https://arxiv.org/abs/2606.20989"
+  identifiers:
+    - type: other
+      value: "arXiv:2606.20989"
+      description: "arXiv preprint identifier"
+  notes: "cs.SE; version 3, September 2026"

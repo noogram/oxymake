@@ -23,7 +23,7 @@ Three properties make that true:
   files *contain*, not when they were last touched. That is what makes phantom
   re-runs disappear — for the inputs you declare. There is no sandbox: a file
   your rule reads without declaring it is invisible to the cache key (see the
-  threat-model subsection of the [paper](docs/paper/oxymake-paper.tex)).
+  threat-model subsection of the [paper](https://arxiv.org/abs/2606.20989)).
 - **Daemon-free** — every `ox run` is a self-contained process. Concurrent
   sessions coordinate through atomic SQLite claims on the shared workspace,
   with no server to install or keep alive.
@@ -84,24 +84,20 @@ Either path installs both `ox` and `oxymake` to `~/.cargo/bin/`. (The `oxymake`
 name on crates.io is a reserved placeholder with no binary — install the engine
 via one of the commands above, not `cargo install oxymake`.)
 
-**From the first tagged release (v0.1.0)** — no Rust toolchain needed. These
-distribution channels go live with the first published release and are **not**
-available before then:
+**From a tagged release** — no Rust toolchain needed. Each release publishes a
+prebuilt binary per platform, with a `.sha256` beside it:
 
 ```bash
-# macOS (Homebrew tap)
-brew install noogram/tap/oxymake
-
-# Linux / macOS — prebuilt binary for your platform from the release page
-# https://github.com/noogram/oxymake/releases/latest
+# Linux / macOS — from https://github.com/noogram/oxymake/releases/latest
 #   ox-x86_64-unknown-linux-gnu.tar.gz
 #   ox-aarch64-apple-darwin.tar.gz
 #   ox-x86_64-apple-darwin.tar.gz
 tar xzf ox-<your-platform>.tar.gz && mv ox ~/.local/bin/
-
-# In a Python project (fetches the prebuilt binary, no compile)
-uv tool install oxymake     # or: pipx install oxymake
 ```
+
+The Homebrew tap and the PyPI launcher are **not** current: the tap carries no
+`oxymake` formula, and `oxymake` on PyPI is still 0.1.0 and fetches the 0.1.0
+binary. Use a release tarball or `cargo install` until they catch up.
 
 **Development mode** (build locally, run from source):
 
@@ -387,7 +383,7 @@ the [Crate Graph](docs/book/src/architecture/crate-graph.md).
 - [Agent-Driven Workflows](docs/book/src/cookbook/agent-workflows.md)
 - [Architecture Decision Records](docs/adr/)
 - [FAIR Alignment](docs/FAIR-ALIGNMENT.md) — where OxyMake stands against FAIR / reproducible-workflow standards, and the v1.1 export roadmap
-- [Academic Paper](docs/paper/oxymake-paper.tex) — the formal TLA+ specification and proofs (reassurance for after you've tried it, not a prerequisite)
+- [Academic Paper](https://arxiv.org/abs/2606.20989) — the design, the measurements, and three TLA+ specifications of the state layer model-checked over a bounded space of states (arXiv:2606.20989; source in [`docs/paper/`](docs/paper/), corrections in [`ERRATUM.md`](docs/paper/ERRATUM.md))
 - [The Making of OxyMake](docs/MAKING-OF.md) — how this repo was built (an agent fleet under one human maintainer)
 - [Hibernation Protocol](docs/HIBERNATION.md) — **the document to read if you return after more than three months** (or if a `.hibernation` file exists at the repo root)
 
@@ -411,7 +407,9 @@ demanding day job. Concretely:
 
 ## Project Status
 
-**v0.1.0-alpha** — Core pipeline and all CLI commands functional. See the
+**v0.2.0** — Core pipeline and all CLI commands functional; gates are enforced
+and two concurrent sessions execute a job once. See the
+[CHANGELOG](CHANGELOG.md) and the
 [Functional Test Report](docs/FUNCTIONAL-TEST-REPORT.md) for detailed status.
 
 ### What works
@@ -436,8 +434,7 @@ demanding day job. Concretely:
 - **Translation**: bidirectional Snakemake (`ox translate` / `ox export snakemake`)
 - **Query**: Bazel-style dependency graph queries (`deps`, `rdeps`, `allpaths`)
 
-### Known limitations (v0.1)
-- `-j N` parallelism is sequential within each ready batch
+### Known limitations (v0.2)
 - Kubernetes executor designed but not yet implemented
 - Environment management is delegation-only: the `EnvironmentProvider`
   crates (`ox-env-system`, `ox-env-uv`) are stubs, and there is no managed
@@ -461,14 +458,17 @@ Dual licensed under [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE).
 
 ## Citation
 
-If you use OxyMake in your research, please cite it (GitHub's "Cite this
+If you use OxyMake in your research, please cite the paper (GitHub's "Cite this
 repository" button reads [`CITATION.cff`](CITATION.cff)):
 
 ```bibtex
-@software{oxymake2026,
-  author = {Sérié, Emmanuel},
-  title = {OxyMake: A Content-Addressed Workflow Engine},
-  year = {2026},
-  url = {https://github.com/noogram/oxymake}
+@misc{oxymake2026,
+  author       = {Sérié, Emmanuel},
+  title        = {OxyMake: A Content-Addressed Workflow Engine},
+  year         = {2026},
+  eprint       = {2606.20989},
+  archivePrefix= {arXiv},
+  primaryClass = {cs.SE},
+  url          = {https://arxiv.org/abs/2606.20989}
 }
 ```
