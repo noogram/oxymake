@@ -444,11 +444,24 @@ pub async fn api_stats_rules(
         .map_err(|_| StatusError::Query)?;
 
     // Split orphaned rows out of each rule's `running` column, so the
-    // per-rule progress strip does not animate abandoned work.
+    // per-rule progress strip does not animate abandoned work — and out of
+    // `earliest_started_at`, which otherwise dates the rule from an
+    // abandoned attempt and reports its age as time spent working (the
+    // header's own elapsed clock and throughput are derived from it).
     let mut orphans: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    let mut live_start: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
     for v in job_views(&db)? {
         if v.effective.is_orphaned() {
             *orphans.entry(v.rule_name).or_default() += 1;
+        } else if let Some(started) = v.started_at {
+            live_start
+                .entry(v.rule_name)
+                .and_modify(|e| {
+                    if started < *e {
+                        *e = started;
+                    }
+                })
+                .or_insert(started);
         }
     }
 
@@ -457,16 +470,17 @@ pub async fn api_stats_rules(
             .into_iter()
             .map(|s| {
                 let orphaned = orphans.get(&s.rule_name).copied().unwrap_or(0);
+                let earliest_started_at = live_start.get(&s.rule_name).copied();
                 RuleStats {
                     running: s.running.saturating_sub(orphaned),
                     orphaned,
+                    earliest_started_at,
                     rule_name: s.rule_name,
                     completed: s.completed,
                     total: s.total,
                     pending: s.pending,
                     failed: s.failed,
                     avg_wall_time_ms: s.avg_wall_time_ms,
-                    earliest_started_at: s.earliest_started_at,
                 }
             })
             .collect(),
@@ -1010,6 +1024,40 @@ mod tests {
         let build = stats.iter().find(|s| s.rule_name == "build").unwrap();
         assert_eq!(build.running, 0);
         assert_eq!(build.orphaned, 1);
+    }
+
+    /// A rule whose only started job is orphaned has no start to report.
+    /// Dating it from the abandoned attempt is what made the per-rule strip
+    /// print an orphan's age as time spent working — and the header's elapsed
+    /// clock and throughput are derived from the same field.
+    #[tokio::test]
+    async fn api_stats_rules_dates_a_rule_from_live_work_only() {
+        let (tmp, _) = test_app();
+        let db = StateDb::open(tmp.path()).unwrap();
+        let sid = db.session_statuses().unwrap()[0].0.clone();
+        // `test-A` is the `test` rule's only job: start it, then abandon it.
+        db.claim_job("test-A", &sid).unwrap();
+        db.interrupt_session(&sid).unwrap();
+        drop(db);
+
+        let state = Arc::new(DashboardState {
+            db_path: tmp.path().to_path_buf(),
+        });
+        let app = create_router(state);
+        let stats: Vec<RuleStats> =
+            serde_json::from_value(get_json(app, "/api/stats/rules").await).unwrap();
+
+        let abandoned = stats.iter().find(|s| s.rule_name == "test").unwrap();
+        assert_eq!(abandoned.orphaned, 1);
+        assert_eq!(abandoned.running, 0);
+        assert_eq!(
+            abandoned.earliest_started_at, None,
+            "an orphan's start is not the rule's start"
+        );
+
+        // `build` still holds a completed job, so it keeps its start.
+        let progressing = stats.iter().find(|s| s.rule_name == "build").unwrap();
+        assert!(progressing.earliest_started_at.is_some());
     }
 
     #[tokio::test]

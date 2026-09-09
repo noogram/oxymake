@@ -4,6 +4,9 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>OxyMake Dashboard</title>
+    <!-- Inline icon: the server has no static route, so without this the
+         browser probes /favicon.ico and logs a 404 on every page load. -->
+    <link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2016%2016%22%3E%3Crect%20width%3D%2216%22%20height%3D%2216%22%20rx%3D%223%22%20fill%3D%22%230f172a%22%2F%3E%3Ccircle%20cx%3D%228%22%20cy%3D%228%22%20r%3D%224%22%20fill%3D%22none%22%20stroke%3D%22%23818cf8%22%20stroke-width%3D%222%22%2F%3E%3C%2Fsvg%3E">
     <script src="https://unpkg.com/htmx.org@2.0.4"></script>
     <script src="https://unpkg.com/cytoscape@3.30.4/dist/cytoscape.min.js"></script>
     <script src="https://unpkg.com/dagre@0.8.5/dist/dagre.min.js"></script>
@@ -1851,6 +1854,7 @@
 
             // Collect unique rules for legend
             var seenRules = {};
+            var sawOrphaned = false;
             jobs.forEach(function(j) {
                 var rule = j.rule_name || j.job_id || '';
                 if (rule && !seenRules[rule]) seenRules[rule] = getRuleColor(rule);
@@ -1889,6 +1893,7 @@
                     // Declared running with no live session: no pulse, no
                     // "in progress" marker — nothing is executing it.
                     status = 'orphaned';
+                    sawOrphaned = true;
                 } else {
                     status = 'running';
                     lastRunningIdx = rowIdx;
@@ -1957,7 +1962,14 @@
                     return '<div class="gantt-legend-item">'
                         + '<div class="gantt-legend-swatch" style="background:' + seenRules[rule] + '"></div>'
                         + '<span>' + esc(rule) + '</span></div>';
-                }).join('');
+                }).join('')
+                    // Orphaned bars override the rule colour, so the palette
+                    // alone would read as just another rule.
+                    + (sawOrphaned
+                        ? '<div class="gantt-legend-item">'
+                          + '<div class="gantt-legend-swatch" style="background:var(--orphan)"></div>'
+                          + '<span>orphaned</span></div>'
+                        : '');
             } else {
                 legend.style.display = 'none';
             }
@@ -2070,6 +2082,13 @@
                     var pctRun = r.total > 0 ? (r.running / r.total * 100) : 0;
                     var statusText = r.completed + '/' + r.total + ' completed';
                     if (r.running > 0) statusText = r.completed + '/' + r.total;
+                    // Orphans are neither progress nor work in flight; say so,
+                    // otherwise the row reads as a rule that is simply behind.
+                    var nOrphaned = r.orphaned || 0;
+                    if (nOrphaned > 0) {
+                        statusText += ' \u2014 <span style="color:var(--orphan)">'
+                            + nOrphaned + ' orphaned</span>';
+                    }
 
                     // Elapsed time for this rule (from earliest started_at)
                     var elapsedText = '';
