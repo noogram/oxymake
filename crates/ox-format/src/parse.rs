@@ -11,9 +11,9 @@ use serde::Deserialize;
 
 use ox_core::error::ParseError;
 use ox_core::model::{
-    Backoff, EnvSpec, ErrorStrategy, ExecutionBlock, ExpandMode, GuardExpr, InputPattern,
-    LogConfig, MaterializePolicy, OutputLifecycle, OutputPattern, ReproducibilityClass,
-    ResourceValue, Rule, RuleMeta, RuleName,
+    Backoff, CleanOutputs, EnvSpec, ErrorStrategy, ExecutionBlock, ExpandMode, GuardExpr,
+    InputPattern, LogConfig, MaterializePolicy, OutputLifecycle, OutputPattern,
+    ReproducibilityClass, ResourceValue, Rule, RuleMeta, RuleName,
 };
 
 // ---------------------------------------------------------------------------
@@ -287,6 +287,7 @@ struct RawRule {
 
     // Reproducibility classification for outputs
     reproducibility: Option<String>,
+    clean_outputs: Option<String>,
 
     // 1-based line in the source file (Snakefile, .wdl) when this Oxymakefile
     // was produced by `ox translate`. Surfaced by ox-plan errors so failures
@@ -845,6 +846,19 @@ fn parse_rule(name: &str, raw: &RawRule, file_path: &Path) -> Result<Rule, Parse
         params: parse_params(&raw.params),
         param_files: raw.param_files.clone(),
         shell_executable: raw.shell_executable.clone(),
+        clean_outputs: match raw.clean_outputs.as_deref() {
+            None | Some("always") => CleanOutputs::Always,
+            Some("on-failure") => CleanOutputs::OnFailure,
+            Some("never") => CleanOutputs::Never,
+            Some(value) => {
+                return Err(ParseError::InvalidField {
+                    field: "clean_outputs".into(),
+                    reason: format!(
+                        "unknown value {value:?}; expected one of: always, on-failure, never"
+                    ),
+                });
+            }
+        },
         reproducibility: match raw.reproducibility.as_deref() {
             Some("deterministic") => ReproducibilityClass::Deterministic,
             Some("seed_deterministic") => ReproducibilityClass::SeedDeterministic,
@@ -3467,6 +3481,40 @@ enabled = true
                 ("name".into(), "baseline".into()),
             ])
         );
+    }
+
+    #[test]
+    fn parse_clean_outputs() {
+        use ox_core::model::CleanOutputs;
+        for (field, expected) in [
+            ("", CleanOutputs::Always),
+            ("clean_outputs = \"always\"", CleanOutputs::Always),
+            ("clean_outputs = \"on-failure\"", CleanOutputs::OnFailure),
+            ("clean_outputs = \"never\"", CleanOutputs::Never),
+        ] {
+            let source = format!("[rule.test]\noutput = [\"out\"]\nshell = \"true\"\n{field}\n");
+            let wf = parse_workflow(&source, Path::new("test.toml")).unwrap();
+            assert_eq!(wf.rules[0].clean_outputs, expected);
+        }
+    }
+
+    #[test]
+    fn parse_clean_outputs_rejects_unknown() {
+        let error = parse_workflow(
+            "[rule.test]\noutput = [\"out\"]\nshell = \"true\"\nclean_outputs = \"sometimes\"",
+            Path::new("test.toml"),
+        )
+        .unwrap_err()
+        .to_string();
+        for text in [
+            "clean_outputs",
+            "sometimes",
+            "always",
+            "on-failure",
+            "never",
+        ] {
+            assert!(error.contains(text), "{error}");
+        }
     }
 
     #[test]

@@ -905,6 +905,7 @@ mod tests {
             param_files: Vec::new(),
             log: LogConfig::default(),
             shell_executable: None,
+            clean_outputs: Default::default(),
             reproducibility: ReproducibilityClass::default(),
         };
 
@@ -964,6 +965,7 @@ mod tests {
             param_files: Vec::new(),
             log: LogConfig::default(),
             shell_executable: None,
+            clean_outputs: Default::default(),
             reproducibility: ReproducibilityClass::default(),
         };
 
@@ -1013,6 +1015,7 @@ mod tests {
             param_files: Vec::new(),
             log: LogConfig::default(),
             shell_executable: None,
+            clean_outputs: Default::default(),
             reproducibility: ReproducibilityClass::default(),
         };
 
@@ -1067,6 +1070,7 @@ mod tests {
             param_files: Vec::new(),
             log: LogConfig::default(),
             shell_executable: None,
+            clean_outputs: Default::default(),
             reproducibility: ReproducibilityClass::default(),
         };
 
@@ -1116,6 +1120,7 @@ mod tests {
             param_files: Vec::new(),
             log: LogConfig::default(),
             shell_executable: None,
+            clean_outputs: Default::default(),
             reproducibility: ReproducibilityClass::default(),
         };
 

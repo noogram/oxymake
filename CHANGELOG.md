@@ -34,6 +34,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ox run`.
 
 ### Added
+
+- Add per-rule `clean_outputs = "always" | "on-failure" | "never"` for local execution, allowing incremental external datasets to survive reruns and failures while preserving cleanup by default (#6). Cache keys now include this policy (format v5), so existing cache entries are invalidated.
 - `OX_SHUTDOWN_GRACE_SECS` — seconds a cancelled job may take to exit before
   `ox run` kills it (default `10`; `0` escalates immediately).
 - **`ox_state::effective`** — the one read-side derivation every reader

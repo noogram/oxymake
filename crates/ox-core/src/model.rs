@@ -356,6 +356,29 @@ impl fmt::Display for MaterializePolicy {
 // Reproducibility and provenance (Stage 2: artifact metadata)
 // ---------------------------------------------------------------------------
 
+/// Automatic cleanup policy for declared outputs in the local executor.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CleanOutputs {
+    /// Remove outputs before execution and after failure (the default).
+    #[default]
+    Always,
+    /// Keep existing outputs before execution; remove them after failure.
+    OnFailure,
+    /// The script owns output validity; retain outputs even after failure.
+    Never,
+}
+
+impl fmt::Display for CleanOutputs {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Always => "always",
+            Self::OnFailure => "on-failure",
+            Self::Never => "never",
+        })
+    }
+}
+
 /// Classification of a job's output reproducibility.
 ///
 /// This enum annotates each rule (and its concrete jobs) with the expected
@@ -1330,6 +1353,9 @@ pub struct Rule {
     ///
     /// When `None`, the [`DEFAULT_SHELL`] is used.
     pub shell_executable: Option<String>,
+    /// Automatic output cleanup policy, inherited by concrete jobs.
+    #[serde(default)]
+    pub clean_outputs: CleanOutputs,
     /// Reproducibility classification for this rule's outputs.
     #[serde(default)]
     pub reproducibility: ReproducibilityClass,
@@ -1437,6 +1463,9 @@ pub struct ConcreteJob {
     /// Inherited from the rule's `shell_executable` field. When `None`,
     /// the [`DEFAULT_SHELL`] is used.
     pub shell_executable: Option<String>,
+    /// Automatic output cleanup policy, inherited by concrete jobs.
+    #[serde(default)]
+    pub clean_outputs: CleanOutputs,
     /// Reproducibility classification, inherited from the rule.
     #[serde(default)]
     pub reproducibility: ReproducibilityClass,
@@ -2688,6 +2717,7 @@ mod tests {
             params: BTreeMap::new(),
             param_files: Vec::new(),
             shell_executable: None,
+            clean_outputs: Default::default(),
             reproducibility: ReproducibilityClass::default(),
             source_line: None,
         };
@@ -2734,6 +2764,7 @@ mod tests {
             param_files: Vec::new(),
             log: LogConfig::default(),
             shell_executable: None,
+            clean_outputs: Default::default(),
             reproducibility: ReproducibilityClass::default(),
         };
         let json = serde_json::to_string(&job).unwrap();
@@ -2788,6 +2819,7 @@ mod tests {
             params: BTreeMap::new(),
             param_files: Vec::new(),
             shell_executable: None,
+            clean_outputs: Default::default(),
             reproducibility: ReproducibilityClass::default(),
             source_line: None,
         };
@@ -2829,6 +2861,7 @@ mod tests {
             param_files: Vec::new(),
             log: LogConfig::default(),
             shell_executable: None,
+            clean_outputs: Default::default(),
             reproducibility: ReproducibilityClass::default(),
         };
         assert_eq!(
@@ -2866,6 +2899,7 @@ mod tests {
             param_files: Vec::new(),
             log: LogConfig::default(),
             shell_executable: None,
+            clean_outputs: Default::default(),
             reproducibility: ReproducibilityClass::default(),
         };
         let node = JobNode::Job(Box::new(job));
@@ -3283,6 +3317,7 @@ mod tests {
             param_files: Vec::new(),
             log: LogConfig::default(),
             shell_executable: None,
+            clean_outputs: Default::default(),
             reproducibility: ReproducibilityClass::default(),
         };
         let node = JobNode::Job(Box::new(job));

@@ -171,6 +171,7 @@ pub enum RuleEdge {
 ///         params: BTreeMap::new(),
 ///         param_files: Vec::new(),
 ///         shell_executable: None,
+///         clean_outputs: Default::default(),
 ///         reproducibility: ReproducibilityClass::default(),
 ///         source_line: None,
 ///     },
@@ -206,6 +207,7 @@ pub enum RuleEdge {
 ///         params: BTreeMap::new(),
 ///         param_files: Vec::new(),
 ///         shell_executable: None,
+///         clean_outputs: Default::default(),
 ///         reproducibility: ReproducibilityClass::default(),
 ///         source_line: None,
 ///     },
@@ -617,6 +619,7 @@ mod tests {
             params: BTreeMap::new(),
             param_files: Vec::new(),
             shell_executable: None,
+            clean_outputs: Default::default(),
             reproducibility: ReproducibilityClass::default(),
             source_line: None,
         }

@@ -6,7 +6,7 @@
 //! This ensures that any change in inputs, code, or environment produces a
 //! different key.
 //!
-//! # Key format v4 (injective framing)
+//! # Key format v5 (injective framing)
 //!
 //! Every field is framed via [`ox_core::hashing`] (length-prefixed tag +
 //! presence byte + length-prefixed value), so the encoding is injective:
@@ -22,7 +22,7 @@
 
 use blake3::Hasher;
 use ox_core::hashing::{update_field, update_opt_field};
-use ox_core::model::{ContentHash, EnvSpec};
+use ox_core::model::{CleanOutputs, ContentHash, EnvSpec};
 use std::path::{Component, Path, PathBuf};
 
 /// Version tag of the cache key format, hashed into every key.
@@ -30,7 +30,7 @@ use std::path::{Component, Path, PathBuf};
 /// Bump this whenever the set of hashed ingredients or their encoding
 /// changes: old cache entries then become unreachable (clean invalidation)
 /// instead of being wrongly reused under the new semantics.
-pub const CACHE_KEY_FORMAT_VERSION: &str = "oxymake-cache-key-v4";
+pub const CACHE_KEY_FORMAT_VERSION: &str = "oxymake-cache-key-v5";
 
 /// Express an in-workflow path relative to the workflow root before it enters
 /// a cache key.
@@ -93,7 +93,7 @@ fn lexical_normalize(path: &Path) -> PathBuf {
     normalized
 }
 
-/// All ingredients of a cache key (format v4).
+/// All ingredients of a cache key (format v5).
 #[derive(Debug, Clone)]
 pub struct CacheKeySpec<'a> {
     /// Serialized execution block (command, inline code, script path +
@@ -109,6 +109,8 @@ pub struct CacheKeySpec<'a> {
     pub env_hash: Option<&'a str>,
     /// Shell executable override (e.g. `/bin/zsh`), if any.
     pub shell_executable: Option<&'a str>,
+    /// Declared output cleanup policy.
+    pub clean_outputs: CleanOutputs,
     /// Platform string, e.g. `"linux/x86_64"` (see [`current_platform`]).
     pub platform: &'a str,
 }
@@ -123,6 +125,7 @@ pub struct CacheKeySpec<'a> {
 ///     framed_opt(params_hash) ‖
 ///     framed_opt(env_hash)    ‖
 ///     framed_opt(shell_executable) ‖
+///     framed(clean_outputs) ‖
 ///     framed(platform)
 /// )
 /// ```
@@ -154,6 +157,11 @@ pub fn compute_cache_key(spec: &CacheKeySpec<'_>) -> ContentHash {
         &mut hasher,
         "shell",
         spec.shell_executable.map(str::as_bytes),
+    );
+    update_field(
+        &mut hasher,
+        "clean_outputs",
+        spec.clean_outputs.to_string().as_bytes(),
     );
     update_field(&mut hasher, "platform", spec.platform.as_bytes());
 
@@ -238,6 +246,7 @@ mod tests {
             params_hash: params,
             env_hash: env,
             shell_executable: None,
+            clean_outputs: Default::default(),
             platform: "linux/x86_64",
         }
     }
@@ -297,6 +306,26 @@ mod tests {
         let k1 = compute_cache_key(&spec("echo hello", &inputs, None, None));
         let k2 = compute_cache_key(&spec("echo hello", &inputs, None, Some("env1")));
         assert_ne!(k1, k2);
+    }
+
+    #[test]
+    fn changes_with_clean_outputs() {
+        use ox_core::model::CleanOutputs;
+        let mut spec = spec("echo hi", &[], None, None);
+        let keys: Vec<_> = [
+            CleanOutputs::Always,
+            CleanOutputs::OnFailure,
+            CleanOutputs::Never,
+        ]
+        .into_iter()
+        .map(|policy| {
+            spec.clean_outputs = policy;
+            compute_cache_key(&spec)
+        })
+        .collect();
+        assert_ne!(keys[0], keys[1]);
+        assert_ne!(keys[0], keys[2]);
+        assert_ne!(keys[1], keys[2]);
     }
 
     #[test]
@@ -451,11 +480,12 @@ mod tests {
             params_hash: Some("0123456789abcdef"),
             env_hash: Some("fedcba9876543210"),
             shell_executable: Some("/bin/bash"),
+            clean_outputs: Default::default(),
             platform: "linux/x86_64",
         });
         assert_eq!(
             key.as_str(),
-            "ef6330cfdcaadcbb3404a28a588818ba93905d93e156b80d673426ddd7d5bc02",
+            "21323fdbbbfb88623f7cf1711106e5bd2f97a4d48f04555d1f41a654a53a551b",
             "cache key format drifted — bump CACHE_KEY_FORMAT_VERSION and update the golden value"
         );
     }
@@ -538,6 +568,7 @@ mod tests {
                     params_hash: params.as_deref(),
                     env_hash: env.as_deref(),
                     shell_executable: shell.as_deref(),
+                    clean_outputs: Default::default(),
                     platform: "linux/x86_64",
                 };
                 prop_assert_eq!(compute_cache_key(&s), compute_cache_key(&s));
@@ -603,12 +634,14 @@ mod tests {
                     params_hash: params1.as_deref(),
                     env_hash: env1.as_deref(),
                     shell_executable: shell1.as_deref(),
+                    clean_outputs: Default::default(),
                     platform: "linux/x86_64",
                 };
                 let s2 = CacheKeySpec {
                     params_hash: params2.as_deref(),
                     env_hash: env2.as_deref(),
                     shell_executable: shell2.as_deref(),
+                    clean_outputs: Default::default(),
                     ..s1.clone()
                 };
                 prop_assert_ne!(compute_cache_key(&s1), compute_cache_key(&s2));
