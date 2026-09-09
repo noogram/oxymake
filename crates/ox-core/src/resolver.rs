@@ -617,6 +617,7 @@ impl<'a> ResolveState<'a> {
             param_files,
             log,
             shell_executable: rule.shell_executable.clone(),
+            clean_outputs: rule.clean_outputs,
             reproducibility: rule.reproducibility,
         };
 
@@ -690,6 +691,7 @@ impl<'a> ResolveState<'a> {
 ///     params: BTreeMap::new(),
 ///     param_files: Vec::new(),
 ///     shell_executable: None,
+///     clean_outputs: Default::default(),
 ///     reproducibility: ReproducibilityClass::default(),
 ///     source_line: None,
 /// };
@@ -760,6 +762,7 @@ pub fn resolve(rules: &[Rule], request: &ResolveRequest) -> Result<ResolveResult
 ///     params: BTreeMap::new(),
 ///     param_files: Vec::new(),
 ///     shell_executable: None,
+///     clean_outputs: Default::default(),
 ///     reproducibility: ReproducibilityClass::default(),
 ///     source_line: None,
 /// };
@@ -969,6 +972,7 @@ pub fn evaluate_guard(guard: &GuardExpr, wildcards: &Wildcards, config: &Config)
 ///     params: BTreeMap::new(),
 ///     param_files: Vec::new(),
 ///     shell_executable: None,
+///     clean_outputs: Default::default(),
 ///     reproducibility: ReproducibilityClass::default(),
 ///     source_line: None,
 /// };
@@ -1455,6 +1459,7 @@ mod tests {
             params: BTreeMap::new(),
             param_files: Vec::new(),
             shell_executable: None,
+            clean_outputs: Default::default(),
             reproducibility: ReproducibilityClass::default(),
             source_line: None,
         }
@@ -1465,6 +1470,21 @@ mod tests {
             targets: targets.iter().map(|s| s.to_string()).collect(),
             config: Config::default(),
             existing_files: existing.iter().map(PathBuf::from).collect(),
+        }
+    }
+
+    #[test]
+    fn clean_outputs_is_inherited_by_concrete_jobs() {
+        use crate::model::CleanOutputs;
+        for policy in [
+            CleanOutputs::Always,
+            CleanOutputs::OnFailure,
+            CleanOutputs::Never,
+        ] {
+            let mut rule = make_rule("fetch", &[], &["cache/{month}.parquet"]);
+            rule.clean_outputs = policy;
+            let result = resolve(&[rule], &make_request(&["cache/jan.parquet"], &[])).unwrap();
+            assert_eq!(result.jobs[0].clean_outputs, policy);
         }
     }
 

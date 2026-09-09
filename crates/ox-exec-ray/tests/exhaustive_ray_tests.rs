@@ -38,6 +38,7 @@ fn test_job(id: &str, command: &str) -> ConcreteJob {
         param_files: Vec::new(),
         log: LogConfig::default(),
         shell_executable: None,
+        clean_outputs: Default::default(),
         reproducibility: ReproducibilityClass::default(),
     }
 }
@@ -1183,6 +1184,7 @@ async fn test_call_mode_with_params_env_vars() {
         param_files: Vec::new(),
         log: LogConfig::default(),
         shell_executable: None,
+        clean_outputs: Default::default(),
         reproducibility: ReproducibilityClass::default(),
     };
 
@@ -1977,6 +1979,7 @@ fn test_call_mode_virtual_input_rejected() {
         param_files: Vec::new(),
         log: LogConfig::default(),
         shell_executable: None,
+        clean_outputs: Default::default(),
         reproducibility: ReproducibilityClass::default(),
     };
 
@@ -2021,6 +2024,7 @@ fn test_call_mode_virtual_output_rejected() {
         param_files: Vec::new(),
         log: LogConfig::default(),
         shell_executable: None,
+        clean_outputs: Default::default(),
         reproducibility: ReproducibilityClass::default(),
     };
 
@@ -2075,6 +2079,7 @@ fn test_call_mode_multiple_unnamed_inputs() {
         param_files: Vec::new(),
         log: LogConfig::default(),
         shell_executable: None,
+        clean_outputs: Default::default(),
         reproducibility: ReproducibilityClass::default(),
     };
 
@@ -2129,6 +2134,7 @@ fn test_call_mode_mixed_named_unnamed_inputs() {
         param_files: Vec::new(),
         log: LogConfig::default(),
         shell_executable: None,
+        clean_outputs: Default::default(),
         reproducibility: ReproducibilityClass::default(),
     };
 
@@ -2166,6 +2172,7 @@ fn test_call_mode_no_inputs_no_outputs() {
         param_files: Vec::new(),
         log: LogConfig::default(),
         shell_executable: None,
+        clean_outputs: Default::default(),
         reproducibility: ReproducibilityClass::default(),
     };
 

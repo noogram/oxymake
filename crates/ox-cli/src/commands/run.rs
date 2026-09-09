@@ -395,6 +395,11 @@ fn job_cache_key_with_components(
         "shell",
         shell_executable.map(str::as_bytes),
     );
+    update_field(
+        &mut spec_hasher,
+        "clean_outputs",
+        job.clean_outputs.to_string().as_bytes(),
+    );
     let job_spec_hash = spec_hasher.finalize().to_hex().to_string();
 
     let platform = current_platform();
@@ -404,6 +409,7 @@ fn job_cache_key_with_components(
         params_hash: params_hash.as_deref(),
         env_hash: env_hash.as_deref(),
         shell_executable,
+        clean_outputs: job.clean_outputs,
         platform: &platform,
     });
 
@@ -2577,6 +2583,7 @@ mod cache_key_tests {
             param_files: Vec::new(),
             log: Default::default(),
             shell_executable: None,
+            clean_outputs: Default::default(),
             reproducibility: Default::default(),
         }
     }
@@ -2611,6 +2618,26 @@ mod cache_key_tests {
             lang: None,
         });
         assert_eq!(job_cache_key(&job, None), None);
+    }
+
+    #[test]
+    fn clean_outputs_changes_cache_key_and_job_spec_hash() {
+        use ox_core::model::CleanOutputs;
+        let mut job = make_job(ExecutionBlock::Shell {
+            command: "true".into(),
+        });
+        let mut keys = std::collections::HashSet::new();
+        let mut specs = std::collections::HashSet::new();
+        for policy in [
+            CleanOutputs::Always,
+            CleanOutputs::OnFailure,
+            CleanOutputs::Never,
+        ] {
+            job.clean_outputs = policy;
+            let components = job_cache_key_with_components(&job, None).unwrap();
+            assert!(keys.insert(components.cache_key));
+            assert!(specs.insert(components.job_spec_hash));
+        }
     }
 
     /// Audit H5 — the shell executable must enter the cache key: the same

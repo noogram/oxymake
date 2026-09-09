@@ -51,6 +51,56 @@ shell = "python process.py {input} {output}"
 | `when` | String | No | Conditional guard expression |
 | `materialize` | String | No | `always`, `auto`, `never`, `final` |
 | `params` | Table | No | Rule-specific parameters |
+| `clean_outputs` | String | No | `always` (default), `on-failure`, `never`; see Output cleanup below |
+
+### Output cleanup
+
+`clean_outputs` is an optional per-rule string (currently local-executor only):
+
+| Value | Before execution | After failure |
+|-------|------------------|---------------|
+| `"always"` (default) | Delete existing declared outputs | Delete partial outputs |
+| `"on-failure"` | Keep existing declared outputs | Delete partial and existing outputs |
+| `"never"` | Keep existing declared outputs | Keep all declared outputs |
+
+Three values express three distinct lifecycles; a boolean cannot represent
+all of them. The default preserves the existing guarantee that stale outputs
+from a failed run cannot masquerade as valid results. OxyMake always clears
+its own `.oxytmp` staging files before execution. Output verification and
+hashing after execution are unchanged. A failed job is still recorded as a
+failure and never writes a successful cache entry. Changing the policy
+invalidates the job's cache key.
+
+**Warning:** `"never"` hands the staleness guarantee to the script. The script
+must validate existing files, replace stale data, and exit successfully only
+when every declared output is complete. Preserved files alone do not prove
+that a failed run succeeded. `"on-failure"` also requires the script to validate
+any existing outputs it reuses on a successful run.
+
+Slurm and Ray carry this field but keep their existing output behavior; this
+policy controls automatic cleanup by the local executor. Explicit `ox clean`
+and output lifecycle policies such as `temp` are separate mechanisms.
+
+#### Incremental cache of an external source
+
+For a dataset of 509 parquet files (about 4 GB over S3), declare the actual
+files as outputs and let an idempotent extraction script reuse complete files:
+
+```toml
+[rule.fetch_dataset]
+input = ["scripts/extract.py", "dataset-manifest.json"]
+output = ["cache/2025-01.parquet", "cache/2025-02.parquet"] # List all 509 files.
+clean_outputs = "never"
+shell = "python scripts/extract.py dataset-manifest.json"
+```
+
+The script checks each completed file against the manifest, downloads missing
+or stale files to its own temporary paths, then renames each completed file
+into place. Editing the script invalidates the rule, but complete downloads
+remain available to reuse. A transient network failure at file 400 preserves
+the earlier downloads for the next attempt. Avoid OxyMake's reserved
+`.oxytmp` suffix for the script's temporary files. Unlike a stamp-only rule,
+OxyMake tracks and hashes the real dataset outputs.
 
 ### Execution Modes
 

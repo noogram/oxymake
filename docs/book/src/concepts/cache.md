@@ -18,6 +18,7 @@ cache_key = blake3(
     params_hash ||
     env_content_hash ||
     shell_executable ||
+    clean_outputs ||
     platform
 )
 ```
@@ -161,3 +162,12 @@ The content-addressable cache means you can:
 4. **Resume interrupted runs** -- completed work is preserved
 5. **Trust the result** -- if OxyMake says "cached," the output is
    bit-for-bit identical to what a fresh run would produce
+
+## Incremental external datasets
+
+Use per-rule `clean_outputs = "never"` with the local executor when an
+idempotent script materializes a remote dataset incrementally. Declare the
+real files as outputs: completed downloads survive reruns and failures,
+while successful outputs are still hashed normally. The script owns checking
+staleness and completeness. See the [output cleanup reference and S3
+recipe](../reference/format.md#output-cleanup) for all three policies.

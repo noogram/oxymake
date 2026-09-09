@@ -24,7 +24,9 @@ use std::sync::Arc;
 use parking_lot::Mutex;
 
 use ox_core::event::EventBus;
-use ox_core::model::{ConcreteJob, EnvSpec, Event, ExecutionBlock, JobId, OutputRef, OutputStream};
+use ox_core::model::{
+    CleanOutputs, ConcreteJob, EnvSpec, Event, ExecutionBlock, JobId, OutputRef, OutputStream,
+};
 use ox_core::traits::executor::*;
 
 use crate::error::ExecLocalError;
@@ -42,6 +44,8 @@ const ATOMIC_TEMP_SUFFIX: &str = ".oxytmp";
 struct AtomicOutputState {
     /// Absolute paths to declared file outputs.
     output_files: Vec<PathBuf>,
+    /// Policy carried from the job to failure and validation cleanup.
+    clean_outputs: CleanOutputs,
     /// Exclusive locks over every output path, held from `prepare_workspace`
     /// (before any output is touched) until `finalize_workspace` returns, so
     /// no second session can write any of the same paths. `None` when the
@@ -822,12 +826,14 @@ impl Executor for LocalExecutor {
             }
         };
 
-        // Under the lock, clear stale staging files and existing outputs so
-        // stale data from a previous failed run cannot masquerade as a valid
-        // cache entry.
+        // Under the lock, always clear engine scratch. The default also clears
+        // existing outputs so stale data cannot masquerade as a valid result;
+        // the other policies let the script reuse and validate existing files.
         for normalized in &output_files {
             let _ = tokio::fs::remove_file(temp_path(normalized)).await;
-            let _ = tokio::fs::remove_file(normalized).await;
+            if job.clean_outputs == CleanOutputs::Always {
+                let _ = tokio::fs::remove_file(normalized).await;
+            }
         }
 
         // Stage 2: Materialize in-memory inputs to disk before execution.
@@ -890,6 +896,7 @@ impl Executor for LocalExecutor {
 
         let state = AtomicOutputState {
             output_files,
+            clean_outputs: job.clean_outputs,
             output_locks,
         };
         Ok(Workspace::with_state(work_dir, state))
@@ -1200,9 +1207,10 @@ impl Executor for LocalExecutor {
     /// Finalize the workspace after execution.
     ///
     /// Implements the atomic write protocol:
-    /// - **On failure** (exit != 0): delete all declared output files to
-    ///   prevent partial/corrupt data from being cached.
-    /// - **On success** (exit == 0): verify all outputs exist, then
+    /// - **On failure** (exit != 0): delete declared outputs unless the
+    ///   script owns them (`clean_outputs = "never"`). Always clear staging.
+    /// - **On success** (exit == 0): verify all outputs exist. Script-owned
+    ///   outputs stay in place; for the other policies, then
     ///   atomically commit them via a two-phase rename:
     ///   1. Stage: rename each `output` → `output.oxytmp`
     ///   2. Commit: rename each `output.oxytmp` → `output`
@@ -1230,9 +1238,11 @@ impl Executor for LocalExecutor {
         }
 
         if result.exit_code != 0 {
-            // Failure: clean up any partial outputs.
+            // Failure: honor script ownership while always clearing engine scratch.
             for path in &state.output_files {
-                let _ = tokio::fs::remove_file(path).await;
+                if state.clean_outputs != CleanOutputs::Never {
+                    let _ = tokio::fs::remove_file(path).await;
+                }
                 let _ = tokio::fs::remove_file(temp_path(path)).await;
             }
             return Ok(());
@@ -1242,13 +1252,21 @@ impl Executor for LocalExecutor {
         for path in &state.output_files {
             if !path.exists() {
                 // Clean up any outputs that WERE produced.
-                for p in &state.output_files {
-                    let _ = tokio::fs::remove_file(p).await;
+                if state.clean_outputs != CleanOutputs::Never {
+                    for p in &state.output_files {
+                        let _ = tokio::fs::remove_file(p).await;
+                    }
                 }
                 return Err(ExecLocalError::OutputMissing {
                     path: path.display().to_string(),
                 });
             }
+        }
+
+        // Script-owned files need no engine staging. Leaving them in place
+        // also prevents a failed staging/commit rename from losing a download.
+        if state.clean_outputs == CleanOutputs::Never {
+            return Ok(());
         }
 
         // Phase 1 — Stage: move all outputs to .oxytmp.
@@ -1672,6 +1690,7 @@ mod tests {
             param_files: Vec::new(),
             log: LogConfig::default(),
             shell_executable: None,
+            clean_outputs: Default::default(),
             reproducibility: ReproducibilityClass::default(),
         }
     }
@@ -1751,6 +1770,91 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&out_path).unwrap(), "HELLO");
     }
 
+    async fn check_clean_outputs(policy: ox_core::model::CleanOutputs, fail: bool) {
+        use ox_core::model::*;
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("out");
+        std::fs::write(&out, "existing").unwrap();
+        std::fs::write(temp_path(&out), "stale scratch").unwrap();
+        let mut job = run_job(
+            "",
+            vec![],
+            vec![ResolvedOutput {
+                reference: OutputRef::File(out.clone()),
+                name: None,
+                format: None,
+                lifecycle: OutputLifecycle::default(),
+                materialize: MaterializePolicy::default(),
+            }],
+        );
+        job.clean_outputs = policy;
+        let predicate = if policy == CleanOutputs::Always {
+            "! -e"
+        } else {
+            "-e"
+        };
+        let write = if fail && policy != CleanOutputs::Always {
+            ":".to_owned()
+        } else {
+            format!("echo updated > '{}'", out.display())
+        };
+        // Check from inside the shell before producing any output.
+        job.execution = ExecutionBlock::Shell {
+            command: format!(
+                "test {predicate} '{}' || exit 42; test ! -e '{}' || exit 43; {write}; exit {}",
+                out.display(),
+                temp_path(&out).display(),
+                if fail { 7 } else { 0 }
+            ),
+        };
+        let ctx = ExecContext {
+            global_job_limit: 1,
+            run_id: "clean-outputs".into(),
+            log_dir: dir.path().join("logs"),
+            project_dir: dir.path().to_path_buf(),
+            trusted_dirs: vec![dir.path().to_path_buf()],
+            input_data: Default::default(),
+            memory_map: None,
+        };
+        let exec = LocalExecutor::new();
+        let mut ws = exec.prepare_workspace(&job, &ctx).await.unwrap();
+        ws.work_dir = dir.path().to_path_buf();
+        let result = exec.execute(&job, &ws, &ctx).await.unwrap();
+        assert_eq!(result.exit_code, if fail { 7 } else { 0 });
+        exec.finalize_workspace(ws, &result).await.unwrap();
+        assert_eq!(out.exists(), !fail || policy == CleanOutputs::Never);
+        if out.exists() {
+            assert_eq!(
+                std::fs::read_to_string(&out).unwrap(),
+                if fail { "existing" } else { "updated\n" }
+            );
+        }
+        assert!(!temp_path(&out).exists());
+    }
+
+    #[tokio::test]
+    async fn clean_outputs_always_success() {
+        check_clean_outputs(ox_core::model::CleanOutputs::Always, false).await;
+    }
+    #[tokio::test]
+    async fn clean_outputs_on_failure_success() {
+        check_clean_outputs(ox_core::model::CleanOutputs::OnFailure, false).await;
+    }
+    #[tokio::test]
+    async fn clean_outputs_never_success() {
+        check_clean_outputs(ox_core::model::CleanOutputs::Never, false).await;
+    }
+    #[tokio::test]
+    async fn clean_outputs_failure() {
+        for policy in [
+            ox_core::model::CleanOutputs::Always,
+            ox_core::model::CleanOutputs::OnFailure,
+            ox_core::model::CleanOutputs::Never,
+        ] {
+            check_clean_outputs(policy, true).await;
+        }
+    }
+
     #[test]
     fn temp_path_appends_suffix() {
         let p = std::path::Path::new("/tmp/output.csv");
@@ -1781,9 +1885,31 @@ mod tests {
             work_dir,
             AtomicOutputState {
                 output_files,
+                clean_outputs: CleanOutputs::default(),
                 output_locks: None,
             },
         )
+    }
+
+    #[tokio::test]
+    async fn clean_outputs_never_preserves_outputs_when_an_output_is_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("complete");
+        std::fs::write(&out, "downloaded").unwrap();
+        let ws = Workspace::with_state(
+            dir.path().to_path_buf(),
+            AtomicOutputState {
+                output_files: vec![out.clone(), dir.path().join("missing")],
+                clean_outputs: ox_core::model::CleanOutputs::Never,
+                output_locks: None,
+            },
+        );
+        let error = LocalExecutor::new()
+            .finalize_workspace(ws, &make_result(0))
+            .await
+            .unwrap_err();
+        assert!(matches!(error, ExecLocalError::OutputMissing { .. }));
+        assert_eq!(std::fs::read_to_string(&out).unwrap(), "downloaded");
     }
 
     #[tokio::test]
@@ -1934,6 +2060,7 @@ mod tests {
             param_files: Vec::new(),
             log: ox_core::model::LogConfig::default(),
             shell_executable: None,
+            clean_outputs: Default::default(),
             reproducibility: ox_core::model::ReproducibilityClass::default(),
         };
 
@@ -2113,6 +2240,7 @@ mod tests {
             param_files: Vec::new(),
             log: LogConfig::default(),
             shell_executable: None,
+            clean_outputs: Default::default(),
             reproducibility: ReproducibilityClass::default(),
         };
 
@@ -2195,6 +2323,7 @@ mod tests {
             param_files: Vec::new(),
             log: LogConfig::default(),
             shell_executable: None,
+            clean_outputs: Default::default(),
             reproducibility: ReproducibilityClass::default(),
         };
 
@@ -2275,6 +2404,7 @@ mod tests {
             param_files: Vec::new(),
             log: LogConfig::default(),
             shell_executable: None,
+            clean_outputs: Default::default(),
             reproducibility: ReproducibilityClass::default(),
         };
 

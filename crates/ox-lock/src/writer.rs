@@ -159,6 +159,7 @@ mod tests {
             params: Default::default(),
             param_files: Vec::new(),
             shell_executable: None,
+            clean_outputs: Default::default(),
             reproducibility: ReproducibilityClass::default(),
             source_line: None,
         }

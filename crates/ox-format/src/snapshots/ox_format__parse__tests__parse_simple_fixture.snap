@@ -1,6 +1,6 @@
 ---
 source: crates/ox-format/src/parse.rs
-assertion_line: 1324
+assertion_line: 1449
 expression: wf
 ---
 Workflow {
@@ -57,6 +57,7 @@ Workflow {
             params: {},
             param_files: [],
             shell_executable: None,
+            clean_outputs: Always,
             reproducibility: Deterministic,
             source_line: None,
         },
@@ -109,6 +110,7 @@ Workflow {
             params: {},
             param_files: [],
             shell_executable: None,
+            clean_outputs: Always,
             reproducibility: Deterministic,
             source_line: None,
         },

@@ -111,6 +111,7 @@ use crate::model::*;
 ///         param_files: Vec::new(),
 ///         log: LogConfig::default(),
 ///         shell_executable: None,
+///         clean_outputs: Default::default(),
 ///         reproducibility: ReproducibilityClass::default(),
 ///     },
 ///     ConcreteJob {
@@ -142,6 +143,7 @@ use crate::model::*;
 ///         param_files: Vec::new(),
 ///         log: LogConfig::default(),
 ///         shell_executable: None,
+///         clean_outputs: Default::default(),
 ///         reproducibility: ReproducibilityClass::default(),
 ///     },
 /// ];
@@ -438,6 +440,7 @@ impl JobGraph {
     ///         param_files: Vec::new(),
     ///         log: LogConfig::default(),
     ///         shell_executable: None,
+    ///         clean_outputs: Default::default(),
     ///         reproducibility: ReproducibilityClass::default(),
     ///     },
     ///     ConcreteJob {
@@ -469,6 +472,7 @@ impl JobGraph {
     ///         param_files: Vec::new(),
     ///         log: LogConfig::default(),
     ///         shell_executable: None,
+    ///         clean_outputs: Default::default(),
     ///         reproducibility: ReproducibilityClass::default(),
     ///     },
     /// ];
@@ -625,6 +629,7 @@ impl JobGraph {
     ///     param_files: Vec::new(),
     ///     log: LogConfig::default(),
     ///     shell_executable: None,
+    ///     clean_outputs: Default::default(),
     ///     reproducibility: ReproducibilityClass::default(),
     /// }];
     ///
@@ -779,6 +784,7 @@ pub fn make_test_job(name: &str, inputs: &[&str], outputs: &[&str]) -> ConcreteJ
         param_files: Vec::new(),
         log: LogConfig::default(),
         shell_executable: None,
+        clean_outputs: Default::default(),
         reproducibility: ReproducibilityClass::default(),
     }
 }

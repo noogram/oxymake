@@ -44,6 +44,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `/favicon.ico`.
 
 ### Added
+
+- **Per-rule `clean_outputs = "always" | "on-failure" | "never"`** (#6). By
+  default OxyMake deletes a job's declared outputs before rerunning it, which
+  makes an incremental cache of an external source impossible: editing the
+  extraction script re-downloads the whole dataset. `"never"` hands the
+  outputs to the script — they survive both the rerun and a failure, so a
+  transient error partway through does not discard what was already
+  fetched — and `"on-failure"` keeps them before the run but still cleans up
+  after a failure. Three lifecycles, so the field is not a boolean. Local
+  executor only; the default is unchanged, and `"never"` transfers the
+  staleness guarantee to the script (see the format reference).
+  **Cache keys include the policy (format v5), so upgrading invalidates every
+  existing cache entry and the first run after it recomputes.**
 - `OX_SHUTDOWN_GRACE_SECS` — seconds a cancelled job may take to exit before
   `ox run` kills it (default `10`; `0` escalates immediately).
 - **`ox_state::effective`** — the one read-side derivation every reader
