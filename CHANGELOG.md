@@ -12,6 +12,13 @@ bytes of the file it declares — including a `pyproject.toml` project file and
 its adjacent `uv.lock` — to the cache key, so the key format moves from v5 to
 v6: the first run after this upgrade recomputes everything, once.
 
+### Added
+- **Rules can opt into cross-platform cache keys with
+  `cache_platform = "any"`.** The default remains `"exact"`, preserving
+  platform-specific keys. OxyMake rejects this opt-in for
+  `reproducibility = "non_reproducible"` and cannot verify that an opted-in
+  rule truly produces platform-independent outputs (issue #7).
+
 ### Fixed
 - **`environment = { uv = "pyproject.toml" }` now invalidates outputs when a
   dependency changes.** The project file reference was dropped at parse time,

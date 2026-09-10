@@ -119,6 +119,7 @@ bump and a `CHANGELOG.md` entry:
 ### Unstable
 
 - `clean_outputs` (`always`, `on-failure`, `never`) — local-executor output cleanup policy.
+- `cache_platform` (`exact`, `any`) — per-rule cross-platform cache reuse policy.
 - Any TOML field not in the list above is **experimental** and may be
   removed without a deprecation window.
 - The exact set of `error_strategy.backoff` values beyond `constant`,

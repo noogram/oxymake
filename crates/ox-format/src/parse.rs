@@ -12,7 +12,7 @@ use serde::Deserialize;
 use ox_core::error::ParseError;
 use ox_core::model::{
     Backoff, CleanOutputs, EnvSpec, ErrorStrategy, ExecutionBlock, ExpandMode, GuardExpr,
-    InputPattern, LogConfig, MaterializePolicy, OutputLifecycle, OutputPattern,
+    InputPattern, LogConfig, MaterializePolicy, OutputLifecycle, OutputPattern, PlatformScope,
     ReproducibilityClass, ResourceValue, Rule, RuleMeta, RuleName,
 };
 
@@ -288,6 +288,7 @@ struct RawRule {
     // Reproducibility classification for outputs
     reproducibility: Option<String>,
     clean_outputs: Option<String>,
+    cache_platform: Option<String>,
 
     // 1-based line in the source file (Snakefile, .wdl) when this Oxymakefile
     // was produced by `ox translate`. Surfaced by ox-plan errors so failures
@@ -822,6 +823,33 @@ fn parse_rule(name: &str, raw: &RawRule, file_path: &Path) -> Result<Rule, Parse
         })
         .unwrap_or_default();
 
+    let platform_scope = match raw.cache_platform.as_deref() {
+        None | Some("exact") => PlatformScope::Exact,
+        Some("any") => PlatformScope::Any,
+        Some(value) => {
+            return Err(ParseError::InvalidField {
+                field: "cache_platform".into(),
+                reason: format!("unknown value {value:?}; expected one of: exact, any"),
+            });
+        }
+    };
+    let reproducibility = match raw.reproducibility.as_deref() {
+        Some("deterministic") => ReproducibilityClass::Deterministic,
+        Some("seed_deterministic") => ReproducibilityClass::SeedDeterministic,
+        Some("approximate") => ReproducibilityClass::Approximate,
+        Some("non_reproducible") => ReproducibilityClass::NonReproducible,
+        _ => ReproducibilityClass::default(),
+    };
+    if platform_scope == PlatformScope::Any
+        && reproducibility == ReproducibilityClass::NonReproducible
+    {
+        return Err(ParseError::InvalidField {
+            field: "cache_platform".into(),
+            reason: "value \"any\" cannot be combined with reproducibility = \"non_reproducible\""
+                .into(),
+        });
+    }
+
     Ok(Rule {
         name: RuleName(name.to_string()),
         priority: raw.priority,
@@ -859,13 +887,8 @@ fn parse_rule(name: &str, raw: &RawRule, file_path: &Path) -> Result<Rule, Parse
                 });
             }
         },
-        reproducibility: match raw.reproducibility.as_deref() {
-            Some("deterministic") => ReproducibilityClass::Deterministic,
-            Some("seed_deterministic") => ReproducibilityClass::SeedDeterministic,
-            Some("approximate") => ReproducibilityClass::Approximate,
-            Some("non_reproducible") => ReproducibilityClass::NonReproducible,
-            _ => ReproducibilityClass::default(),
-        },
+        platform_scope,
+        reproducibility,
         source_line: raw.source_line,
     })
 }
@@ -3607,6 +3630,55 @@ enabled = true
             "never",
         ] {
             assert!(error.contains(text), "{error}");
+        }
+    }
+
+    #[test]
+    fn parse_cache_platform_values_and_default() {
+        use ox_core::model::PlatformScope;
+        for (field, expected) in [
+            ("", PlatformScope::Exact),
+            ("cache_platform = \"exact\"", PlatformScope::Exact),
+            ("cache_platform = \"any\"", PlatformScope::Any),
+        ] {
+            let source = format!("[rule.test]\noutput = [\"out\"]\nshell = \"true\"\n{field}\n");
+            let wf = parse_workflow(&source, Path::new("test.toml")).unwrap();
+            assert_eq!(wf.rules[0].platform_scope, expected);
+        }
+    }
+
+    #[test]
+    fn parse_cache_platform_rejects_unknown() {
+        let error = parse_workflow(
+            "[rule.test]\noutput = [\"out\"]\nshell = \"true\"\ncache_platform = \"architecture\"",
+            Path::new("test.toml"),
+        )
+        .unwrap_err()
+        .to_string();
+        for text in ["cache_platform", "architecture", "exact", "any"] {
+            assert!(error.contains(text), "{error}");
+        }
+    }
+
+    #[test]
+    fn parse_cache_platform_any_rejects_non_reproducible() {
+        let error = parse_workflow(
+            "[rule.test]\noutput = [\"out\"]\nshell = \"true\"\ncache_platform = \"any\"\nreproducibility = \"non_reproducible\"",
+            Path::new("test.toml"),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("cache_platform"), "{error}");
+        assert!(error.contains("non_reproducible"), "{error}");
+    }
+
+    #[test]
+    fn parse_cache_platform_any_allows_qualified_reproducibility() {
+        for value in ["approximate", "seed_deterministic"] {
+            let source = format!(
+                "[rule.test]\noutput = [\"out\"]\nshell = \"true\"\ncache_platform = \"any\"\nreproducibility = \"{value}\""
+            );
+            parse_workflow(&source, Path::new("test.toml")).unwrap();
         }
     }
 

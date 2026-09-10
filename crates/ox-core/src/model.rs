@@ -379,6 +379,27 @@ impl fmt::Display for CleanOutputs {
     }
 }
 
+/// Whether a cache key is scoped to the current OS and architecture.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PlatformScope {
+    /// Include the exact platform in the cache key (the default).
+    #[default]
+    Exact,
+    /// Permit cache reuse across platforms by omitting the platform value.
+    Any,
+}
+
+impl fmt::Display for PlatformScope {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Exact => f.write_str("exact"),
+            Self::Any => f.write_str("any"),
+        }
+    }
+}
+
 /// Classification of a job's output reproducibility.
 ///
 /// This enum annotates each rule (and its concrete jobs) with the expected
@@ -1362,6 +1383,9 @@ pub struct Rule {
     /// Automatic output cleanup policy, inherited by concrete jobs.
     #[serde(default)]
     pub clean_outputs: CleanOutputs,
+    /// Platform scoping for cache keys.
+    #[serde(default)]
+    pub platform_scope: PlatformScope,
     /// Reproducibility classification for this rule's outputs.
     #[serde(default)]
     pub reproducibility: ReproducibilityClass,
@@ -1472,6 +1496,9 @@ pub struct ConcreteJob {
     /// Automatic output cleanup policy, inherited by concrete jobs.
     #[serde(default)]
     pub clean_outputs: CleanOutputs,
+    /// Platform scoping for cache keys, inherited from the rule.
+    #[serde(default)]
+    pub platform_scope: PlatformScope,
     /// Reproducibility classification, inherited from the rule.
     #[serde(default)]
     pub reproducibility: ReproducibilityClass,
@@ -2740,6 +2767,7 @@ mod tests {
             param_files: Vec::new(),
             shell_executable: None,
             clean_outputs: Default::default(),
+            platform_scope: Default::default(),
             reproducibility: ReproducibilityClass::default(),
             source_line: None,
         };
@@ -2787,6 +2815,7 @@ mod tests {
             log: LogConfig::default(),
             shell_executable: None,
             clean_outputs: Default::default(),
+            platform_scope: Default::default(),
             reproducibility: ReproducibilityClass::default(),
         };
         let json = serde_json::to_string(&job).unwrap();
@@ -2842,6 +2871,7 @@ mod tests {
             param_files: Vec::new(),
             shell_executable: None,
             clean_outputs: Default::default(),
+            platform_scope: Default::default(),
             reproducibility: ReproducibilityClass::default(),
             source_line: None,
         };
@@ -2884,6 +2914,7 @@ mod tests {
             log: LogConfig::default(),
             shell_executable: None,
             clean_outputs: Default::default(),
+            platform_scope: Default::default(),
             reproducibility: ReproducibilityClass::default(),
         };
         assert_eq!(
@@ -2922,6 +2953,7 @@ mod tests {
             log: LogConfig::default(),
             shell_executable: None,
             clean_outputs: Default::default(),
+            platform_scope: Default::default(),
             reproducibility: ReproducibilityClass::default(),
         };
         let node = JobNode::Job(Box::new(job));
@@ -3340,6 +3372,7 @@ mod tests {
             log: LogConfig::default(),
             shell_executable: None,
             clean_outputs: Default::default(),
+            platform_scope: Default::default(),
             reproducibility: ReproducibilityClass::default(),
         };
         let node = JobNode::Job(Box::new(job));
@@ -4150,7 +4183,20 @@ mod tests {
         assert_eq!(got.size_bytes, 4096);
     }
 
-    // --- ReproducibilityClass tests ---
+    // --- PlatformScope and ReproducibilityClass tests ---
+
+    #[test]
+    fn platform_scope_default_display_and_serde() {
+        assert_eq!(PlatformScope::default(), PlatformScope::Exact);
+        for (variant, text) in [(PlatformScope::Exact, "exact"), (PlatformScope::Any, "any")] {
+            assert_eq!(variant.to_string(), text);
+            let json = serde_json::to_string(&variant).unwrap();
+            assert_eq!(
+                serde_json::from_str::<PlatformScope>(&json).unwrap(),
+                variant
+            );
+        }
+    }
 
     #[test]
     fn reproducibility_class_default_is_deterministic() {

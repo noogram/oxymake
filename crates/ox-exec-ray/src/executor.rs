@@ -805,6 +805,7 @@ mod tests {
             log: LogConfig::default(),
             shell_executable: None,
             clean_outputs: Default::default(),
+            platform_scope: Default::default(),
             reproducibility: ReproducibilityClass::default(),
         }
     }
