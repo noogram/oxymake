@@ -566,6 +566,7 @@ fn record_fully_cached_run(
     executor: &str,
     note: Option<&str>,
     provenance: &HashMap<String, ox_state::db::JobProvenance>,
+    cached: &HashSet<JobId>,
 ) {
     let Ok(db) = ox_state::db::StateDb::open(state_db_path) else {
         return;
@@ -594,8 +595,11 @@ fn record_fully_cached_run(
     let ids: Vec<String> = records.iter().map(|r| r.id.clone()).collect();
     let _ = db.reset_inactive_job_rows(&ids, resolve_lease_secs());
 
-    for id in &ids {
-        let _ = db.skip_job(id);
+    // Only genuine cache hits are recorded as cached: a job excluded by
+    // `--until` / `--omit-from` was not run *and* was not a hit, and
+    // labelling it cached would overstate cache effectiveness.
+    for job_id in job_ids.iter().filter(|id| cached.contains(id)) {
+        let _ = db.skip_job(job_id.as_str());
     }
     let _ = db.record_job_cache_keys(run_id, provenance);
     let _ = db.finalize_job_history(
@@ -1546,6 +1550,9 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
 
     timer.mark("cache_prescan");
 
+    // Jobs skipped because the cache answered for them, as opposed to jobs
+    // excluded by `--until` / `--omit-from`.
+    let cache_hits: HashSet<JobId> = skip_jobs.difference(&selective_skip).cloned().collect();
     let cached_count = skip_jobs.len().saturating_sub(selective_skip.len());
     if cached_count > 0 {
         println!("Cache: {cached_count} of {job_count} job(s) up-to-date, skipping.");
@@ -1576,6 +1583,7 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
             &args.executor,
             args.note.as_deref(),
             &prescan_provenance,
+            &cache_hits,
         );
         if !args.json {
             println!(
