@@ -1,7 +1,7 @@
 //! Shared utilities used across multiple commands.
 
-use std::collections::BTreeMap;
-use std::path::Path;
+use std::collections::{BTreeMap, HashSet};
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 
@@ -153,12 +153,31 @@ pub fn apply_profile_config(config: &mut Config, profile: &Profile) {
     apply_overrides(config, &overrides);
 }
 
-/// Discover files that exist on disk, relative to the Oxymakefile's directory.
+/// Discover source files relative to the Oxymakefile's directory.
 ///
-/// Delegates to [`ox_api::discover::discover_existing_files`] which caches
-/// results per base directory with mtime invalidation.
-pub fn discover_existing_files(oxymakefile_path: &Path) -> Vec<std::path::PathBuf> {
-    ox_api::discover::discover_existing_files(oxymakefile_path)
+/// Rule outputs are excluded even when they exist on disk, so the resolver
+/// cannot mistake generated files for sources and truncate the job graph.
+/// Filesystem discovery delegates to [`ox_api::discover::discover_existing_files`],
+/// which caches results per base directory with mtime invalidation.
+pub fn discover_source_files(
+    oxymakefile_path: &Path,
+    workflow: &Workflow,
+    config: &Config,
+) -> Vec<PathBuf> {
+    let rule_outputs: HashSet<PathBuf> = workflow
+        .rules
+        .iter()
+        .flat_map(|rule| &rule.outputs)
+        .flat_map(|output| {
+            let mut expanded = Vec::new();
+            expand_pattern(output.pattern.as_str(), config, &mut expanded);
+            expanded.into_iter().map(PathBuf::from)
+        })
+        .collect();
+
+    let mut files = ox_api::discover::discover_existing_files(oxymakefile_path);
+    files.retain(|path| !rule_outputs.contains(path));
+    files
 }
 
 #[cfg(test)]

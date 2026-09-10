@@ -85,6 +85,10 @@ the exit code stays `1`, since a job did fail.
 
 Show the execution plan without running anything.
 
+Planning resolves the complete dependency graph. Existing generated outputs
+are not treated as source files, so a missing intermediate is reported with
+all jobs needed to rebuild it and its downstream targets.
+
 ```bash
 ox plan                     # Show what would run (optimized)
 ox plan --json              # Structured plan output

@@ -875,29 +875,10 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
     if args.verbose >= 2 {
         eprintln!("Scanning source files...");
     }
-    let mut existing_files = common::discover_existing_files(&file_path);
-
-    // Exclude rule output files from existing_files so the resolver always
-    // produces the full job graph. Without this, the resolver sees existing
-    // outputs and short-circuits (resolve_target returns early for files in
-    // the `existing` set), producing 0 jobs.
-    //
-    // The cache pre-scan (below) handles skip logic for cached jobs. If we
-    // let the resolver short-circuit, deleted/stale intermediate outputs
-    // won't trigger downstream rebuilds (ox-jxdw).
-    {
-        let mut rule_outputs: HashSet<PathBuf> = HashSet::new();
-        for rule in &workflow.rules {
-            for output in &rule.outputs {
-                let mut expanded = Vec::new();
-                common::expand_pattern(output.pattern.as_str(), &config, &mut expanded);
-                for path in expanded {
-                    rule_outputs.insert(PathBuf::from(path));
-                }
-            }
-        }
-        existing_files.retain(|p| !rule_outputs.contains(p));
-    }
+    // Rule outputs must never masquerade as source files. The cache pre-scan
+    // below decides which jobs are up to date after resolution has built the
+    // complete graph.
+    let existing_files = common::discover_source_files(&file_path, &workflow, &config);
 
     timer.mark("discover_files");
 

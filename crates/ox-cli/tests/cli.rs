@@ -417,6 +417,82 @@ shell = "cat {input} | sort > {output}"
         .stdout(predicates::str::contains("2 jobs"));
 }
 
+fn write_two_rule_workflow(base: &std::path::Path) -> std::path::PathBuf {
+    let oxymakefile = base.join("Oxymakefile.toml");
+    fs::write(
+        &oxymakefile,
+        r#"ox_version = "0.1"
+
+[rule.a]
+output = ["a.txt"]
+shell = "printf 'constant\\n' > {output}"
+
+[rule.b]
+input = ["a.txt"]
+output = ["b.txt"]
+shell = "cat {input} > {output}"
+"#,
+    )
+    .unwrap();
+    oxymakefile
+}
+
+fn run_two_rule_workflow(base: &std::path::Path, oxymakefile: &std::path::Path) {
+    ox().args(["run", "b.txt", "-f", oxymakefile.to_str().unwrap()])
+        .current_dir(base)
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("2 succeeded"));
+}
+
+fn plan_rules(base: &std::path::Path, oxymakefile: &std::path::Path) -> Vec<String> {
+    let output = ox()
+        .args([
+            "plan",
+            "b.txt",
+            "--json",
+            "-f",
+            oxymakefile.to_str().unwrap(),
+        ])
+        .current_dir(base)
+        .output()
+        .expect("plan should run");
+    assert!(output.status.success(), "plan failed: {output:?}");
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    json["jobs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|job| job["rule"].as_str().unwrap().to_owned())
+        .collect()
+}
+
+/// A missing intermediate must not make `plan` stop at an existing final output.
+#[test]
+fn plan_resolves_full_chain_when_intermediate_output_is_missing() {
+    let dir = TempDir::new().unwrap();
+    let base = dir.path();
+    let oxymakefile = write_two_rule_workflow(base);
+    run_two_rule_workflow(base, &oxymakefile);
+
+    fs::remove_file(base.join("a.txt")).unwrap();
+    assert_eq!(plan_rules(base, &oxymakefile), ["a", "b"]);
+
+    run_two_rule_workflow(base, &oxymakefile);
+}
+
+/// The existing missing-final-output control still resolves the complete graph.
+#[test]
+fn plan_resolves_full_chain_when_final_output_is_missing() {
+    let dir = TempDir::new().unwrap();
+    let base = dir.path();
+    let oxymakefile = write_two_rule_workflow(base);
+    run_two_rule_workflow(base, &oxymakefile);
+
+    fs::remove_file(base.join("b.txt")).unwrap();
+    assert_eq!(plan_rules(base, &oxymakefile), ["a", "b"]);
+}
+
 /// `ox plan` on an Oxymakefile that carries `source_line` (as the translator
 /// emits) and fails with `no rule produces output` must cite the original
 /// Snakefile line in its error message — either directly (`Snakefile:N`)
@@ -2656,6 +2732,39 @@ shell = "cp data/{sample}.csv results/{sample}.txt"
     let stdout = String::from_utf8_lossy(&output.stdout);
     let _parsed: serde_json::Value =
         serde_json::from_str(&stdout).expect("explain --json should produce valid JSON");
+}
+
+/// A missing intermediate must not truncate `explain` at an existing final output.
+#[test]
+fn explain_resolves_full_chain_when_intermediate_output_is_missing() {
+    let dir = TempDir::new().unwrap();
+    let base = dir.path();
+    let oxymakefile = write_two_rule_workflow(base);
+    run_two_rule_workflow(base, &oxymakefile);
+
+    fs::remove_file(base.join("a.txt")).unwrap();
+    let output = ox()
+        .args([
+            "explain",
+            "b.txt",
+            "--json",
+            "-f",
+            oxymakefile.to_str().unwrap(),
+        ])
+        .current_dir(base)
+        .output()
+        .expect("explain should run");
+    assert!(output.status.success(), "explain failed: {output:?}");
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let rules: Vec<_> = json["chain"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|job| job["rule"].as_str().unwrap())
+        .collect();
+    assert_eq!(rules, ["b", "a"]);
+
+    run_two_rule_workflow(base, &oxymakefile);
 }
 
 // ---------------------------------------------------------------------------

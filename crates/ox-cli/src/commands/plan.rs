@@ -117,7 +117,7 @@ pub fn cmd_plan(args: PlanArgs, theme: &ox_render::Theme) -> Result<()> {
         return Ok(());
     }
 
-    let existing_files = common::discover_existing_files(&file_path);
+    let existing_files = common::discover_source_files(&file_path, &workflow, &config);
 
     let request = resolver::ResolveRequest {
         targets: targets.clone(),
