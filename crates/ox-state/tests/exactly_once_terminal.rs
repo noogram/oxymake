@@ -70,7 +70,13 @@ fn single_run_single_completion_satisfies_invariant() {
     assert!(db.complete_job("j1", &session, 0, "{}").unwrap());
 
     let count = db
-        .finalize_job_history(run_id, "local", "host", &Default::default())
+        .finalize_job_history(
+            run_id,
+            "local",
+            "host",
+            &Default::default(),
+            &Default::default(),
+        )
         .unwrap();
     assert_eq!(count, 1, "exactly one terminal history row should land");
     assert_exactly_once_terminal(&db);
@@ -91,8 +97,14 @@ fn multiple_jobs_one_per_terminal_status_satisfies_invariant() {
     db.fail_job("ko", &session, 1).unwrap();
     db.skip_job("skip").unwrap();
 
-    db.finalize_job_history(run_id, "local", "host", &Default::default())
-        .unwrap();
+    db.finalize_job_history(
+        run_id,
+        "local",
+        "host",
+        &Default::default(),
+        &Default::default(),
+    )
+    .unwrap();
     assert_exactly_once_terminal(&db);
 }
 
@@ -153,7 +165,13 @@ fn cancellation_does_not_violate_invariant() {
     // cancelled job still gets one row).
     db.cancel_job_ids(&["b".into()]).unwrap();
 
-    db.finalize_job_history(run_id, "local", "host", &Default::default())
-        .unwrap();
+    db.finalize_job_history(
+        run_id,
+        "local",
+        "host",
+        &Default::default(),
+        &Default::default(),
+    )
+    .unwrap();
     assert_exactly_once_terminal(&db);
 }

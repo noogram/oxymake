@@ -174,6 +174,15 @@ fn show_run_detail(
                 "wall_time_ms": job.wall_time_ms,
                 "peak_mem_mb": job.peak_mem_mb,
                 "exit_code": job.exit_code,
+                // Provenance of the cache decision (#12): what the job was
+                // keyed on. `null` for a job the cache layer never keyed
+                // (`--no-cache`, or mtime-only validation).
+                "input_hashes": job.input_hashes,
+                "output_hashes": job.output_hashes,
+                "params_hash": job.params_hash,
+                "env_hash": job.env_hash,
+                "reproducibility_class": job.reproducibility_class,
+                "artifact_provenance": job.artifact_provenance_json,
             });
             println!("{}", serde_json::to_string(&obj)?);
         }
