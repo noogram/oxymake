@@ -1,7 +1,7 @@
 # ADR-019: Cross-Machine Continuation — Adoption Is the Primitive, `cache_platform` Is the Flag
 
 ## Status
-Proposed
+Accepted (operator arbitration 2026-09-10 on delib-20260910-b20f: adoption-primitive framing kept, provenance columns block the release, issue #12 stays decoupled).
 
 ## Metadata
 
