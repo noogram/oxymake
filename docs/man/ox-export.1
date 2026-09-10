@@ -2,12 +2,15 @@
 .el .ds Aq '
 .TH ox-export 1  "ox-export " 
 .SH NAME
-ox\-export \- Export an Oxymakefile to another format (Snakemake or WDL)
+ox\-export \- Export cached outputs for adoption, or translate an Oxymakefile
 .SH SYNOPSIS
-\fBox\-export\fR [\fB\-f\fR|\fB\-\-file\fR] [\fB\-o\fR|\fB\-\-output\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fIFORMAT\fR> 
+\fBox\-export\fR [\fB\-\-manifest\fR] [\fB\-f\fR|\fB\-\-file\fR] [\fB\-o\fR|\fB\-\-output\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fITARGETS\fR] 
 .SH DESCRIPTION
-Export an Oxymakefile to another format (Snakemake or WDL)
+Export cached outputs for adoption, or translate an Oxymakefile
 .SH OPTIONS
+.TP
+\fB\-\-manifest\fR \fI<PATH>\fR
+Write a versioned output\-adoption manifest to this path
 .TP
 \fB\-f\fR, \fB\-\-file\fR \fI<FILE>\fR [default: Oxymakefile.toml]
 Path to the Oxymakefile to export (default: Oxymakefile.toml)
@@ -16,17 +19,7 @@ Path to the Oxymakefile to export (default: Oxymakefile.toml)
 Write output to a file instead of stdout
 .TP
 \fB\-h\fR, \fB\-\-help\fR
-Print help (see a summary with \*(Aq\-h\*(Aq)
+Print help
 .TP
-<\fIFORMAT\fR>
-Target format to export to
-.br
-
-.br
-\fIPossible values:\fR
-.RS 14
-.IP \(bu 2
-snakemake: Export to Snakemake format
-.IP \(bu 2
-wdl: Export to WDL (Workflow Description Language) format
-.RE
+[\fITARGETS\fR]
+Targets to export, or the legacy translation format (snakemake/wdl)

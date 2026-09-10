@@ -37,7 +37,7 @@ Each surface is detailed below. **Anything not explicitly listed under
 
 ## 1. `ox` CLI subcommands and flags
 
-The `ox` binary exposes 25 subcommands today (see `crates/ox-cli/src/lib.rs`).
+The `ox` binary exposes 26 subcommands today (see `crates/ox-cli/src/lib.rs`).
 
 ### Stable today
 
@@ -74,7 +74,7 @@ The `ox` binary exposes 25 subcommands today (see `crates/ox-cli/src/lib.rs`).
 
 - **All other subcommands**: `dag`, `snapshot`, `gate`, `serve`,
   `subscribe`, `top`, `dashboard`, `test`, `check-consistency`,
-  `translate`, `export`, `logo`. These exist for exploration and may
+  `translate`, `export`, `import`, `logo`. These exist for exploration and may
   be renamed, restructured, or removed before `1.0`.
 - The textual output format of every subcommand (column order,
   emoji, summaries) is **unstable** by default. Use `--json` /

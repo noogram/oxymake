@@ -41,6 +41,10 @@ includes:
   can behave differently
 - **Platform** -- OS and architecture (a Linux build is not reusable on macOS)
 
+A rule may explicitly set `cache_platform = "any"` when its outputs are valid
+across operating systems and architectures. The default is `"exact"`. This is
+a user assertion: OxyMake records it for audit but cannot prove it.
+
 Two exclusions to know about: `call`-mode function bodies are tracked only
 if you declare the module as an input, and mutable container tags are
 hashed as written (pin images by digest -- `python@sha256:...` -- if you
@@ -102,6 +106,24 @@ local metadata makes jobs run again unless you use `mtime` validation; it does
 not delete outputs or execution history.
 
 ## Sharing Across Machines
+
+For continuation where raw producer inputs should not move, export the cached
+product's metadata, copy the product and manifest, and import it in the other
+tree:
+
+```bash
+# Producing machine
+ox export build/counts.parquet --manifest counts.ox-cache.json
+
+# Consuming machine, after copying both files
+ox import counts.ox-cache.json
+ox run build/model.rds
+```
+
+Import always re-hashes outputs and rejects mismatches. A successfully imported
+product can be a leaf of resolution even if its raw inputs are absent. Use
+`cache_platform = "any"` on its rule for cross-platform continuation; imports
+of `"exact"` entries are restricted to the producing platform.
 
 OxyMake currently supports a shared filesystem directory as its remote
 artifact backend. Point `--cache-remote` at a directory reachable from every
