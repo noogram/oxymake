@@ -40,6 +40,9 @@ pub struct CacheEntry {
     /// Platform scope in force when the cache key was computed.
     #[serde(default)]
     pub platform_scope: Option<PlatformScope>,
+    /// Whether this entry was explicitly adopted through `ox import`.
+    #[serde(default)]
+    pub adopted: bool,
 }
 
 type CacheEntryRow = (
@@ -49,6 +52,7 @@ type CacheEntryRow = (
     Option<String>,
     Option<String>,
     Option<String>,
+    i64,
 );
 
 /// Result of checking whether a job's cached outputs are still valid.
@@ -122,7 +126,11 @@ fn migrate_cache_entry_schema(conn: &mut Connection) -> Result<(), CacheError> {
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(|e| CacheError::Manifest(format!("sqlite migration tx: {e}")))?;
 
-    for column in ["platform", "platform_scope"] {
+    for (column, definition) in [
+        ("platform", "TEXT"),
+        ("platform_scope", "TEXT"),
+        ("adopted", "INTEGER NOT NULL DEFAULT 0"),
+    ] {
         let exists: bool = tx
             .query_row(
                 "SELECT EXISTS(
@@ -134,7 +142,7 @@ fn migrate_cache_entry_schema(conn: &mut Connection) -> Result<(), CacheError> {
             .map_err(|e| CacheError::Manifest(format!("sqlite migration inspect: {e}")))?;
         if !exists {
             tx.execute(
-                &format!("ALTER TABLE cache_entries ADD COLUMN {column} TEXT"),
+                &format!("ALTER TABLE cache_entries ADD COLUMN {column} {definition}"),
                 [],
             )
             .map_err(|e| CacheError::Manifest(format!("sqlite migration: {e}")))?;
@@ -191,7 +199,8 @@ impl CacheStore {
                 input_hashes_json TEXT,
                 job_spec_hash TEXT,
                 platform TEXT,
-                platform_scope TEXT
+                platform_scope TEXT,
+                adopted INTEGER NOT NULL DEFAULT 0
             );
             CREATE TABLE IF NOT EXISTS output_records (
                 cache_key    TEXT NOT NULL,
@@ -539,7 +548,14 @@ impl CacheStore {
             "record"
         );
         let platform = crate::key::current_platform();
-        self.record_with_platform(cache_key, outputs, provenance, &platform, platform_scope)
+        self.record_with_platform(
+            cache_key,
+            outputs,
+            provenance,
+            &platform,
+            platform_scope,
+            false,
+        )
     }
 
     /// Record verified outputs adopted from another machine.
@@ -560,6 +576,7 @@ impl CacheStore {
             Some(provenance),
             origin_platform,
             platform_scope,
+            true,
         )
     }
 
@@ -570,6 +587,7 @@ impl CacheStore {
         provenance: Option<&ox_core::model::ArtifactProvenance>,
         platform: &str,
         platform_scope: PlatformScope,
+        adopted: bool,
     ) -> Result<(), CacheError> {
         let completed_at = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -593,8 +611,8 @@ impl CacheStore {
         tx.execute(
             "INSERT OR REPLACE INTO cache_entries
                 (cache_key, completed_at, reproducibility_class, input_hashes_json, job_spec_hash,
-                 platform, platform_scope)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                 platform, platform_scope, adopted)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             params![
                 cache_key.as_str(),
                 completed_at as i64,
@@ -603,6 +621,7 @@ impl CacheStore {
                 job_spec_hash,
                 platform,
                 platform_scope.to_string(),
+                adopted,
             ],
         )
         .map_err(|e| CacheError::Manifest(format!("sqlite insert: {e}")))?;
@@ -780,7 +799,7 @@ impl CacheStore {
             .conn
             .query_row(
                 "SELECT completed_at, reproducibility_class, input_hashes_json, job_spec_hash,
-                        platform, platform_scope
+                        platform, platform_scope, adopted
                  FROM cache_entries WHERE cache_key = ?1",
                 params![cache_key.as_str()],
                 |row| {
@@ -791,13 +810,21 @@ impl CacheStore {
                         row.get(3)?,
                         row.get(4)?,
                         row.get(5)?,
+                        row.get(6)?,
                     ))
                 },
             )
             .ok()?;
 
-        let (completed_at, repro_class, input_hashes_json, job_spec_hash, platform, platform_scope) =
-            row_data;
+        let (
+            completed_at,
+            repro_class,
+            input_hashes_json,
+            job_spec_hash,
+            platform,
+            platform_scope,
+            adopted,
+        ) = row_data;
 
         let provenance = match (repro_class, job_spec_hash) {
             (Some(rc), Some(jsh)) => {
@@ -858,6 +885,7 @@ impl CacheStore {
                 "any" => Some(PlatformScope::Any),
                 _ => None,
             }),
+            adopted: adopted != 0,
         })
     }
 
@@ -1520,6 +1548,7 @@ mod tests {
                 provenance: None,
                 platform: None,
                 platform_scope: None,
+                adopted: false,
             },
         );
 

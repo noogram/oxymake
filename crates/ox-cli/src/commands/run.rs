@@ -950,6 +950,9 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
                             let Some(provenance) = &entry.provenance else {
                                 return false;
                             };
+                            if !entry.adopted {
+                                return false;
+                            }
                             if !provenance
                                 .input_hashes
                                 .iter()
