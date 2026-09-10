@@ -93,8 +93,10 @@ enum Commands {
     CheckConsistency(commands::CheckConsistencyArgs),
     /// Translate a workflow file (Snakemake or WDL) into OxyMake TOML
     Translate(commands::TranslateArgs),
-    /// Export an Oxymakefile to another format (Snakemake or WDL)
+    /// Export cached outputs for adoption, or translate an Oxymakefile
     Export(commands::ExportArgs),
+    /// Adopt verified outputs described by a portable manifest
+    Import(commands::ImportArgs),
     /// Display the OxyMake ASCII art logo
     Logo,
     /// Print the operator handbook (orientation + pointers to the docs)
@@ -149,6 +151,7 @@ pub fn run() -> i32 {
         Commands::CheckConsistency(args) => commands::cmd_check_consistency(args),
         Commands::Translate(args) => commands::cmd_translate(args),
         Commands::Export(args) => commands::cmd_export(args),
+        Commands::Import(args) => commands::cmd_import(args),
         Commands::Logo => commands::cmd_logo(),
         Commands::Guide => commands::cmd_guide(),
     };

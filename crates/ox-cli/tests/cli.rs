@@ -91,6 +91,82 @@ cache_platform = "any"
     assert_eq!(any_count, 1);
 }
 
+/// A transferred product becomes a trusted leaf even when the producer's raw
+/// input is intentionally absent in the consuming tree.
+#[test]
+fn export_import_continues_without_raw_inputs() {
+    let producer = TempDir::new().unwrap();
+    let consumer = TempDir::new().unwrap();
+    let manifest = producer.path().join("portable-cache.json");
+    let workflow = r#"ox_version = "0.1"
+
+[rule.upstream]
+input = ["raw.txt"]
+output = ["product.txt"]
+shell = "printf upstream-ran >> executions.log; cat raw.txt > product.txt"
+cache_platform = "any"
+
+[rule.downstream]
+input = ["product.txt"]
+output = ["final.txt"]
+shell = "printf downstream-ran >> executions.log; cat product.txt > final.txt"
+"#;
+    for root in [producer.path(), consumer.path()] {
+        fs::write(root.join("Oxymakefile.toml"), workflow).unwrap();
+    }
+    fs::write(producer.path().join("raw.txt"), "foreign result\n").unwrap();
+
+    ox().args(["run", "product.txt"])
+        .current_dir(producer.path())
+        .assert()
+        .success();
+    ox().args([
+        "export",
+        "product.txt",
+        "--manifest",
+        manifest.to_str().unwrap(),
+    ])
+    .current_dir(producer.path())
+    .assert()
+    .success();
+    fs::copy(
+        producer.path().join("product.txt"),
+        consumer.path().join("product.txt"),
+    )
+    .unwrap();
+
+    fs::write(consumer.path().join("product.txt"), "tampered\n").unwrap();
+    ox().args(["import", manifest.to_str().unwrap()])
+        .current_dir(consumer.path())
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("output hash mismatch"));
+    fs::copy(
+        producer.path().join("product.txt"),
+        consumer.path().join("product.txt"),
+    )
+    .unwrap();
+
+    ox().args(["import", manifest.to_str().unwrap()])
+        .current_dir(consumer.path())
+        .assert()
+        .success();
+    assert!(!consumer.path().join("raw.txt").exists());
+
+    ox().args(["run", "final.txt"])
+        .current_dir(consumer.path())
+        .assert()
+        .success();
+    assert_eq!(
+        fs::read_to_string(consumer.path().join("final.txt")).unwrap(),
+        "foreign result\n"
+    );
+    assert_eq!(
+        fs::read_to_string(consumer.path().join("executions.log")).unwrap(),
+        "downstream-ran"
+    );
+}
+
 /// A directory remote cache restores a missing output from the shared
 /// content-addressed artifact store instead of re-executing the job.
 #[test]

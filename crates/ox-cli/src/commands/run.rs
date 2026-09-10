@@ -296,13 +296,82 @@ fn input_file_paths(job: &ConcreteJob) -> Vec<PathBuf> {
 
 /// Components of a cache key computation, preserving intermediate hashes
 /// for provenance tracking (Stage 2).
-struct CacheKeyComponents {
+pub(super) struct CacheKeyComponents {
     /// The final cache key (BLAKE3 of all components).
-    cache_key: ContentHash,
+    pub(super) cache_key: ContentHash,
     /// Content hashes of each input file, paired with their path.
-    input_hashes: Vec<(String, String)>,
+    pub(super) input_hashes: Vec<(String, String)>,
     /// BLAKE3 hash of the job specification (rule source + params + env).
-    job_spec_hash: String,
+    pub(super) job_spec_hash: String,
+}
+
+fn job_spec_parts(job: &ConcreteJob) -> (String, Option<String>, Option<String>, String) {
+    let rule_source = execution_source(job);
+    let params_hash = (!job.wildcards.is_empty()).then(|| hash_kv_map(&job.wildcards));
+    let env_hash = job.environment.as_ref().map(env_spec_content_hash);
+    let mut spec_hasher = blake3::Hasher::new();
+    update_field(&mut spec_hasher, "rule", rule_source.as_bytes());
+    update_opt_field(
+        &mut spec_hasher,
+        "params",
+        params_hash.as_deref().map(str::as_bytes),
+    );
+    update_opt_field(
+        &mut spec_hasher,
+        "env",
+        env_hash.as_deref().map(str::as_bytes),
+    );
+    update_opt_field(
+        &mut spec_hasher,
+        "shell",
+        job.shell_executable.as_deref().map(str::as_bytes),
+    );
+    update_field(
+        &mut spec_hasher,
+        "clean_outputs",
+        job.clean_outputs.to_string().as_bytes(),
+    );
+    (
+        rule_source,
+        params_hash,
+        env_hash,
+        spec_hasher.finalize().to_hex().to_string(),
+    )
+}
+
+/// Reconstruct a local cache key from transferred provenance without reading
+/// source inputs that may intentionally be absent on this machine.
+pub(super) fn job_cache_key_from_provenance(
+    job: &ConcreteJob,
+    provenance: &ox_core::model::ArtifactProvenance,
+) -> Result<ContentHash> {
+    let (rule_source, params_hash, env_hash, job_spec_hash) = job_spec_parts(job);
+    if job_spec_hash != provenance.job_spec_hash {
+        bail!(
+            "manifest job specification does not match rule '{}'",
+            job.rule
+        );
+    }
+    let inputs = provenance
+        .input_hashes
+        .iter()
+        .map(|(path, hash)| {
+            ContentHash::from_hex(hash.clone())
+                .map(|hash| (path.clone(), hash))
+                .with_context(|| format!("invalid input hash for {path}"))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let platform = current_platform();
+    Ok(compute_cache_key(&CacheKeySpec {
+        rule_source: &rule_source,
+        inputs: &inputs,
+        params_hash: params_hash.as_deref(),
+        env_hash: env_hash.as_deref(),
+        shell_executable: job.shell_executable.as_deref(),
+        clean_outputs: job.clean_outputs,
+        platform_scope: job.platform_scope,
+        platform: &platform,
+    }))
 }
 
 /// Compute cache key for a job, returning components for provenance tracking.
@@ -361,46 +430,8 @@ fn job_cache_key_with_components(
         hash_into(&mut input_pairs, &mut store, path)?;
     }
 
-    let rule_source = execution_source(job);
-
-    // Params hash: framed key/value pairs of the resolved wildcards.
-    let params_hash = if job.wildcards.is_empty() {
-        None
-    } else {
-        Some(hash_kv_map(&job.wildcards))
-    };
-
-    // Env hash: content hash of the environment spec (audit H4) — hashes
-    // the bytes of referenced spec files (requirements.txt, conda YAML,
-    // nix expr), not just the literal spec.
-    let env_hash = job.environment.as_ref().map(env_spec_content_hash);
-
+    let (rule_source, params_hash, env_hash, job_spec_hash) = job_spec_parts(job);
     let shell_executable = job.shell_executable.as_deref();
-
-    // Job spec hash: framed rule source + params + env + shell (audit H5).
-    let mut spec_hasher = blake3::Hasher::new();
-    update_field(&mut spec_hasher, "rule", rule_source.as_bytes());
-    update_opt_field(
-        &mut spec_hasher,
-        "params",
-        params_hash.as_deref().map(str::as_bytes),
-    );
-    update_opt_field(
-        &mut spec_hasher,
-        "env",
-        env_hash.as_deref().map(str::as_bytes),
-    );
-    update_opt_field(
-        &mut spec_hasher,
-        "shell",
-        shell_executable.map(str::as_bytes),
-    );
-    update_field(
-        &mut spec_hasher,
-        "clean_outputs",
-        job.clean_outputs.to_string().as_bytes(),
-    );
-    let job_spec_hash = spec_hasher.finalize().to_hex().to_string();
 
     let platform = current_platform();
     let cache_key = compute_cache_key(&CacheKeySpec {
@@ -902,7 +933,42 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
                 }
             }
         }
-        existing_files.retain(|p| !rule_outputs.contains(p));
+        // An imported entry is the engine's explicit assertion that its
+        // verified outputs may stand in for a producer whose source inputs do
+        // not exist in this checkout. Preserve such outputs as resolver leaves;
+        // ordinary local outputs are still excluded and checked by cache key.
+        let adopted_leaves: HashSet<PathBuf> = if !args.no_cache {
+            CacheStore::open(Path::new(".oxymake"))
+                .ok()
+                .map(|cache| {
+                    rule_outputs
+                        .iter()
+                        .filter(|path| {
+                            let Some(entry) = cache.entry_for_output(path) else {
+                                return false;
+                            };
+                            let Some(provenance) = &entry.provenance else {
+                                return false;
+                            };
+                            if !provenance
+                                .input_hashes
+                                .iter()
+                                .any(|(input, _)| !Path::new(input).exists())
+                            {
+                                return false;
+                            }
+                            entry.output_hashes.iter().all(|(output, expected)| {
+                                hash_file(Path::new(output)).is_ok_and(|actual| actual == *expected)
+                            })
+                        })
+                        .cloned()
+                        .collect()
+                })
+                .unwrap_or_default()
+        } else {
+            HashSet::new()
+        };
+        existing_files.retain(|p| !rule_outputs.contains(p) || adopted_leaves.contains(p));
     }
 
     timer.mark("discover_files");

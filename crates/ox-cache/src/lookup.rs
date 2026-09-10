@@ -34,7 +34,22 @@ pub struct CacheEntry {
     pub completed_at: u64,
     /// Provenance metadata for cache correctness (Stage 2).
     pub provenance: Option<ox_core::model::ArtifactProvenance>,
+    /// Platform on which the outputs were originally produced.
+    #[serde(default)]
+    pub platform: Option<String>,
+    /// Platform scope in force when the cache key was computed.
+    #[serde(default)]
+    pub platform_scope: Option<PlatformScope>,
 }
+
+type CacheEntryRow = (
+    i64,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+);
 
 /// Result of checking whether a job's cached outputs are still valid.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -523,6 +538,39 @@ impl CacheStore {
             counter = "cache.record",
             "record"
         );
+        let platform = crate::key::current_platform();
+        self.record_with_platform(cache_key, outputs, provenance, &platform, platform_scope)
+    }
+
+    /// Record verified outputs adopted from another machine.
+    ///
+    /// Unlike [`Self::record`], this preserves the producing platform supplied
+    /// by the manifest instead of attributing the outputs to this machine.
+    pub fn record_adopted(
+        &mut self,
+        cache_key: ContentHash,
+        outputs: &[&Path],
+        provenance: &ox_core::model::ArtifactProvenance,
+        origin_platform: &str,
+        platform_scope: PlatformScope,
+    ) -> Result<(), CacheError> {
+        self.record_with_platform(
+            cache_key,
+            outputs,
+            Some(provenance),
+            origin_platform,
+            platform_scope,
+        )
+    }
+
+    fn record_with_platform(
+        &mut self,
+        cache_key: ContentHash,
+        outputs: &[&Path],
+        provenance: Option<&ox_core::model::ArtifactProvenance>,
+        platform: &str,
+        platform_scope: PlatformScope,
+    ) -> Result<(), CacheError> {
         let completed_at = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -533,7 +581,6 @@ impl CacheStore {
             .transaction()
             .map_err(|e| CacheError::Manifest(format!("sqlite tx: {e}")))?;
 
-        // Upsert the entry (replace if key already exists), including provenance columns.
         let (repro_class, input_hashes_json, job_spec_hash) = match provenance {
             Some(prov) => (
                 Some(prov.reproducibility.to_string()),
@@ -543,7 +590,6 @@ impl CacheStore {
             None => (None, None, None),
         };
 
-        let platform = crate::key::current_platform();
         tx.execute(
             "INSERT OR REPLACE INTO cache_entries
                 (cache_key, completed_at, reproducibility_class, input_hashes_json, job_spec_hash,
@@ -730,17 +776,28 @@ impl CacheStore {
 
     /// Get a cache entry by key.
     pub fn get(&self, cache_key: &ContentHash) -> Option<CacheEntry> {
-        let row_data: (i64, Option<String>, Option<String>, Option<String>) = self
+        let row_data: CacheEntryRow = self
             .conn
             .query_row(
-                "SELECT completed_at, reproducibility_class, input_hashes_json, job_spec_hash
+                "SELECT completed_at, reproducibility_class, input_hashes_json, job_spec_hash,
+                        platform, platform_scope
                  FROM cache_entries WHERE cache_key = ?1",
                 params![cache_key.as_str()],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                    ))
+                },
             )
             .ok()?;
 
-        let (completed_at, repro_class, input_hashes_json, job_spec_hash) = row_data;
+        let (completed_at, repro_class, input_hashes_json, job_spec_hash, platform, platform_scope) =
+            row_data;
 
         let provenance = match (repro_class, job_spec_hash) {
             (Some(rc), Some(jsh)) => {
@@ -795,7 +852,31 @@ impl CacheStore {
             output_mtimes,
             completed_at: completed_at as u64,
             provenance,
+            platform,
+            platform_scope: platform_scope.and_then(|scope| match scope.as_str() {
+                "exact" => Some(PlatformScope::Exact),
+                "any" => Some(PlatformScope::Any),
+                _ => None,
+            }),
         })
+    }
+
+    /// Find the cache entry that records `path` as an output.
+    pub fn entry_for_output(&self, path: &Path) -> Option<CacheEntry> {
+        let cache_key: String = self
+            .conn
+            .query_row(
+                "SELECT records.cache_key
+                 FROM output_records AS records
+                 JOIN cache_entries AS entries ON entries.cache_key = records.cache_key
+                 WHERE records.path = ?1
+                 ORDER BY entries.completed_at DESC
+                 LIMIT 1",
+                params![path.to_string_lossy().as_ref()],
+                |row| row.get(0),
+            )
+            .ok()?;
+        self.get(&ContentHash::from_hex(cache_key).ok()?)
     }
 
     /// Count cache entries whose output files no longer exist on disk.
@@ -1437,6 +1518,8 @@ mod tests {
                 output_mtimes,
                 completed_at: 12345,
                 provenance: None,
+                platform: None,
+                platform_scope: None,
             },
         );
 

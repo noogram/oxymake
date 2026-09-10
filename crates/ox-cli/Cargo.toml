@@ -41,6 +41,7 @@ toml.workspace = true
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "sync", "fs", "signal"] }
 anyhow.workspace = true
 serde_json.workspace = true
+serde.workspace = true
 blake3.workspace = true
 miette.workspace = true
 regex.workspace = true
