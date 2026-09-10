@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **`environment = { uv = "requirements.txt" }` now runs.** The local
+  executor wrapped the command as `uv run -r <file>`, and `uv run` has no
+  `-r` flag, so every rule with a uv requirements file failed with uv's usage
+  message before its command started. The flag is now
+  `--with-requirements <file>`, on both the shell wrapper and the warm-worker
+  argv. The SLURM job script had the same shape (`uv sync -r <file>`, also not
+  a uv flag) and now emits `uv pip install -r <file>` (issue #9).
+
 ## [0.3.0] - 2026-09-09
 
 An interruption now leaves the ledger describing a state that still exists,
