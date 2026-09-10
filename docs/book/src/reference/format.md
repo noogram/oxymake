@@ -202,6 +202,11 @@ The table is validated: an `environment` table that names none of those keys
 carries an extra key beside a recognised backend is a **parse error** naming
 the accepted keys. It is never silently dropped.
 
+For `uv`, a value ending in `.toml` is treated as a project file: uv
+discovers it on its own, so it is not passed on the command line, but its
+bytes (and those of an adjacent `uv.lock`) enter the cache key. Any other
+value is a requirements file, passed as `uv run --with-requirements <file>`.
+
 A top-level `environment` table sets the default for every rule that does not
 declare its own:
 

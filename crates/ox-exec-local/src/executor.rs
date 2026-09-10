@@ -416,7 +416,7 @@ fn resolve_environment(
             );
             Ok((wrapped, vec![]))
         }
-        Some(EnvSpec::Uv { requirements }) => {
+        Some(EnvSpec::Uv { requirements, .. }) => {
             // Wrap the command with `uv run` so it executes inside a
             // uv-managed Python environment.  If a requirements file is
             // specified, pass it via `--with-requirements` so uv installs
@@ -474,6 +474,7 @@ fn warm_worker_argv(job: &ConcreteJob, script_path: &std::path::Path) -> Vec<Str
     match &job.environment {
         Some(EnvSpec::Uv {
             requirements: Some(req),
+            ..
         }) => vec![
             "uv".into(),
             "run".into(),
@@ -483,7 +484,9 @@ fn warm_worker_argv(job: &ConcreteJob, script_path: &std::path::Path) -> Vec<Str
             "python3".into(),
             script,
         ],
-        Some(EnvSpec::Uv { requirements: None }) => vec![
+        Some(EnvSpec::Uv {
+            requirements: None, ..
+        }) => vec![
             "uv".into(),
             "run".into(),
             "--".into(),
@@ -988,10 +991,13 @@ impl Executor for LocalExecutor {
                     let env_key = match &wrapper_job.environment {
                         Some(ox_core::model::EnvSpec::Uv {
                             requirements: Some(r),
+                            ..
                         }) => {
                             format!("uv_{}", r.replace(['/', '.'], "_"))
                         }
-                        Some(ox_core::model::EnvSpec::Uv { requirements: None }) => {
+                        Some(ox_core::model::EnvSpec::Uv {
+                            requirements: None, ..
+                        }) => {
                             "uv_default".to_string()
                         }
                         Some(other) => format!("{other:?}")
@@ -1561,6 +1567,7 @@ mod tests {
         let (cmd, _) = resolve_environment(
             "echo hi",
             &Some(EnvSpec::Uv {
+                project: None,
                 requirements: Some("req.txt".into()),
             }),
             ox_core::model::DEFAULT_SHELL,
@@ -1576,7 +1583,10 @@ mod tests {
     fn resolve_env_uv_without_requirements() {
         let (cmd, _) = resolve_environment(
             "echo hi",
-            &Some(EnvSpec::Uv { requirements: None }),
+            &Some(EnvSpec::Uv {
+                project: None,
+                requirements: None,
+            }),
             ox_core::model::DEFAULT_SHELL,
         )
         .unwrap();
@@ -1588,6 +1598,7 @@ mod tests {
         // Regression (#9): the warm-worker argv had the same bad `-r` flag.
         let mut job = run_job("pass", vec![], vec![]);
         job.environment = Some(EnvSpec::Uv {
+            project: None,
             requirements: Some("req.txt".into()),
         });
         let argv = warm_worker_argv(&job, std::path::Path::new("/tmp/w.py"));
@@ -1648,7 +1659,10 @@ mod tests {
             Some(EnvSpec::Docker {
                 image: "python:3.12".into(),
             }),
-            Some(EnvSpec::Uv { requirements: None }),
+            Some(EnvSpec::Uv {
+                project: None,
+                requirements: None,
+            }),
             Some(EnvSpec::Nix {
                 expr: "shell.nix".into(),
             }),

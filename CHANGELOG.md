@@ -7,7 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+**Upgrading invalidates your cache.** A uv environment now contributes the
+bytes of the file it declares — including a `pyproject.toml` project file and
+its adjacent `uv.lock` — to the cache key, so the key format moves from v5 to
+v6: the first run after this upgrade recomputes everything, once.
+
 ### Fixed
+- **`environment = { uv = "pyproject.toml" }` now invalidates outputs when a
+  dependency changes.** The project file reference was dropped at parse time,
+  so nothing about it entered the cache key: editing `dependencies` left
+  `ox run` reporting the rule up-to-date and keeping outputs built with the
+  old dependency set — the opposite of what the book promised. The reference
+  is kept (`EnvSpec::Uv { project, requirements }`), and the key now hashes
+  the project file and, when present, the `uv.lock` beside it. The executor
+  still passes no requirements flag for a project file: uv discovers it
+  (issue #8).
 - **An `environment` table naming no known backend is now rejected.**
   `environment = { type = "uv", requirements = "…" }` — the natural spelling
   to try — was silently dropped: the rule ran on the host, its cache key

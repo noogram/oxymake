@@ -1320,15 +1320,22 @@ fn parse_environment(
     }
 
     if let Some(req) = env.get("uv") {
-        // Empty string or pyproject.toml → no requirements flag needed.
-        // uv auto-discovers pyproject.toml, and `--with-requirements` only
-        // accepts requirements.txt-style files.
-        let requirements = if req.is_empty() || req == "pyproject.toml" {
-            None
+        // A project file (`*.toml`, in practice `pyproject.toml`) is not a
+        // requirements file: uv discovers it on its own and
+        // `--with-requirements` does not accept it. Keep the reference in
+        // `project` so the cache key can hash it — dropping it made
+        // dependency edits invisible to the cache (issue #8).
+        let (project, requirements) = if req.is_empty() {
+            (None, None)
+        } else if req.ends_with(".toml") {
+            (Some(req.clone()), None)
         } else {
-            Some(req.clone())
+            (None, Some(req.clone()))
         };
-        return Ok(Some(EnvSpec::Uv { requirements }));
+        return Ok(Some(EnvSpec::Uv {
+            project,
+            requirements,
+        }));
     }
     if let Some(e) = env.get("conda") {
         return Ok(Some(EnvSpec::Conda { env: e.clone() }));
@@ -1974,11 +1981,13 @@ call = "mod:func"
 uv = "requirements.txt"
 "#;
         let wf = parse_workflow(toml, Path::new("test.toml")).unwrap();
-        assert!(matches!(
+        assert_eq!(
             wf.rules[0].environment,
-            Some(EnvSpec::Uv { ref requirements })
-            if requirements.as_deref() == Some("requirements.txt")
-        ));
+            Some(EnvSpec::Uv {
+                project: None,
+                requirements: Some("requirements.txt".into()),
+            })
+        );
     }
 
     #[test]
@@ -1994,11 +2003,13 @@ call = "mod:func"
 uv = ""
 "#;
         let wf = parse_workflow(toml, Path::new("test.toml")).unwrap();
-        assert!(matches!(
+        assert_eq!(
             wf.rules[0].environment,
-            Some(EnvSpec::Uv { ref requirements })
-            if requirements.is_none()
-        ));
+            Some(EnvSpec::Uv {
+                project: None,
+                requirements: None,
+            })
+        );
     }
 
     #[test]
@@ -2014,11 +2025,16 @@ call = "mod:func"
 uv = "pyproject.toml"
 "#;
         let wf = parse_workflow(toml, Path::new("test.toml")).unwrap();
-        assert!(matches!(
+        // Regression (#8): the project file must be kept in the spec so the
+        // cache key can hash it; it is still not passed as a requirements
+        // flag.
+        assert_eq!(
             wf.rules[0].environment,
-            Some(EnvSpec::Uv { ref requirements })
-            if requirements.is_none()
-        ));
+            Some(EnvSpec::Uv {
+                project: Some("pyproject.toml".into()),
+                requirements: None,
+            })
+        );
     }
 
     #[test]

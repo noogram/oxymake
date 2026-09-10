@@ -1220,6 +1220,12 @@ pub enum EnvSpec {
     System,
     /// A uv-managed Python virtual environment.
     Uv {
+        /// Optional project file (`pyproject.toml`) declaring the
+        /// dependencies. uv discovers it on its own, so it is never passed
+        /// on the command line — it is kept here so the cache key can hash
+        /// it (and the adjacent `uv.lock`) and invalidate outputs when the
+        /// declared dependencies change.
+        project: Option<String>,
         /// Optional requirements file or inline dependencies.
         requirements: Option<String>,
     },
@@ -2393,12 +2399,20 @@ mod tests {
         assert_eq!(EnvSpec::System.to_string(), "system");
         assert_eq!(
             EnvSpec::Uv {
+                project: None,
                 requirements: Some("requirements.txt".into())
             }
             .to_string(),
             "uv"
         );
-        assert_eq!(EnvSpec::Uv { requirements: None }.to_string(), "uv");
+        assert_eq!(
+            EnvSpec::Uv {
+                project: None,
+                requirements: None
+            }
+            .to_string(),
+            "uv"
+        );
         assert_eq!(
             EnvSpec::Conda {
                 env: "myenv".into()
@@ -2645,9 +2659,17 @@ mod tests {
         let specs = vec![
             EnvSpec::System,
             EnvSpec::Uv {
+                project: None,
                 requirements: Some("req.txt".into()),
             },
-            EnvSpec::Uv { requirements: None },
+            EnvSpec::Uv {
+                project: Some("pyproject.toml".into()),
+                requirements: None,
+            },
+            EnvSpec::Uv {
+                project: None,
+                requirements: None,
+            },
             EnvSpec::Conda {
                 env: "myenv".into(),
             },

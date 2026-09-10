@@ -359,7 +359,7 @@ fn generate_env_setup(script: &mut String, env: &Option<EnvSpec>) {
                 "OXYMAKE_CONTAINER_CMD=\"apptainer exec {image}\"\n"
             ));
         }
-        Some(EnvSpec::Uv { requirements }) => {
+        Some(EnvSpec::Uv { requirements, .. }) => {
             script.push_str("# uv Python environment\n");
             script.push_str("module load uv 2>/dev/null || true\n");
             if let Some(req) = requirements {
@@ -557,6 +557,7 @@ mod tests {
         // requirements file is `uv pip install -r <file>`.
         let mut job = test_job("j-009", "python train.py");
         job.environment = Some(EnvSpec::Uv {
+            project: None,
             requirements: Some("requirements.txt".into()),
         });
         let config = test_config();

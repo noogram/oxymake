@@ -416,6 +416,7 @@ async fn test_uv_environment_runtime_env() {
 
     let mut job = test_job("uv-env", "python train.py");
     job.environment = Some(EnvSpec::Uv {
+        project: None,
         requirements: Some("numpy\npandas".into()),
     });
 
