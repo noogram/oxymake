@@ -1035,6 +1035,7 @@ shell = "echo"
                 ox_core::model::ContentHash::from_hex("a".repeat(64)).unwrap(),
                 &[out.as_path()],
                 None,
+                ox_core::model::PlatformScope::Exact,
             )
             .unwrap();
         store.save().unwrap();
@@ -1066,6 +1067,7 @@ shell = "echo"
                 ox_core::model::ContentHash::from_hex("a".repeat(64)).unwrap(),
                 &[out.as_path()],
                 None,
+                ox_core::model::PlatformScope::Exact,
             )
             .unwrap();
         store.save().unwrap();

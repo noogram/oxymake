@@ -12,10 +12,10 @@
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
 
-use ox_core::model::ContentHash;
+use ox_core::model::{ContentHash, PlatformScope};
 
 use crate::error::CacheError;
 use crate::hash;
@@ -98,6 +98,38 @@ fn set_wal_journal_mode(conn: &Connection) -> Result<(), CacheError> {
     }
 }
 
+/// Add cache-entry provenance columns introduced after the original SQLite
+/// schema. An immediate transaction serializes concurrent openers between the
+/// column check and `ALTER TABLE`, so a second process cannot replay a peer's
+/// migration.
+fn migrate_cache_entry_schema(conn: &mut Connection) -> Result<(), CacheError> {
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|e| CacheError::Manifest(format!("sqlite migration tx: {e}")))?;
+
+    for column in ["platform", "platform_scope"] {
+        let exists: bool = tx
+            .query_row(
+                "SELECT EXISTS(
+                    SELECT 1 FROM pragma_table_info('cache_entries') WHERE name = ?1
+                )",
+                params![column],
+                |row| row.get(0),
+            )
+            .map_err(|e| CacheError::Manifest(format!("sqlite migration inspect: {e}")))?;
+        if !exists {
+            tx.execute(
+                &format!("ALTER TABLE cache_entries ADD COLUMN {column} TEXT"),
+                [],
+            )
+            .map_err(|e| CacheError::Manifest(format!("sqlite migration: {e}")))?;
+        }
+    }
+
+    tx.commit()
+        .map_err(|e| CacheError::Manifest(format!("sqlite migration commit: {e}")))
+}
+
 impl CacheStore {
     /// Open or create the cache store.
     ///
@@ -115,7 +147,7 @@ impl CacheStore {
         std::fs::create_dir_all(&cache_dir)?;
         let db_path = cache_dir.join("cache.db");
 
-        let conn = Connection::open(&db_path)
+        let mut conn = Connection::open(&db_path)
             .map_err(|e| CacheError::Manifest(format!("sqlite open: {e}")))?;
 
         // Wait for a peer's lock instead of failing: two `ox run` starting
@@ -142,7 +174,9 @@ impl CacheStore {
                 completed_at INTEGER NOT NULL,
                 reproducibility_class TEXT,
                 input_hashes_json TEXT,
-                job_spec_hash TEXT
+                job_spec_hash TEXT,
+                platform TEXT,
+                platform_scope TEXT
             );
             CREATE TABLE IF NOT EXISTS output_records (
                 cache_key    TEXT NOT NULL,
@@ -161,6 +195,8 @@ impl CacheStore {
             );",
         )
         .map_err(|e| CacheError::Manifest(format!("sqlite schema: {e}")))?;
+
+        migrate_cache_entry_schema(&mut conn)?;
 
         // Enable foreign key enforcement (required per-connection in SQLite).
         conn.pragma_update(None, "foreign_keys", "ON")
@@ -480,6 +516,7 @@ impl CacheStore {
         cache_key: ContentHash,
         outputs: &[&Path],
         provenance: Option<&ox_core::model::ArtifactProvenance>,
+        platform_scope: PlatformScope,
     ) -> Result<(), CacheError> {
         tracing::debug!(
             target: "ox.cache",
@@ -506,16 +543,20 @@ impl CacheStore {
             None => (None, None, None),
         };
 
+        let platform = crate::key::current_platform();
         tx.execute(
             "INSERT OR REPLACE INTO cache_entries
-                (cache_key, completed_at, reproducibility_class, input_hashes_json, job_spec_hash)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
+                (cache_key, completed_at, reproducibility_class, input_hashes_json, job_spec_hash,
+                 platform, platform_scope)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             params![
                 cache_key.as_str(),
                 completed_at as i64,
                 repro_class,
                 input_hashes_json,
                 job_spec_hash,
+                platform,
+                platform_scope.to_string(),
             ],
         )
         .map_err(|e| CacheError::Manifest(format!("sqlite insert: {e}")))?;
@@ -886,6 +927,58 @@ mod tests {
     }
 
     #[test]
+    fn open_adds_platform_columns_to_an_existing_database() {
+        let dir = tempfile::tempdir().unwrap();
+        let oxdir = dir.path().join(".oxymake");
+        let cache_dir = oxdir.join("cache");
+        std::fs::create_dir_all(&cache_dir).unwrap();
+
+        let conn = Connection::open(cache_dir.join("cache.db")).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE cache_entries (
+                cache_key TEXT PRIMARY KEY,
+                completed_at INTEGER NOT NULL,
+                reproducibility_class TEXT,
+                input_hashes_json TEXT,
+                job_spec_hash TEXT
+            );
+            INSERT INTO cache_entries (cache_key, completed_at)
+            VALUES ('existing', 1);",
+        )
+        .unwrap();
+        drop(conn);
+
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let workers: Vec<_> = (0..2)
+            .map(|_| {
+                let oxdir = oxdir.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    CacheStore::open(&oxdir).map(|store| store.len())
+                })
+            })
+            .collect();
+        for worker in workers {
+            assert_eq!(worker.join().unwrap().unwrap(), 1);
+        }
+
+        let store = CacheStore::open(&oxdir).unwrap();
+        let columns: Vec<String> = store
+            .conn
+            .prepare("SELECT name FROM pragma_table_info('cache_entries') ORDER BY cid")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+
+        assert!(columns.iter().any(|column| column == "platform"));
+        assert!(columns.iter().any(|column| column == "platform_scope"));
+        assert_eq!(store.len(), 1, "migration must preserve existing entries");
+    }
+
+    #[test]
     fn record_and_is_cached() {
         let dir = tempfile::tempdir().unwrap();
         let oxdir = dir.path().join(".oxymake");
@@ -896,7 +989,9 @@ mod tests {
         std::fs::write(&out, b"result data").unwrap();
 
         let key = ch("test_key_abc");
-        store.record(key.clone(), &[out.as_path()], None).unwrap();
+        store
+            .record(key.clone(), &[out.as_path()], None, PlatformScope::Exact)
+            .unwrap();
 
         assert!(store.is_cached(&key, &[out.as_path()]).unwrap());
         assert_eq!(store.len(), 1);
@@ -912,7 +1007,9 @@ mod tests {
         std::fs::write(&out, b"original").unwrap();
 
         let key = ch("key1");
-        store.record(key.clone(), &[out.as_path()], None).unwrap();
+        store
+            .record(key.clone(), &[out.as_path()], None, PlatformScope::Exact)
+            .unwrap();
 
         // Modify the file (different content AND likely different mtime).
         std::thread::sleep(std::time::Duration::from_millis(50));
@@ -933,7 +1030,9 @@ mod tests {
         std::fs::write(&out, b"AAAA").unwrap();
 
         let key = ch("same_size_key");
-        store.record(key.clone(), &[out.as_path()], None).unwrap();
+        store
+            .record(key.clone(), &[out.as_path()], None, PlatformScope::Exact)
+            .unwrap();
 
         // Corrupt with same-size content, no sleep — same mtime second.
         std::fs::write(&out, b"BBBB").unwrap();
@@ -956,7 +1055,9 @@ mod tests {
         std::fs::write(&out, b"AAAA").unwrap();
 
         let key = ch("same_size_check_key");
-        store.record(key.clone(), &[out.as_path()], None).unwrap();
+        store
+            .record(key.clone(), &[out.as_path()], None, PlatformScope::Exact)
+            .unwrap();
 
         // Corrupt with same-size content, no sleep.
         std::fs::write(&out, b"BBBB").unwrap();
@@ -979,7 +1080,9 @@ mod tests {
         std::fs::write(&out, b"data").unwrap();
 
         let key = ch("key2");
-        store.record(key.clone(), &[out.as_path()], None).unwrap();
+        store
+            .record(key.clone(), &[out.as_path()], None, PlatformScope::Exact)
+            .unwrap();
 
         std::fs::remove_file(&out).unwrap();
         assert!(!store.is_cached(&key, &[out.as_path()]).unwrap());
@@ -1008,7 +1111,12 @@ mod tests {
 
         let mut store = make_store(&oxdir);
         store
-            .record(ch("sqlite_key"), &[out.as_path()], None)
+            .record(
+                ch("sqlite_key"),
+                &[out.as_path()],
+                None,
+                PlatformScope::Exact,
+            )
             .unwrap();
         store.save().unwrap();
 
@@ -1029,7 +1137,9 @@ mod tests {
 
         {
             let mut store = make_store(&oxdir);
-            store.record(key.clone(), &[out.as_path()], None).unwrap();
+            store
+                .record(key.clone(), &[out.as_path()], None, PlatformScope::Exact)
+                .unwrap();
             store.save().unwrap();
         }
 
@@ -1050,8 +1160,12 @@ mod tests {
         std::fs::write(&out1, b"aaa").unwrap();
         std::fs::write(&out2, b"bbb").unwrap();
 
-        store.record(ch("k1"), &[out1.as_path()], None).unwrap();
-        store.record(ch("k2"), &[out2.as_path()], None).unwrap();
+        store
+            .record(ch("k1"), &[out1.as_path()], None, PlatformScope::Exact)
+            .unwrap();
+        store
+            .record(ch("k2"), &[out2.as_path()], None, PlatformScope::Exact)
+            .unwrap();
         assert_eq!(store.len(), 2);
 
         let removed = store.invalidate(&[out1.as_path()]);
@@ -1070,8 +1184,12 @@ mod tests {
         std::fs::write(&out1, b"aaa").unwrap();
         std::fs::write(&out2, b"bbb").unwrap();
 
-        store.record(ch("k1"), &[out1.as_path()], None).unwrap();
-        store.record(ch("k2"), &[out2.as_path()], None).unwrap();
+        store
+            .record(ch("k1"), &[out1.as_path()], None, PlatformScope::Exact)
+            .unwrap();
+        store
+            .record(ch("k2"), &[out2.as_path()], None, PlatformScope::Exact)
+            .unwrap();
 
         let paths = store.all_output_paths();
         assert_eq!(paths.len(), 2);
@@ -1093,7 +1211,9 @@ mod tests {
         std::fs::write(&out, b"good data").unwrap();
 
         let key = ch("hit_key");
-        store.record(key.clone(), &[out.as_path()], None).unwrap();
+        store
+            .record(key.clone(), &[out.as_path()], None, PlatformScope::Exact)
+            .unwrap();
 
         let status = store.check_cached(&key, &[out.as_path()]).unwrap();
         assert_eq!(status, CacheHitStatus::Hit);
@@ -1116,7 +1236,9 @@ mod tests {
         std::fs::write(&out, b"cached output data").unwrap();
 
         let key = ch("mtime_fast_key");
-        store.record(key.clone(), &[out.as_path()], None).unwrap();
+        store
+            .record(key.clone(), &[out.as_path()], None, PlatformScope::Exact)
+            .unwrap();
 
         // Repeated checks should all be hits via the fast path.
         for _ in 0..3 {
@@ -1137,7 +1259,9 @@ mod tests {
         std::fs::write(&out, b"cached data").unwrap();
 
         let key = ch("mtime_is_cached_key");
-        store.record(key.clone(), &[out.as_path()], None).unwrap();
+        store
+            .record(key.clone(), &[out.as_path()], None, PlatformScope::Exact)
+            .unwrap();
 
         for _ in 0..3 {
             assert!(store.is_cached(&key, &[out.as_path()]).unwrap());
@@ -1169,7 +1293,9 @@ mod tests {
         std::fs::write(&out, b"original content").unwrap();
 
         let key = ch("mismatch_key");
-        store.record(key.clone(), &[out.as_path()], None).unwrap();
+        store
+            .record(key.clone(), &[out.as_path()], None, PlatformScope::Exact)
+            .unwrap();
         assert_eq!(store.len(), 1);
 
         // Modify the file — triggers hash mismatch on slow path.
@@ -1196,7 +1322,9 @@ mod tests {
         std::fs::write(&out, b"data").unwrap();
 
         let key = ch("missing_output_key");
-        store.record(key.clone(), &[out.as_path()], None).unwrap();
+        store
+            .record(key.clone(), &[out.as_path()], None, PlatformScope::Exact)
+            .unwrap();
         assert_eq!(store.len(), 1);
 
         std::fs::remove_file(&out).unwrap();
@@ -1220,7 +1348,9 @@ mod tests {
         std::fs::write(&out, b"original").unwrap();
 
         let key = ch("heal_key");
-        store.record(key.clone(), &[out.as_path()], None).unwrap();
+        store
+            .record(key.clone(), &[out.as_path()], None, PlatformScope::Exact)
+            .unwrap();
 
         // Corrupt the output.
         std::thread::sleep(std::time::Duration::from_millis(50));
@@ -1233,7 +1363,9 @@ mod tests {
 
         // Simulate re-execution: write correct output and re-record.
         std::fs::write(&out, b"fixed output").unwrap();
-        store.record(key.clone(), &[out.as_path()], None).unwrap();
+        store
+            .record(key.clone(), &[out.as_path()], None, PlatformScope::Exact)
+            .unwrap();
 
         // Now cache should report a hit.
         let status = store.check_cached(&key, &[out.as_path()]).unwrap();
@@ -1249,7 +1381,9 @@ mod tests {
 
         let out = dir.path().join("c.txt");
         std::fs::write(&out, b"ccc").unwrap();
-        store.record(ch("k3"), &[out.as_path()], None).unwrap();
+        store
+            .record(ch("k3"), &[out.as_path()], None, PlatformScope::Exact)
+            .unwrap();
         assert_eq!(store.len(), 1);
 
         store.clear();
@@ -1267,7 +1401,9 @@ mod tests {
         std::fs::write(&out, b"get test").unwrap();
 
         let key = ch("get_key");
-        store.record(key.clone(), &[out.as_path()], None).unwrap();
+        store
+            .record(key.clone(), &[out.as_path()], None, PlatformScope::Exact)
+            .unwrap();
 
         let entry = store.get(&key).expect("entry should exist");
         assert_eq!(entry.cache_key, key);
@@ -1338,7 +1474,9 @@ mod tests {
         std::fs::write(&out, b"data").unwrap();
 
         let key = ch("mtime_key");
-        store.record(key.clone(), &[out.as_path()], None).unwrap();
+        store
+            .record(key.clone(), &[out.as_path()], None, PlatformScope::Exact)
+            .unwrap();
 
         // File unchanged — mtime matches → hit.
         assert!(store.is_cached(&key, &[out.as_path()]).unwrap());
@@ -1358,7 +1496,9 @@ mod tests {
         std::fs::write(&out, b"original").unwrap();
 
         let key = ch("mtime_key2");
-        store.record(key.clone(), &[out.as_path()], None).unwrap();
+        store
+            .record(key.clone(), &[out.as_path()], None, PlatformScope::Exact)
+            .unwrap();
 
         // Modify the file so mtime changes.
         std::thread::sleep(std::time::Duration::from_millis(50));
@@ -1385,7 +1525,9 @@ mod tests {
         std::fs::write(&out, b"AAAA").unwrap();
 
         let key = ch("mtime_corrupt");
-        store.record(key.clone(), &[out.as_path()], None).unwrap();
+        store
+            .record(key.clone(), &[out.as_path()], None, PlatformScope::Exact)
+            .unwrap();
 
         // Overwrite with same-size content (mtime will differ because of sleep).
         std::thread::sleep(std::time::Duration::from_millis(50));
@@ -1438,7 +1580,9 @@ mod tests {
         std::fs::write(&out, b"data").unwrap();
 
         let key = ch("hash_key");
-        store.record(key.clone(), &[out.as_path()], None).unwrap();
+        store
+            .record(key.clone(), &[out.as_path()], None, PlatformScope::Exact)
+            .unwrap();
 
         // File unchanged — content hash matches → hit.
         assert!(store.is_cached(&key, &[out.as_path()]).unwrap());
@@ -1458,7 +1602,9 @@ mod tests {
         std::fs::write(&out, b"AAAA").unwrap();
 
         let key = ch("hash_corrupt");
-        store.record(key.clone(), &[out.as_path()], None).unwrap();
+        store
+            .record(key.clone(), &[out.as_path()], None, PlatformScope::Exact)
+            .unwrap();
 
         // Overwrite with same-size, different content.
         std::thread::sleep(std::time::Duration::from_millis(50));
@@ -1468,7 +1614,9 @@ mod tests {
         assert!(!store.is_cached(&key, &[out.as_path()]).unwrap());
         // Re-record to restore entry for check_cached test.
         std::fs::write(&out, b"AAAA").unwrap();
-        store.record(key.clone(), &[out.as_path()], None).unwrap();
+        store
+            .record(key.clone(), &[out.as_path()], None, PlatformScope::Exact)
+            .unwrap();
         std::thread::sleep(std::time::Duration::from_millis(50));
         std::fs::write(&out, b"BBBB").unwrap();
         assert_eq!(
@@ -1489,7 +1637,9 @@ mod tests {
         std::fs::write(&out, b"data").unwrap();
 
         let key = ch("mh_key");
-        store.record(key.clone(), &[out.as_path()], None).unwrap();
+        store
+            .record(key.clone(), &[out.as_path()], None, PlatformScope::Exact)
+            .unwrap();
 
         // Fast path: mtime matches → hit without hashing.
         assert!(store.is_cached(&key, &[out.as_path()]).unwrap());
@@ -1532,7 +1682,9 @@ mod tests {
         std::fs::write(&out, b"data with spaces").unwrap();
 
         let key = ch("spaces_key");
-        store.record(key.clone(), &[out.as_path()], None).unwrap();
+        store
+            .record(key.clone(), &[out.as_path()], None, PlatformScope::Exact)
+            .unwrap();
         assert!(store.is_cached(&key, &[out.as_path()]).unwrap());
     }
 
@@ -1548,7 +1700,9 @@ mod tests {
         std::fs::write(&out, b"unicode data").unwrap();
 
         let key = ch("unicode_key");
-        store.record(key.clone(), &[out.as_path()], None).unwrap();
+        store
+            .record(key.clone(), &[out.as_path()], None, PlatformScope::Exact)
+            .unwrap();
         assert!(store.is_cached(&key, &[out.as_path()]).unwrap());
     }
 
@@ -1564,7 +1718,9 @@ mod tests {
         std::fs::write(&out, b"cjk data").unwrap();
 
         let key = ch("cjk_key");
-        store.record(key.clone(), &[out.as_path()], None).unwrap();
+        store
+            .record(key.clone(), &[out.as_path()], None, PlatformScope::Exact)
+            .unwrap();
         assert!(store.is_cached(&key, &[out.as_path()]).unwrap());
     }
 
@@ -1584,7 +1740,9 @@ mod tests {
 
             // Cache the symlink path.
             let key = ch("symlink_key");
-            store.record(key.clone(), &[link.as_path()], None).unwrap();
+            store
+                .record(key.clone(), &[link.as_path()], None, PlatformScope::Exact)
+                .unwrap();
             assert!(store.is_cached(&key, &[link.as_path()]).unwrap());
         }
     }
@@ -1769,7 +1927,12 @@ mod tests {
 
         let key = ch("prov_key");
         store
-            .record(key.clone(), &[out.as_path()], Some(&prov))
+            .record(
+                key.clone(),
+                &[out.as_path()],
+                Some(&prov),
+                PlatformScope::Exact,
+            )
             .unwrap();
 
         let entry = store.get(&key).expect("entry should exist");
@@ -1793,7 +1956,9 @@ mod tests {
         std::fs::write(&out, b"no provenance").unwrap();
 
         let key = ch("no_prov_key");
-        store.record(key.clone(), &[out.as_path()], None).unwrap();
+        store
+            .record(key.clone(), &[out.as_path()], None, PlatformScope::Exact)
+            .unwrap();
 
         let entry = store.get(&key).expect("entry should exist");
         assert!(
@@ -1859,7 +2024,7 @@ mod tests {
                 let out = dir.path().join("artifact.bin");
                 std::fs::write(&out, &original).unwrap();
                 let key = ContentHash::from(blake3::hash(b"shared_cache_key"));
-                store.record(key.clone(), &[out.as_path()], None).unwrap();
+                store.record(key.clone(), &[out.as_path()], None, PlatformScope::Exact).unwrap();
 
                 corrupt_with_later_mtime(&out, &corrupted);
 
@@ -1881,7 +2046,7 @@ mod tests {
                 let out = dir.path().join("artifact.bin");
                 std::fs::write(&out, &original).unwrap();
                 let key = ContentHash::from(blake3::hash(b"shared_cache_key"));
-                store.record(key.clone(), &[out.as_path()], None).unwrap();
+                store.record(key.clone(), &[out.as_path()], None, PlatformScope::Exact).unwrap();
 
                 corrupt_with_later_mtime(&out, &corrupted);
 

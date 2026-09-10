@@ -563,7 +563,12 @@ impl CacheCheck for SchedulerCache {
             };
 
             let output_refs: Vec<&Path> = output_paths.iter().map(|p| p.as_path()).collect();
-            if let Err(e) = store.record(components.cache_key, &output_refs, Some(&provenance)) {
+            if let Err(e) = store.record(
+                components.cache_key,
+                &output_refs,
+                Some(&provenance),
+                job.platform_scope,
+            ) {
                 eprintln!("warning: failed to cache job {}: {e}", job.id.as_str());
                 return;
             }
@@ -1114,6 +1119,7 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
                                     components.cache_key,
                                     &output_refs,
                                     Some(&provenance),
+                                    job.platform_scope,
                                 );
                             }
                         }
