@@ -1496,9 +1496,13 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
             None
         }
     };
+    // Resolved once here and reused for the session row and for every
+    // job_history row: the audit trail has to say which machine ran the
+    // job, and both sites used to write the literal "localhost" (#12).
+    let hostname = ox_state::host::hostname();
     let session_id = if let Some(ref db) = state_db {
         let pid = std::process::id();
-        db.create_session(pid, "localhost", None).ok()
+        db.create_session(pid, hostname, None).ok()
     } else {
         None
     };
@@ -2389,7 +2393,7 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
         // Record audit-trail history entries from the post-flush DB state.
         // The jobs table already has rule_name, wildcards, status, timing,
         // and exit_code — no need to iterate the in-memory job graph.
-        let _ = db.finalize_job_history(&run_id, &args.executor, "localhost", &durations);
+        let _ = db.finalize_job_history(&run_id, &args.executor, hostname, &durations);
 
         // Close the session (a session interrupted by a signal keeps that
         // status): its terminal rows are then history to the next run,
