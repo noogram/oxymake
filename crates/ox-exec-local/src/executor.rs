@@ -361,7 +361,9 @@ fn is_conda_file_spec(env: &str) -> bool {
 /// - `Conda { env }` — wrap with `conda run -n <env>` for named envs, or
 ///   `conda env create -f <file>` + `conda run` for YAML file specs.
 /// - `Docker { image }` — wrap with `docker run --rm <image>`.
-/// - `Uv { requirements }` — wrap with `uv run [-r <req>]`.
+/// - `Uv { project, requirements }` — wrap with
+///   `uv run [--with-requirements <req>]`; a project file is discovered by uv
+///   itself and never passed on the command line.
 /// - `Nix { expr }` — wrap with `nix develop <expr> -c`.
 /// - `Apptainer { image }` — wrap with `apptainer exec <image>`.
 fn resolve_environment(
