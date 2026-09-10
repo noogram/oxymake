@@ -35,6 +35,7 @@ fn shell_job(id: &str, command: &str) -> ConcreteJob {
         log: LogConfig::default(),
         shell_executable: None,
         clean_outputs: Default::default(),
+        platform_scope: Default::default(),
         reproducibility: ReproducibilityClass::default(),
     }
 }
@@ -511,6 +512,7 @@ fn shell_job_with_output(id: &str, command: &str, output_path: &str) -> Concrete
         log: LogConfig::default(),
         shell_executable: None,
         clean_outputs: Default::default(),
+        platform_scope: Default::default(),
         reproducibility: ReproducibilityClass::default(),
     }
 }
@@ -655,6 +657,7 @@ async fn atomic_write_multi_output_all_or_nothing() {
         log: LogConfig::default(),
         shell_executable: None,
         clean_outputs: Default::default(),
+        platform_scope: Default::default(),
         reproducibility: ReproducibilityClass::default(),
     };
 

@@ -620,6 +620,7 @@ mod tests {
             param_files: Vec::new(),
             shell_executable: None,
             clean_outputs: Default::default(),
+            platform_scope: Default::default(),
             reproducibility: ReproducibilityClass::default(),
             source_line: None,
         }

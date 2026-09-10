@@ -13,7 +13,7 @@
 //! two different [`CacheKeySpec`]s can never serialize to the same byte
 //! stream. Input hashes are hashed as `(path, hash)` pairs sorted by path,
 //! binding each content hash to the path it was computed for. Optional
-//! fields (params, env, shell) carry explicit presence tags, so an absent
+//! fields (params, env, shell, platform) carry explicit presence tags, so an absent
 //! field never collides with an empty or shifted one.
 //!
 //! The format version tag is the first framed field. Bumping
@@ -22,7 +22,7 @@
 
 use blake3::Hasher;
 use ox_core::hashing::{update_field, update_opt_field};
-use ox_core::model::{CleanOutputs, ContentHash, EnvSpec};
+use ox_core::model::{CleanOutputs, ContentHash, EnvSpec, PlatformScope};
 use std::path::{Component, Path, PathBuf};
 
 /// Version tag of the cache key format, hashed into every key.
@@ -93,7 +93,7 @@ fn lexical_normalize(path: &Path) -> PathBuf {
     normalized
 }
 
-/// All ingredients of a cache key (format v5).
+/// All ingredients of a cache key (format v6).
 #[derive(Debug, Clone)]
 pub struct CacheKeySpec<'a> {
     /// Serialized execution block (command, inline code, script path +
@@ -111,6 +111,8 @@ pub struct CacheKeySpec<'a> {
     pub shell_executable: Option<&'a str>,
     /// Declared output cleanup policy.
     pub clean_outputs: CleanOutputs,
+    /// Whether the platform value participates in this cache key.
+    pub platform_scope: PlatformScope,
     /// Platform string, e.g. `"linux/x86_64"` (see [`current_platform`]).
     pub platform: &'a str,
 }
@@ -126,12 +128,14 @@ pub struct CacheKeySpec<'a> {
 ///     framed_opt(env_hash)    ‖
 ///     framed_opt(shell_executable) ‖
 ///     framed(clean_outputs) ‖
-///     framed(platform)
+///     framed_opt(platform)
 /// )
 /// ```
 ///
 /// Input pairs are sorted by path (then hash) for determinism — the order
-/// in which inputs are declared does not affect the cache key.
+/// in which inputs are declared does not affect the cache key. The platform
+/// is present under [`PlatformScope::Exact`] and absent under
+/// [`PlatformScope::Any`].
 pub fn compute_cache_key(spec: &CacheKeySpec<'_>) -> ContentHash {
     let mut hasher = Hasher::new();
     update_field(&mut hasher, "format", CACHE_KEY_FORMAT_VERSION.as_bytes());
@@ -163,7 +167,14 @@ pub fn compute_cache_key(spec: &CacheKeySpec<'_>) -> ContentHash {
         "clean_outputs",
         spec.clean_outputs.to_string().as_bytes(),
     );
-    update_field(&mut hasher, "platform", spec.platform.as_bytes());
+    update_opt_field(
+        &mut hasher,
+        "platform",
+        match spec.platform_scope {
+            PlatformScope::Any => None,
+            _ => Some(spec.platform.as_bytes()),
+        },
+    );
 
     ContentHash::from(hasher.finalize())
 }
@@ -260,6 +271,7 @@ pub fn env_spec_content_hash(env: &EnvSpec) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ox_core::model::PlatformScope;
 
     /// Build a spec with a fixed platform so tests are machine-independent.
     fn spec<'a>(
@@ -275,6 +287,7 @@ mod tests {
             env_hash: env,
             shell_executable: None,
             clean_outputs: Default::default(),
+            platform_scope: Default::default(),
             platform: "linux/x86_64",
         }
     }
@@ -376,6 +389,35 @@ mod tests {
         s1.platform = "linux/x86_64";
         s2.platform = "macos/aarch64";
         assert_ne!(compute_cache_key(&s1), compute_cache_key(&s2));
+    }
+
+    #[test]
+    fn platform_any_suppresses_platform_but_nothing_else() {
+        let inputs = pairs(&[("a.txt", "aaa")]);
+
+        // (1) INVARIANCE — the key ignores the platform argument under `Any`.
+        let mut s1 = spec("echo hello", &inputs, None, None);
+        s1.platform_scope = PlatformScope::Any;
+        s1.platform = "linux/x86_64";
+        let mut s2 = s1.clone();
+        s2.platform = "macos/aarch64";
+        assert_eq!(compute_cache_key(&s1), compute_cache_key(&s2));
+
+        // (2) NON-COLLAPSE — every remaining ingredient still discriminates under
+        //     `Any`; dropping platform did not vacate a framing slot.
+        let mut s3 = s1.clone();
+        s3.clean_outputs = CleanOutputs::Never;
+        assert_ne!(compute_cache_key(&s1), compute_cache_key(&s3));
+        let mut s4 = s1.clone();
+        s4.shell_executable = Some("/bin/zsh");
+        assert_ne!(compute_cache_key(&s1), compute_cache_key(&s4));
+        let mut s5 = s1.clone();
+        s5.params_hash = Some("p");
+        assert_ne!(compute_cache_key(&s1), compute_cache_key(&s5));
+
+        // (3) DEFAULT UNCHANGED — under `Exact`, `golden_key_stability`'s constant
+        //     is byte-identical. Asserted by leaving that test untouched: adding
+        //     `platform_scope` must NOT change it.
     }
 
     #[test]
@@ -509,12 +551,35 @@ mod tests {
             env_hash: Some("fedcba9876543210"),
             shell_executable: Some("/bin/bash"),
             clean_outputs: Default::default(),
+            platform_scope: Default::default(),
             platform: "linux/x86_64",
         });
         assert_eq!(
             key.as_str(),
             "ca08d6640469e7ecb8d6c0c36eaad3ccf8fa967a5d746ab4ddf55bb3aeba0c85",
             "cache key format drifted — bump CACHE_KEY_FORMAT_VERSION and update the golden value"
+        );
+    }
+
+    #[test]
+    fn golden_key_platform_any_stability() {
+        let inputs = pairs(&[
+            ("data/a.csv", "1111111111111111"),
+            ("data/b.csv", "2222222222222222"),
+        ]);
+        let key = compute_cache_key(&CacheKeySpec {
+            rule_source: r#"{"type":"shell","command":"echo hello"}"#,
+            inputs: &inputs,
+            params_hash: Some("0123456789abcdef"),
+            env_hash: Some("fedcba9876543210"),
+            shell_executable: Some("/bin/bash"),
+            clean_outputs: Default::default(),
+            platform_scope: PlatformScope::Any,
+            platform: "linux/x86_64",
+        });
+        assert_eq!(
+            key.as_str(),
+            "f61b4cac173e039d50a1d959d5d5599711750bf570d492e89ec90ca8232443ef"
         );
     }
 
@@ -638,6 +703,7 @@ mod tests {
                     env_hash: env.as_deref(),
                     shell_executable: shell.as_deref(),
                     clean_outputs: Default::default(),
+                    platform_scope: Default::default(),
                     platform: "linux/x86_64",
                 };
                 prop_assert_eq!(compute_cache_key(&s), compute_cache_key(&s));
@@ -704,6 +770,7 @@ mod tests {
                     env_hash: env1.as_deref(),
                     shell_executable: shell1.as_deref(),
                     clean_outputs: Default::default(),
+                    platform_scope: Default::default(),
                     platform: "linux/x86_64",
                 };
                 let s2 = CacheKeySpec {

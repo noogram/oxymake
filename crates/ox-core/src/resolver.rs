@@ -618,6 +618,7 @@ impl<'a> ResolveState<'a> {
             log,
             shell_executable: rule.shell_executable.clone(),
             clean_outputs: rule.clean_outputs,
+            platform_scope: rule.platform_scope,
             reproducibility: rule.reproducibility,
         };
 
@@ -1460,6 +1461,7 @@ mod tests {
             param_files: Vec::new(),
             shell_executable: None,
             clean_outputs: Default::default(),
+            platform_scope: Default::default(),
             reproducibility: ReproducibilityClass::default(),
             source_line: None,
         }
@@ -1485,6 +1487,17 @@ mod tests {
             rule.clean_outputs = policy;
             let result = resolve(&[rule], &make_request(&["cache/jan.parquet"], &[])).unwrap();
             assert_eq!(result.jobs[0].clean_outputs, policy);
+        }
+    }
+
+    #[test]
+    fn platform_scope_is_inherited_by_concrete_jobs() {
+        use crate::model::PlatformScope;
+        for scope in [PlatformScope::Exact, PlatformScope::Any] {
+            let mut rule = make_rule("fetch", &[], &["cache/{month}.parquet"]);
+            rule.platform_scope = scope;
+            let result = resolve(&[rule], &make_request(&["cache/jan.parquet"], &[])).unwrap();
+            assert_eq!(result.jobs[0].platform_scope, scope);
         }
     }
 

@@ -785,6 +785,7 @@ pub fn make_test_job(name: &str, inputs: &[&str], outputs: &[&str]) -> ConcreteJ
         log: LogConfig::default(),
         shell_executable: None,
         clean_outputs: Default::default(),
+        platform_scope: Default::default(),
         reproducibility: ReproducibilityClass::default(),
     }
 }

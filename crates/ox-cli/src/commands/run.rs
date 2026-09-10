@@ -410,6 +410,7 @@ fn job_cache_key_with_components(
         env_hash: env_hash.as_deref(),
         shell_executable,
         clean_outputs: job.clean_outputs,
+        platform_scope: job.platform_scope,
         platform: &platform,
     });
 
@@ -2584,6 +2585,7 @@ mod cache_key_tests {
             log: Default::default(),
             shell_executable: None,
             clean_outputs: Default::default(),
+            platform_scope: Default::default(),
             reproducibility: Default::default(),
         }
     }

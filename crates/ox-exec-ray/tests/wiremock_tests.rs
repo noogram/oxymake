@@ -36,6 +36,7 @@ fn test_job(id: &str, command: &str) -> ConcreteJob {
         log: LogConfig::default(),
         shell_executable: None,
         clean_outputs: Default::default(),
+        platform_scope: Default::default(),
         reproducibility: ReproducibilityClass::default(),
     }
 }
@@ -393,6 +394,7 @@ fn call_job(id: &str, function: &str) -> ConcreteJob {
         log: LogConfig::default(),
         shell_executable: None,
         clean_outputs: Default::default(),
+        platform_scope: Default::default(),
         reproducibility: ReproducibilityClass::default(),
     }
 }
@@ -551,6 +553,7 @@ async fn test_call_mode_in_memory_outputs() {
         log: LogConfig::default(),
         shell_executable: None,
         clean_outputs: Default::default(),
+        platform_scope: Default::default(),
         reproducibility: ReproducibilityClass::default(),
     };
 

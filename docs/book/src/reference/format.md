@@ -52,6 +52,28 @@ shell = "python process.py {input} {output}"
 | `materialize` | String | No | `always`, `auto`, `never`, `final` |
 | `params` | Table | No | Rule-specific parameters |
 | `clean_outputs` | String | No | `always` (default), `on-failure`, `never`; see Output cleanup below |
+| `cache_platform` | String | No | `exact` (default), `any`; see Cross-platform cache reuse below |
+
+### Cross-platform cache reuse
+
+`cache_platform` controls whether the platform (`OS/architecture`) participates
+in a rule's cache key. The default, `"exact"`, restricts reuse to the same
+platform. Set it to `"any"` only when the rule's outputs are suitable for reuse
+across platforms:
+
+```toml
+[rule.merge_counts]
+input = ["data/*.parquet"]
+output = ["build/counts.parquet"]
+shell = "duckdb -c '...'"
+cache_platform = "any"
+```
+
+The engine cannot verify this claim. A rule that emits platform-specific
+artifacts, such as machine code, must use `"exact"`. The parser rejects
+`cache_platform = "any"` together with
+`reproducibility = "non_reproducible"`; `"approximate"` and
+`"seed_deterministic"` are allowed.
 
 ### Output cleanup
 
