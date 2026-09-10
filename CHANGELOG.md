@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `ox plan`, `ox run`, `ox explain`, `ox query`, `ox cancel`, `ox test`, and
+  `ox check-consistency` now resolve through existing generated outputs instead
+  of mistaking them for source files, so a missing intermediate produces the
+  complete rebuild graph. `ox plan` then applies the same cache and transitive
+  staleness analysis as `ox run`, reports zero jobs for a warm cache, and
+  includes each selected job's execution reason (#11).
+
 ## [0.3.0] - 2026-09-09
 
 An interruption now leaves the ledger describing a state that still exists,

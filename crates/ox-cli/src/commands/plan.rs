@@ -1,9 +1,10 @@
 //! Implementation of the `ox plan` command.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 
+use ox_cache::{CacheStore, CacheValidation};
 use ox_core::dag::RuleGraph;
 use ox_core::error::{DagError, WildcardError};
 use ox_core::job_graph::JobGraph;
@@ -117,7 +118,7 @@ pub fn cmd_plan(args: PlanArgs, theme: &ox_render::Theme) -> Result<()> {
         return Ok(());
     }
 
-    let existing_files = common::discover_existing_files(&file_path);
+    let existing_files = common::discover_source_files(&file_path, &workflow, &config);
 
     let request = resolver::ResolveRequest {
         targets: targets.clone(),
@@ -137,7 +138,6 @@ pub fn cmd_plan(args: PlanArgs, theme: &ox_render::Theme) -> Result<()> {
         )
     })?;
 
-    let job_count = resolve_result.jobs.len();
     let source_count = resolve_result.sources.len();
 
     // Build the JobGraph.
@@ -149,9 +149,28 @@ pub fn cmd_plan(args: PlanArgs, theme: &ox_render::Theme) -> Result<()> {
         )
     })?;
 
+    let cache_validation = common::resolve_cache_validation(None, &workflow)?;
+    let cache_db = PathBuf::from(".oxymake/cache/cache.db");
+    let mut cache_store = if cache_validation != CacheValidation::Mtime && cache_db.exists() {
+        CacheStore::open_with(Path::new(".oxymake"), cache_validation).ok()
+    } else {
+        None
+    };
+    let execution = super::execution_plan::determine_execution(
+        &job_graph,
+        true,
+        cache_validation,
+        cache_store.as_mut(),
+        None,
+    );
+    let job_count = job_graph
+        .job_count()
+        .saturating_sub(execution.skip_jobs.len());
+
     if args.json {
         let jobs: Vec<serde_json::Value> = if let Ok(topo) = job_graph.topological_order() {
             topo.iter()
+                .filter(|job_id| !execution.skip_jobs.contains(*job_id))
                 .enumerate()
                 .filter_map(|(i, job_id)| {
                     job_graph.get_job(job_id).map(|job| {
@@ -184,6 +203,7 @@ pub fn cmd_plan(args: PlanArgs, theme: &ox_render::Theme) -> Result<()> {
                             .collect();
                         let tags: serde_json::Value = serde_json::to_value(&job.tags)
                             .unwrap_or(serde_json::Value::Object(Default::default()));
+                        let reason = execution.run_reasons.get(job_id).map(ToString::to_string);
                         serde_json::json!({
                             "order": i + 1,
                             "job_id": job_id.as_str(),
@@ -192,6 +212,7 @@ pub fn cmd_plan(args: PlanArgs, theme: &ox_render::Theme) -> Result<()> {
                             "inputs": inputs,
                             "outputs": outputs,
                             "depends_on": depends_on,
+                            "reason": reason,
                             "tags": tags,
                         })
                     })
@@ -224,7 +245,11 @@ pub fn cmd_plan(args: PlanArgs, theme: &ox_render::Theme) -> Result<()> {
         );
 
         if let Ok(topo) = job_graph.topological_order() {
-            for (i, job_id) in topo.iter().enumerate() {
+            for (i, job_id) in topo
+                .iter()
+                .filter(|job_id| !execution.skip_jobs.contains(*job_id))
+                .enumerate()
+            {
                 if let Some(job) = job_graph.get_job(job_id) {
                     let outputs: Vec<String> = job
                         .outputs
@@ -237,12 +262,18 @@ pub fn cmd_plan(args: PlanArgs, theme: &ox_render::Theme) -> Result<()> {
                             }
                         })
                         .collect();
+                    let reason = execution
+                        .run_reasons
+                        .get(job_id)
+                        .map(|reason| format!(" — {reason}"))
+                        .unwrap_or_default();
                     println!(
-                        "  {}. [{}] rule={} -> [{}]",
+                        "  {}. [{}] rule={} -> [{}]{}",
                         theme.muted.apply_to(i + 1),
                         theme.highlight.apply_to(job_id.as_str()),
                         theme.info.apply_to(job.rule.as_str()),
-                        theme.muted.apply_to(outputs.join(", "))
+                        theme.muted.apply_to(outputs.join(", ")),
+                        reason,
                     );
                 }
             }
