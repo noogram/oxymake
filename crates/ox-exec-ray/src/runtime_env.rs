@@ -15,7 +15,7 @@ pub fn env_spec_to_runtime_env(env: &EnvSpec) -> Option<Value> {
     match env {
         EnvSpec::System => None,
 
-        EnvSpec::Uv { requirements } => {
+        EnvSpec::Uv { requirements, .. } => {
             // Ray uses pip for Python package installation.
             // uv requirements are pip-compatible.
             let mut runtime_env = json!({});
@@ -110,6 +110,7 @@ mod tests {
     #[test]
     fn test_uv_with_requirements() {
         let env = EnvSpec::Uv {
+            project: None,
             requirements: Some("numpy\npandas\n# comment\nscipy".into()),
         };
         let rt = env_spec_to_runtime_env(&env).unwrap();
@@ -122,7 +123,10 @@ mod tests {
 
     #[test]
     fn test_uv_without_requirements() {
-        let env = EnvSpec::Uv { requirements: None };
+        let env = EnvSpec::Uv {
+            project: None,
+            requirements: None,
+        };
         let rt = env_spec_to_runtime_env(&env).unwrap();
         assert!(rt.get("pip").is_none());
     }
