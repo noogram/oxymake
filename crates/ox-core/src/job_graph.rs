@@ -112,6 +112,7 @@ use crate::model::*;
 ///         log: LogConfig::default(),
 ///         shell_executable: None,
 ///         clean_outputs: Default::default(),
+///         platform_scope: Default::default(),
 ///         reproducibility: ReproducibilityClass::default(),
 ///     },
 ///     ConcreteJob {
@@ -144,6 +145,7 @@ use crate::model::*;
 ///         log: LogConfig::default(),
 ///         shell_executable: None,
 ///         clean_outputs: Default::default(),
+///         platform_scope: Default::default(),
 ///         reproducibility: ReproducibilityClass::default(),
 ///     },
 /// ];
@@ -441,6 +443,7 @@ impl JobGraph {
     ///         log: LogConfig::default(),
     ///         shell_executable: None,
     ///         clean_outputs: Default::default(),
+    ///         platform_scope: Default::default(),
     ///         reproducibility: ReproducibilityClass::default(),
     ///     },
     ///     ConcreteJob {
@@ -473,6 +476,7 @@ impl JobGraph {
     ///         log: LogConfig::default(),
     ///         shell_executable: None,
     ///         clean_outputs: Default::default(),
+    ///         platform_scope: Default::default(),
     ///         reproducibility: ReproducibilityClass::default(),
     ///     },
     /// ];
@@ -630,6 +634,7 @@ impl JobGraph {
     ///     log: LogConfig::default(),
     ///     shell_executable: None,
     ///     clean_outputs: Default::default(),
+    ///     platform_scope: Default::default(),
     ///     reproducibility: ReproducibilityClass::default(),
     /// }];
     ///

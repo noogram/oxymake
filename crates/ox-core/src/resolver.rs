@@ -693,6 +693,7 @@ impl<'a> ResolveState<'a> {
 ///     param_files: Vec::new(),
 ///     shell_executable: None,
 ///     clean_outputs: Default::default(),
+///     platform_scope: Default::default(),
 ///     reproducibility: ReproducibilityClass::default(),
 ///     source_line: None,
 /// };
@@ -764,6 +765,7 @@ pub fn resolve(rules: &[Rule], request: &ResolveRequest) -> Result<ResolveResult
 ///     param_files: Vec::new(),
 ///     shell_executable: None,
 ///     clean_outputs: Default::default(),
+///     platform_scope: Default::default(),
 ///     reproducibility: ReproducibilityClass::default(),
 ///     source_line: None,
 /// };
@@ -974,6 +976,7 @@ pub fn evaluate_guard(guard: &GuardExpr, wildcards: &Wildcards, config: &Config)
 ///     param_files: Vec::new(),
 ///     shell_executable: None,
 ///     clean_outputs: Default::default(),
+///     platform_scope: Default::default(),
 ///     reproducibility: ReproducibilityClass::default(),
 ///     source_line: None,
 /// };
