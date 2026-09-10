@@ -997,9 +997,7 @@ impl Executor for LocalExecutor {
                         }
                         Some(ox_core::model::EnvSpec::Uv {
                             requirements: None, ..
-                        }) => {
-                            "uv_default".to_string()
-                        }
+                        }) => "uv_default".to_string(),
                         Some(other) => format!("{other:?}")
                             .chars()
                             .filter(|c| c.is_alphanumeric() || *c == '_')

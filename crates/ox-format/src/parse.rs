@@ -2608,7 +2608,10 @@ requirements = "requirements.txt"
         let msg = err.to_string();
         assert!(msg.contains("rule.test.environment"), "got: {msg}");
         for key in ["uv", "conda", "docker", "nix", "apptainer"] {
-            assert!(msg.contains(key), "accepted key `{key}` missing from: {msg}");
+            assert!(
+                msg.contains(key),
+                "accepted key `{key}` missing from: {msg}"
+            );
         }
     }
 

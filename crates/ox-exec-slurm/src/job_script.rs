@@ -568,7 +568,10 @@ mod tests {
             script.contains("uv pip install -r requirements.txt\n"),
             "expected `uv pip install -r`, got:\n{script}"
         );
-        assert!(!script.contains("uv sync -r"), "stale `uv sync -r` in:\n{script}");
+        assert!(
+            !script.contains("uv sync -r"),
+            "stale `uv sync -r` in:\n{script}"
+        );
     }
 
     #[test]
