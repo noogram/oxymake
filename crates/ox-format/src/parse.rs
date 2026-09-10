@@ -1314,7 +1314,7 @@ fn parse_environment(
         return Err(ParseError::InvalidField {
             field: context.to_string(),
             reason: format!(
-                "unknown environment key(s) `{found}` — accepted keys: {accepted}                  (an environment backend is named by its key, e.g.                  `environment = {{ uv = \"requirements.txt\" }}`)"
+                "unknown environment key(s) `{found}` — accepted keys: {accepted} (an environment backend is named by its key, e.g. `environment = {{ uv = \"requirements.txt\" }}`)"
             ),
         });
     }
