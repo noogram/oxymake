@@ -228,3 +228,51 @@ fn history_json_surfaces_the_provenance() {
     }
     assert_eq!(seen, 2, "expected one JSON line per job:\n{out}");
 }
+
+/// Issue #12 item 4: a run that aborts recorded `0/0/0`, so it was
+/// indistinguishable from a run in which nothing happened.
+#[test]
+fn aborted_run_records_the_counts_it_knows() {
+    let dir = TempDir::new().unwrap();
+    // `b` fails, and `--keep-going` is off, so the run ends with an error
+    // after `a` has succeeded.
+    let oxymakefile = dir.path().join("Oxymakefile.toml");
+    fs::write(
+        &oxymakefile,
+        r#"ox_version = "0.1"
+
+[rule.all]
+input = ["b.txt"]
+
+[rule.a]
+output = ["a.txt"]
+shell = "echo hello > a.txt"
+
+[rule.b]
+input = ["a.txt"]
+output = ["b.txt"]
+shell = "exit 3"
+"#,
+    )
+    .unwrap();
+
+    ox().args(["run", "-f", oxymakefile.to_str().unwrap()])
+        .current_dir(dir.path())
+        .assert()
+        .failure();
+
+    let conn = open_db(&dir);
+    let (succeeded, failed, skipped): (i64, i64, i64) = conn
+        .query_row(
+            "SELECT succeeded, failed, skipped FROM runs ORDER BY started_at DESC LIMIT 1",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
+    assert!(
+        succeeded + failed + skipped > 0,
+        "a run with recorded job outcomes must not report 0/0/0 \
+         (succeeded={succeeded}, failed={failed}, skipped={skipped})"
+    );
+    assert_eq!(failed, 1, "the failing job must be counted");
+}

@@ -2680,9 +2680,19 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
             Ok(())
         }
         Err(e) => {
-            // Finalise the run record even on error.
+            // Finalise the run record even on error. The scheduler returned
+            // no result, but the jobs table was flushed above and is
+            // authoritative, so the counts come from there instead of the
+            // zeros that made an aborted run indistinguishable from an
+            // empty one (#12). `runs` has no status column, so this is the
+            // whole of the fix that the schema supports without a
+            // migration.
             if let Some(ref db) = state_db {
-                let _ = db.end_run(&run_id, 0, 0, 0);
+                let (succeeded, failed, skipped) = db
+                    .job_counts_for_run(&run_id)
+                    .map(|c| (c.completed.saturating_sub(c.cached), c.failed, c.cached))
+                    .unwrap_or((0, 0, 0));
+                let _ = db.end_run(&run_id, succeeded, failed, skipped);
             }
             bail!("{e}");
         }

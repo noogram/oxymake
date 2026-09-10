@@ -24,6 +24,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     hit, not only on the first run. Previously the row a prior run left
     `completed` blocked the update, so the console reported a full cache hit
     while the table reported none.
+  - A run that ends in an error records the job counts it knows instead of
+    `0/0/0`, so an aborted run is no longer indistinguishable from an empty
+    one.
 
 ### Changed
 - `ox history <run> --json` now also emits `input_hashes`, `output_hashes`,
