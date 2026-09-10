@@ -2668,6 +2668,7 @@ mod cache_key_tests {
             command: "python train.py".into(),
         });
         job.environment = Some(EnvSpec::Uv {
+            project: None,
             requirements: Some(req.display().to_string()),
         });
 

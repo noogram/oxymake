@@ -117,8 +117,11 @@ pub fn hash_rule_params(rule: &Rule) -> Option<ContentHash> {
 fn env_spec_label(env: &EnvSpec) -> String {
     match env {
         EnvSpec::System => "system".to_string(),
-        EnvSpec::Uv { requirements } => {
-            if let Some(req) = requirements {
+        EnvSpec::Uv {
+            project,
+            requirements,
+        } => {
+            if let Some(req) = requirements.as_ref().or(project.as_ref()) {
                 format!("uv:{req}")
             } else {
                 "uv".to_string()
@@ -220,8 +223,11 @@ fn lock_environment(env: &EnvSpec) -> LockedEnvironment {
             image: None,
             flake: None,
         },
-        EnvSpec::Uv { requirements } => {
-            let spec_hash = requirements.as_ref().and_then(|req| {
+        EnvSpec::Uv {
+            project,
+            requirements,
+        } => {
+            let spec_hash = requirements.as_ref().or(project.as_ref()).and_then(|req| {
                 std::fs::read(req)
                     .ok()
                     .map(|data| ContentHash::from(blake3::hash(&data)))
