@@ -8,6 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **An `environment` table naming no known backend is now rejected.**
+  `environment = { type = "uv", requirements = "…" }` — the natural spelling
+  to try — was silently dropped: the rule ran on the host, its cache key
+  recorded no environment, and `ox lint` reported the workflow as valid.
+  Such a table, and any unrecognised key alongside a recognised backend, is
+  now a parse error naming the accepted keys (`uv`, `conda`, `docker`, `nix`,
+  `apptainer`), surfaced by `ox lint` and by every command that parses the
+  workflow. If you relied on an ignored key, remove it or spell the backend
+  as its own key (issue #10).
 - **`environment = { uv = "requirements.txt" }` now runs.** The local
   executor wrapped the command as `uv run -r <file>`, and `uv run` has no
   `-r` flag, so every rule with a uv requirements file failed with uv's usage

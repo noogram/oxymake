@@ -385,7 +385,7 @@ fn parse_workflow_inner(
     resolve_file_sources(&mut config, base_dir)?;
 
     // Parse global environment default.
-    let global_environment = parse_environment(&raw.environment);
+    let global_environment = parse_environment(&raw.environment, "[environment]")?;
 
     let mut rules = Vec::new();
     for (name, raw_rule) in &raw.rule {
@@ -795,7 +795,7 @@ fn parse_rule(name: &str, raw: &RawRule, file_path: &Path) -> Result<Rule, Parse
     let outputs = parse_outputs(&raw.output)?;
     let execution = parse_execution(name, raw, file_path)?;
     let resources = parse_resources(&raw.resources);
-    let environment = parse_environment(&raw.environment);
+    let environment = parse_environment(&raw.environment, &format!("[rule.{name}.environment]"))?;
     let expand_mode = parse_expand_mode(&raw.expand);
     let error_strategy = if let Some(n) = raw.retries {
         // `retries = N` is shorthand for error_strategy = retry with defaults.
@@ -1288,34 +1288,66 @@ fn parse_resources(raw: &BTreeMap<String, toml::Value>) -> BTreeMap<String, Reso
 // Environment parsing
 // ---------------------------------------------------------------------------
 
-fn parse_environment(raw: &Option<BTreeMap<String, String>>) -> Option<EnvSpec> {
-    let env = raw.as_ref()?;
+/// The backend keys an `environment` table may carry.
+///
+/// A table that names none of these, or that carries any other key
+/// alongside one of them, is a hard parse error: silently dropping it
+/// would run the rule on the host with no environment in its cache key.
+const ENV_BACKENDS: [&str; 5] = ["uv", "conda", "docker", "nix", "apptainer"];
+
+fn parse_environment(
+    raw: &Option<BTreeMap<String, String>>,
+    context: &str,
+) -> Result<Option<EnvSpec>, ParseError> {
+    let Some(env) = raw.as_ref() else {
+        return Ok(None);
+    };
+
+    let unknown: Vec<&str> = env
+        .keys()
+        .map(String::as_str)
+        .filter(|k| !ENV_BACKENDS.contains(k))
+        .collect();
+    if !unknown.is_empty() {
+        let accepted = ENV_BACKENDS.join(", ");
+        let found = unknown.join("`, `");
+        return Err(ParseError::InvalidField {
+            field: context.to_string(),
+            reason: format!(
+                "unknown environment key(s) `{found}` — accepted keys: {accepted}                  (an environment backend is named by its key, e.g.                  `environment = {{ uv = \"requirements.txt\" }}`)"
+            ),
+        });
+    }
 
     if let Some(req) = env.get("uv") {
-        // Empty string or pyproject.toml → no -r flag needed.
-        // uv auto-discovers pyproject.toml, and -r only accepts
-        // requirements.txt-style files.
+        // Empty string or pyproject.toml → no requirements flag needed.
+        // uv auto-discovers pyproject.toml, and `--with-requirements` only
+        // accepts requirements.txt-style files.
         let requirements = if req.is_empty() || req == "pyproject.toml" {
             None
         } else {
             Some(req.clone())
         };
-        return Some(EnvSpec::Uv { requirements });
+        return Ok(Some(EnvSpec::Uv { requirements }));
     }
     if let Some(e) = env.get("conda") {
-        return Some(EnvSpec::Conda { env: e.clone() });
+        return Ok(Some(EnvSpec::Conda { env: e.clone() }));
     }
     if let Some(img) = env.get("docker") {
-        return Some(EnvSpec::Docker { image: img.clone() });
+        return Ok(Some(EnvSpec::Docker { image: img.clone() }));
     }
     if let Some(expr) = env.get("nix") {
-        return Some(EnvSpec::Nix { expr: expr.clone() });
+        return Ok(Some(EnvSpec::Nix { expr: expr.clone() }));
     }
     if let Some(img) = env.get("apptainer") {
-        return Some(EnvSpec::Apptainer { image: img.clone() });
+        return Ok(Some(EnvSpec::Apptainer { image: img.clone() }));
     }
 
-    None
+    let accepted = ENV_BACKENDS.join(", ");
+    Err(ParseError::InvalidField {
+        field: context.to_string(),
+        reason: format!("empty environment table — accepted keys: {accepted}"),
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -2542,7 +2574,10 @@ apptainer = "image.sif"
     }
 
     #[test]
-    fn parse_environment_unknown_returns_none() {
+    fn parse_environment_unknown_backend_is_an_error() {
+        // Regression (#10): an environment table with no recognised backend
+        // key used to be dropped silently — the rule then ran on the host
+        // with no environment in its cache key.
         let toml = r#"
 [rule.test]
 input = ["a.txt"]
@@ -2550,10 +2585,49 @@ output = ["b.txt"]
 shell = "echo hi"
 
 [rule.test.environment]
-unknown_env = "something"
+type = "uv"
+requirements = "requirements.txt"
 "#;
-        let wf = parse_workflow(toml, Path::new("test.toml")).unwrap();
-        assert!(wf.rules[0].environment.is_none());
+        let err = parse_workflow(toml, Path::new("test.toml")).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("rule.test.environment"), "got: {msg}");
+        for key in ["uv", "conda", "docker", "nix", "apptainer"] {
+            assert!(msg.contains(key), "accepted key `{key}` missing from: {msg}");
+        }
+    }
+
+    #[test]
+    fn parse_environment_unknown_key_beside_backend_is_an_error() {
+        // Regression (#10): `{ uv = "…", requirements = "…" }` is the same
+        // typo class — the extra key was ignored without a diagnostic.
+        let toml = r#"
+[rule.test]
+input = ["a.txt"]
+output = ["b.txt"]
+shell = "echo hi"
+
+[rule.test.environment]
+uv = "requirements.txt"
+requirements = "requirements.txt"
+"#;
+        let err = parse_workflow(toml, Path::new("test.toml")).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("requirements"), "got: {msg}");
+    }
+
+    #[test]
+    fn parse_environment_global_unknown_backend_is_an_error() {
+        let toml = r#"
+[environment]
+type = "uv"
+
+[rule.test]
+input = ["a.txt"]
+output = ["b.txt"]
+shell = "echo hi"
+"#;
+        let err = parse_workflow(toml, Path::new("test.toml")).unwrap_err();
+        assert!(err.to_string().contains("environment"));
     }
 
     #[test]

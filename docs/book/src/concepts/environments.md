@@ -79,14 +79,9 @@ environment = { apptainer = "image.sif" }
 
 ### System (default)
 
-No isolation. Uses whatever Python/R/tools are on `$PATH`:
-
-```toml
-environment = { system = true }
-```
-
-This is the default when no `environment` is specified. Suitable for
-`shell`-mode rules that call system utilities.
+No isolation: the command runs with whatever Python/R/tools are on `$PATH`.
+This is what you get by **omitting** `environment` — there is no `system`
+key, and an `environment` table naming no backend is a parse error.
 
 ## How Isolation Works
 
@@ -109,7 +104,6 @@ Different rules can use different environments in the same workflow:
 
 ```toml
 [rule.download]
-environment = { system = true }
 shell = "wget {url} -O {output}"
 
 [rule.analyze]

@@ -197,6 +197,11 @@ environment = { uv = "requirements.txt" }
 Supported keys: `uv`, `conda`, `docker`, `apptainer`, `nix`. Omitting
 `environment` runs the command on the host as-is.
 
+The table is validated: an `environment` table that names none of those keys
+— `environment = { type = "uv", requirements = "…" }`, for instance — or that
+carries an extra key beside a recognised backend is a **parse error** naming
+the accepted keys. It is never silently dropped.
+
 A top-level `environment` table sets the default for every rule that does not
 declare its own:
 
@@ -207,7 +212,7 @@ environment = { uv = "pyproject.toml" }
 There is no named-environment mechanism: `[env.NAME]` blocks and a rule-level
 `env = "NAME"` reference are not part of the format, and — because rule tables
 do not reject unknown keys — they are silently ignored rather than reported as
-an error. See [Environments](../concepts/environments.md) for what each backend
+an error. (Keys *inside* an `environment` table are rejected, as above.) See [Environments](../concepts/environments.md) for what each backend
 does.
 
 ## Next Steps
