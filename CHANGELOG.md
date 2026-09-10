@@ -17,7 +17,9 @@ v6: the first run after this upgrade recomputes everything, once.
   `cache_platform = "any"`.** The default remains `"exact"`, preserving
   platform-specific keys. OxyMake rejects this opt-in for
   `reproducibility = "non_reproducible"` and cannot verify that an opted-in
-  rule truly produces platform-independent outputs (issue #7).
+  rule truly produces platform-independent outputs. Cache entries record both
+  the producing platform and the scope in force, so opted-in artefacts can be
+  audited and enumerated for invalidation (issue #7).
 
 ### Fixed
 - **`environment = { uv = "pyproject.toml" }` now invalidates outputs when a

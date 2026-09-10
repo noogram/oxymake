@@ -35,6 +35,62 @@ fn version_shows_version() {
         .stdout(predicates::str::contains(env!("CARGO_PKG_VERSION")));
 }
 
+/// A completed run records where each artefact was produced and whether its
+/// rule opted into cross-platform reuse. The scope column must also make all
+/// `any` entries directly enumerable for recall.
+#[test]
+fn run_records_cache_platform_provenance_and_enumerates_any_entries() {
+    let dir = TempDir::new().unwrap();
+    let base = dir.path();
+    let oxymakefile = base.join("Oxymakefile.toml");
+    fs::write(
+        &oxymakefile,
+        r#"ox_version = "0.1"
+
+[rule.exact]
+output = ["exact.txt"]
+shell = "printf exact > exact.txt"
+
+[rule.portable]
+output = ["portable.txt"]
+shell = "printf portable > portable.txt"
+cache_platform = "any"
+"#,
+    )
+    .unwrap();
+
+    for target in ["exact.txt", "portable.txt"] {
+        ox().args(["run", target, "-f", oxymakefile.to_str().unwrap()])
+            .current_dir(base)
+            .assert()
+            .success();
+    }
+
+    let conn = rusqlite::Connection::open(base.join(".oxymake/cache/cache.db")).unwrap();
+    let rows: Vec<(String, String)> = conn
+        .prepare("SELECT platform, platform_scope FROM cache_entries ORDER BY platform_scope")
+        .unwrap()
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+
+    let platform = ox_cache::current_platform();
+    assert_eq!(
+        rows,
+        vec![(platform.clone(), "any".into()), (platform, "exact".into())]
+    );
+
+    let any_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM cache_entries WHERE platform_scope = 'any'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(any_count, 1);
+}
+
 /// A directory remote cache restores a missing output from the shared
 /// content-addressed artifact store instead of re-executing the job.
 #[test]
