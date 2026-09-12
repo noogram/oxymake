@@ -1,0 +1,19 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH ox-cache-export 1  "ox-cache-export " 
+.SH NAME
+ox\-cache\-export \- Describe cached outputs so another machine can adopt them
+.SH SYNOPSIS
+\fBox\-cache\-export\fR [\fB\-o\fR|\fB\-\-output\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fITARGETS\fR> 
+.SH DESCRIPTION
+Describe cached outputs so another machine can adopt them
+.SH OPTIONS
+.TP
+\fB\-o\fR, \fB\-\-output\fR \fI<PATH>\fR
+Write the manifest to a file instead of stdout
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help
+.TP
+<\fITARGETS\fR>
+Cached output targets to describe

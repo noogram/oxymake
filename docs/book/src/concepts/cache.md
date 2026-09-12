@@ -19,7 +19,7 @@ cache_key = blake3(
     env_content_hash ||
     shell_executable ||
     clean_outputs ||
-    platform
+    (platform if cache_platform = "exact")
 )
 ```
 
@@ -40,6 +40,10 @@ includes:
 - **Shell executable** -- the same command under `/bin/bash` and `/bin/zsh`
   can behave differently
 - **Platform** -- OS and architecture (a Linux build is not reusable on macOS)
+
+A rule may explicitly set `cache_platform = "any"` when its outputs are valid
+across operating systems and architectures. The default is `"exact"`. This is
+a user assertion: OxyMake records it for audit but cannot prove it.
 
 Two exclusions to know about: `call`-mode function bodies are tracked only
 if you declare the module as an input, and mutable container tags are
@@ -101,7 +105,64 @@ The outputs themselves remain at their declared workflow paths. Deleting the
 local metadata makes jobs run again unless you use `mtime` validation; it does
 not delete outputs or execution history.
 
-## Sharing Across Machines
+## Continuing a DAG on Another Machine
+
+Suppose a Linux box holds a dataset that is too large to move and runs the
+heavy preparation stages, while a macOS box has the GPU needed for the final
+fits. The two checkouts must contain the same workflow definition. Mark only
+the rule whose prepared data will cross the platform boundary:
+
+```toml
+[rule.merge_counts]
+input = ["data/*.parquet"]
+output = ["build/counts.parquet"]
+shell = "duckdb -c '...your merge command...'"
+cache_platform = "any"
+
+[rule.fit_model]
+input = ["build/counts.parquet"]
+output = ["build/fits.rds"]
+shell = "Rscript fit.R"
+```
+
+On the Linux box, run the heavy target and export its cache metadata:
+
+```bash
+ox run build/counts.parquet
+ox cache-export build/counts.parquet -o counts.ox-cache.json
+rsync -aR build/counts.parquet counts.ox-cache.json mac-gpu:/path/to/project/
+```
+
+This transfers the prepared product and manifest, but not `data/`. From the
+root of the matching checkout on the macOS box, adopt the product and run the
+fit:
+
+```bash
+ox cache-import counts.ox-cache.json
+ox run build/fits.rds
+```
+
+Import re-hashes every output and rejects the whole manifest before changing
+the cache if a hash, output set, job specification, platform scope, or
+reproducibility policy does not match. Once imported, `build/counts.parquet` is
+a trusted resolver leaf, so its producer is pruned even though the raw inputs
+are absent on the Mac. Rules using the default `cache_platform = "exact"` can
+only be imported on the producing OS and architecture.
+
+`cache_platform = "any"` is an assertion by the workflow author, not a fact
+OxyMake can verify. The surface makes the unsafe case deliberate, local, and
+enumerable: there is no plural or workflow-wide form, so unprotecting *n* rules
+costs *n* typed lines, and the audit is:
+
+```bash
+grep -n cache_platform Oxymakefile.toml
+```
+
+It does **not** make the unsafe case hard. Whether a rule emits machine code or
+some other platform-specific artefact is invisible to the parser. For example,
+putting `cache_platform = "any"` on a `cargo build` rule can serve a Linux
+binary to macOS. Keep the default `"exact"` unless you can defend the rule's
+outputs as cross-platform data.
 
 OxyMake currently supports a shared filesystem directory as its remote
 artifact backend. Point `--cache-remote` at a directory reachable from every
@@ -119,10 +180,10 @@ ox run --cache-remote /mnt/team/oxymake-cache
 machine are never trusted. The directory backend stores each output under its
 content hash and verifies the hash after every fetch.
 
-The local SQLite cache index maps a computation key to its output hashes.
-Keep that index (or transfer it with the workflow's `.oxymake/cache/`
-directory) when another checkout needs to restore artifacts from the shared
-directory. S3 and GCS URLs are not supported yet.
+The remote backend transports output bytes, not the local cache metadata needed
+to identify a hit. Copying `.oxymake/` between machines is unsupported; use
+`ox cache-export` and `ox cache-import` to transfer that trust record. S3 and
+GCS URLs are not supported yet.
 
 ## Cache and Materialization
 
@@ -158,10 +219,13 @@ The content-addressable cache means you can:
 
 1. **Switch branches freely** without phantom re-runs
 2. **Add new rules** without invalidating existing cached results
-3. **Share computation** across machines and CI
+3. **Share computation** across machines of the same platform by default, and
+   across platforms only for rules declaring `cache_platform = "any"` through
+   [`ox cache-export`](../reference/commands/cache-export.md) and
+   [`ox cache-import`](../reference/commands/cache-import.md)
 4. **Resume interrupted runs** -- completed work is preserved
-5. **Trust the result** -- if OxyMake says "cached," the output is
-   bit-for-bit identical to what a fresh run would produce
+5. **Verify adopted bytes** -- import hashes every transferred output before
+   recording it locally
 
 ## Incremental external datasets
 

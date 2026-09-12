@@ -258,7 +258,8 @@ pub fn cmd_check_consistency(args: CheckConsistencyArgs) -> Result<()> {
         let targets = common::resolve_targets(&workflow, &args.targets);
 
         if !targets.is_empty() {
-            let existing_files = common::discover_source_files(&file_path, &workflow, &config);
+            let existing_files =
+                common::discover_source_files(&file_path, &workflow, &config, true);
             let request = resolver::ResolveRequest {
                 targets: targets.clone(),
                 config,

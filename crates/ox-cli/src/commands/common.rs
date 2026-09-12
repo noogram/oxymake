@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 
-use ox_cache::CacheValidation;
+use ox_cache::{CacheStore, CacheValidation, hash_file};
 use ox_core::model::ResourceValue;
 use ox_core::resolver::Config;
 use ox_format::parse::{ConfigValue, Profile, Workflow};
@@ -206,10 +206,17 @@ pub fn load_global_config() -> Option<toml::Table> {
 /// cannot mistake generated files for sources and truncate the job graph.
 /// Filesystem discovery delegates to [`ox_api::discover::discover_existing_files`],
 /// which caches results per base directory with mtime invalidation.
+///
+/// One exception, when `honour_adopted` is set: an output that `ox
+/// cache-import` adopted is the engine's explicit assertion that its verified
+/// bytes may stand in for a producer whose source inputs do not exist in this
+/// checkout. Such an output stays a resolver leaf — otherwise every command
+/// would try to rebuild it from inputs this machine never had.
 pub fn discover_source_files(
     oxymakefile_path: &Path,
     workflow: &Workflow,
     config: &Config,
+    honour_adopted: bool,
 ) -> Vec<PathBuf> {
     let rule_outputs: HashSet<PathBuf> = workflow
         .rules
@@ -222,8 +229,43 @@ pub fn discover_source_files(
         })
         .collect();
 
+    let adopted_leaves: HashSet<PathBuf> = if honour_adopted {
+        CacheStore::open(Path::new(".oxymake"))
+            .ok()
+            .map(|cache| {
+                rule_outputs
+                    .iter()
+                    .filter(|path| {
+                        let Some(entry) = cache.entry_for_output(path) else {
+                            return false;
+                        };
+                        let Some(provenance) = &entry.provenance else {
+                            return false;
+                        };
+                        if !entry.adopted {
+                            return false;
+                        }
+                        if !provenance
+                            .input_hashes
+                            .iter()
+                            .any(|(input, _)| !Path::new(input).exists())
+                        {
+                            return false;
+                        }
+                        entry.output_hashes.iter().all(|(output, expected)| {
+                            hash_file(Path::new(output)).is_ok_and(|actual| actual == *expected)
+                        })
+                    })
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default()
+    } else {
+        HashSet::new()
+    };
+
     let mut files = ox_api::discover::discover_existing_files(oxymakefile_path);
-    files.retain(|path| !rule_outputs.contains(path));
+    files.retain(|path| !rule_outputs.contains(path) || adopted_leaves.contains(path));
     files
 }
 

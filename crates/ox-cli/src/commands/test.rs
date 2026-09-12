@@ -159,7 +159,8 @@ pub fn cmd_test(args: TestArgs) -> Result<()> {
                 detail: Some("no targets to resolve".into()),
             });
         } else {
-            let existing_files = common::discover_source_files(&file_path, &workflow, &config);
+            let existing_files =
+                common::discover_source_files(&file_path, &workflow, &config, true);
             let request = resolver::ResolveRequest {
                 targets: targets.clone(),
                 config,

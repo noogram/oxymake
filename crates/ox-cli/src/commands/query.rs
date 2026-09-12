@@ -59,7 +59,7 @@ pub fn cmd_query(args: QueryArgs) -> Result<()> {
         anyhow::bail!("no targets found in workflow");
     }
 
-    let existing_files = common::discover_source_files(&file_path, &workflow, &config);
+    let existing_files = common::discover_source_files(&file_path, &workflow, &config, true);
     let request = resolver::ResolveRequest {
         targets,
         config,

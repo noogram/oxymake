@@ -307,6 +307,75 @@ pub(super) struct CacheKeyComponents {
     pub(super) env_hash: Option<String>,
 }
 
+fn job_spec_parts(job: &ConcreteJob) -> (String, Option<String>, Option<String>, String) {
+    let rule_source = execution_source(job);
+    let params_hash = (!job.wildcards.is_empty()).then(|| hash_kv_map(&job.wildcards));
+    let env_hash = job.environment.as_ref().map(env_spec_content_hash);
+    let mut spec_hasher = blake3::Hasher::new();
+    update_field(&mut spec_hasher, "rule", rule_source.as_bytes());
+    update_opt_field(
+        &mut spec_hasher,
+        "params",
+        params_hash.as_deref().map(str::as_bytes),
+    );
+    update_opt_field(
+        &mut spec_hasher,
+        "env",
+        env_hash.as_deref().map(str::as_bytes),
+    );
+    update_opt_field(
+        &mut spec_hasher,
+        "shell",
+        job.shell_executable.as_deref().map(str::as_bytes),
+    );
+    update_field(
+        &mut spec_hasher,
+        "clean_outputs",
+        job.clean_outputs.to_string().as_bytes(),
+    );
+    (
+        rule_source,
+        params_hash,
+        env_hash,
+        spec_hasher.finalize().to_hex().to_string(),
+    )
+}
+
+/// Reconstruct a local cache key from transferred provenance without reading
+/// source inputs that may intentionally be absent on this machine.
+pub(super) fn job_cache_key_from_provenance(
+    job: &ConcreteJob,
+    provenance: &ox_core::model::ArtifactProvenance,
+) -> Result<ContentHash> {
+    let (rule_source, params_hash, env_hash, job_spec_hash) = job_spec_parts(job);
+    if job_spec_hash != provenance.job_spec_hash {
+        bail!(
+            "manifest job specification does not match rule '{}'",
+            job.rule
+        );
+    }
+    let inputs = provenance
+        .input_hashes
+        .iter()
+        .map(|(path, hash)| {
+            ContentHash::from_hex(hash.clone())
+                .map(|hash| (path.clone(), hash))
+                .with_context(|| format!("invalid input hash for {path}"))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let platform = current_platform();
+    Ok(compute_cache_key(&CacheKeySpec {
+        rule_source: &rule_source,
+        inputs: &inputs,
+        params_hash: params_hash.as_deref(),
+        env_hash: env_hash.as_deref(),
+        shell_executable: job.shell_executable.as_deref(),
+        clean_outputs: job.clean_outputs,
+        platform_scope: job.platform_scope,
+        platform: &platform,
+    }))
+}
+
 /// Compute cache key for a job, returning components for provenance tracking.
 ///
 /// When `store` is provided, input file hashes use the mtime-based fast path:
@@ -363,46 +432,8 @@ pub(super) fn job_cache_key_with_components(
         hash_into(&mut input_pairs, &mut store, path)?;
     }
 
-    let rule_source = execution_source(job);
-
-    // Params hash: framed key/value pairs of the resolved wildcards.
-    let params_hash = if job.wildcards.is_empty() {
-        None
-    } else {
-        Some(hash_kv_map(&job.wildcards))
-    };
-
-    // Env hash: content hash of the environment spec (audit H4) — hashes
-    // the bytes of referenced spec files (requirements.txt, conda YAML,
-    // nix expr), not just the literal spec.
-    let env_hash = job.environment.as_ref().map(env_spec_content_hash);
-
+    let (rule_source, params_hash, env_hash, job_spec_hash) = job_spec_parts(job);
     let shell_executable = job.shell_executable.as_deref();
-
-    // Job spec hash: framed rule source + params + env + shell (audit H5).
-    let mut spec_hasher = blake3::Hasher::new();
-    update_field(&mut spec_hasher, "rule", rule_source.as_bytes());
-    update_opt_field(
-        &mut spec_hasher,
-        "params",
-        params_hash.as_deref().map(str::as_bytes),
-    );
-    update_opt_field(
-        &mut spec_hasher,
-        "env",
-        env_hash.as_deref().map(str::as_bytes),
-    );
-    update_opt_field(
-        &mut spec_hasher,
-        "shell",
-        shell_executable.map(str::as_bytes),
-    );
-    update_field(
-        &mut spec_hasher,
-        "clean_outputs",
-        job.clean_outputs.to_string().as_bytes(),
-    );
-    let job_spec_hash = spec_hasher.finalize().to_hex().to_string();
 
     let platform = current_platform();
     let cache_key = compute_cache_key(&CacheKeySpec {
@@ -412,6 +443,7 @@ pub(super) fn job_cache_key_with_components(
         env_hash: env_hash.as_deref(),
         shell_executable,
         clean_outputs: job.clean_outputs,
+        platform_scope: job.platform_scope,
         platform: &platform,
     });
 
@@ -698,7 +730,12 @@ impl CacheCheck for SchedulerCache {
 
             let cache_key = components.cache_key.clone();
             let output_refs: Vec<&Path> = output_paths.iter().map(|p| p.as_path()).collect();
-            if let Err(e) = store.record(cache_key.clone(), &output_refs, Some(&provenance)) {
+            if let Err(e) = store.record(
+                cache_key.clone(),
+                &output_refs,
+                Some(&provenance),
+                job.platform_scope,
+            ) {
                 eprintln!("warning: failed to cache job {}: {e}", job.id.as_str());
                 return;
             }
@@ -989,8 +1026,10 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
     }
     // Rule outputs must never masquerade as source files. The cache pre-scan
     // below decides which jobs are up to date after resolution has built the
-    // complete graph.
-    let existing_files = common::discover_source_files(&file_path, &workflow, &config);
+    // complete graph. Adopted outputs (ox cache-import) are the one exception:
+    // their source inputs may not exist here, so they stay resolver leaves.
+    let existing_files =
+        common::discover_source_files(&file_path, &workflow, &config, !args.no_cache);
 
     timer.mark("discover_files");
 
@@ -1206,6 +1245,7 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
                                     components.cache_key,
                                     &output_refs,
                                     Some(&provenance),
+                                    job.platform_scope,
                                 );
                             }
                         }
@@ -2595,6 +2635,7 @@ mod cache_key_tests {
             log: Default::default(),
             shell_executable: None,
             clean_outputs: Default::default(),
+            platform_scope: Default::default(),
             reproducibility: Default::default(),
         }
     }

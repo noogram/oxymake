@@ -41,6 +41,7 @@ toml.workspace = true
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "sync", "fs", "signal"] }
 anyhow.workspace = true
 serde_json.workspace = true
+serde.workspace = true
 blake3.workspace = true
 miette.workspace = true
 regex.workspace = true
@@ -50,6 +51,7 @@ open.workspace = true
 
 [dev-dependencies]
 assert_cmd.workspace = true
+insta.workspace = true
 predicates = "3"
 rusqlite.workspace = true
 serde_json.workspace = true

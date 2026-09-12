@@ -1,7 +1,7 @@
 # ADR-001: Content-Addressable Cache as Source of Truth
 
 ## Status
-Accepted (default validation strategy changed to mtime by ADR-006, then to mtime+hash by the 2026-06-10 amendment of ADR-006)
+Accepted (default validation strategy changed to mtime by ADR-006, then to mtime+hash by the 2026-06-10 amendment of ADR-006) — **partially superseded by ADR-019**: the cross-machine shareability claim below ("Cache is shareable across machines (same content = same hash)") is narrowed. With the `platform` term in the key it holds only between machines of the same OS/arch; cross-platform reuse requires a rule to declare `cache_platform = "any"` and goes through `ox cache-export` / `ox cache-import`. See ADR-019 §Sunset and its 2026-09-12 naming amendment. The cache-key mechanism itself is unchanged.
 
 > **Vocabulary note (2026-05-27, M1 vocabulary alignment).** The word
 > *Cache* historically named two distinct objects: the bytes

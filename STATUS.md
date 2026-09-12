@@ -37,7 +37,7 @@ Each surface is detailed below. **Anything not explicitly listed under
 
 ## 1. `ox` CLI subcommands and flags
 
-The `ox` binary exposes 25 subcommands today (see `crates/ox-cli/src/lib.rs`).
+The `ox` binary exposes 27 subcommands today (see `crates/ox-cli/src/lib.rs`).
 
 ### Stable today
 
@@ -67,6 +67,11 @@ The `ox` binary exposes 25 subcommands today (see `crates/ox-cli/src/lib.rs`).
   (see §7).
 - **`ox cancel`**, **`ox invalidate`**, **`ox clean`** — names and the
   fact that they mutate state stable; specific flags unstable.
+- **`ox translate`**, **`ox export`** — *names* and the positional
+  `FORMAT` argument (`snakemake`, `wdl`) are stable. Promoted in 0.4.0, the
+  release that chose not to touch them: the cache-adoption commands were
+  named `cache-export` / `cache-import` precisely so that `ox export` keeps
+  its one meaning (ADR-019 amendment). Output shape is unstable.
 - Global flags: `--color {auto,always,never}` is stable. `--version` is
   stable (Cargo guarantee).
 
@@ -74,8 +79,11 @@ The `ox` binary exposes 25 subcommands today (see `crates/ox-cli/src/lib.rs`).
 
 - **All other subcommands**: `dag`, `snapshot`, `gate`, `serve`,
   `subscribe`, `top`, `dashboard`, `test`, `check-consistency`,
-  `translate`, `export`, `logo`. These exist for exploration and may
-  be renamed, restructured, or removed before `1.0`.
+  `cache-export`, `cache-import`, `logo`. These exist for exploration and
+  may be renamed, restructured, or removed before `1.0`.
+- The cache-adoption JSON manifest is an **unstable, versioned** compatibility
+  surface. Readers dispatch on kind `oxymake.cache-adoption-manifest` and
+  `format_version`; incompatible additions require a new format version.
 - The textual output format of every subcommand (column order,
   emoji, summaries) is **unstable** by default. Use `--json` /
   `--report-json` when machine-parsing.
@@ -119,6 +127,7 @@ bump and a `CHANGELOG.md` entry:
 ### Unstable
 
 - `clean_outputs` (`always`, `on-failure`, `never`) — local-executor output cleanup policy.
+- `cache_platform` (`exact`, `any`) — per-rule cross-platform cache reuse policy.
 - Any TOML field not in the list above is **experimental** and may be
   removed without a deprecation window.
 - The exact set of `error_strategy.backoff` values beyond `constant`,

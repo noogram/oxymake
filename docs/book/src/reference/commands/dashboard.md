@@ -55,7 +55,7 @@ This shows up in the API as:
 
 The dashboard is **read-only**: it reports orphaned rows, it never reclaims
 them. Reclaiming happens at the start of the next `ox run`. See
-[ADR-012](../../../adr/012-cooperative-multi-session.md).
+[ADR-012](https://github.com/noogram/oxymake/blob/main/docs/adr/012-cooperative-multi-session.md).
 
 ## Examples
 

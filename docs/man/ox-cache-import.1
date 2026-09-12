@@ -1,0 +1,19 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH ox-cache-import 1  "ox-cache-import " 
+.SH NAME
+ox\-cache\-import \- Adopt outputs another machine already built
+.SH SYNOPSIS
+\fBox\-cache\-import\fR [\fB\-f\fR|\fB\-\-file\fR] [\fB\-h\fR|\fB\-\-help\fR] <\fIMANIFEST\fR> 
+.SH DESCRIPTION
+Adopt outputs another machine already built
+.SH OPTIONS
+.TP
+\fB\-f\fR, \fB\-\-file\fR \fI<FILE>\fR [default: Oxymakefile.toml]
+Oxymakefile path
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help
+.TP
+<\fIMANIFEST\fR>
+Adoption manifest produced by `ox cache\-export`

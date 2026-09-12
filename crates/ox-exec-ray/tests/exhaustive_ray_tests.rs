@@ -39,6 +39,7 @@ fn test_job(id: &str, command: &str) -> ConcreteJob {
         log: LogConfig::default(),
         shell_executable: None,
         clean_outputs: Default::default(),
+        platform_scope: Default::default(),
         reproducibility: ReproducibilityClass::default(),
     }
 }
@@ -1186,6 +1187,7 @@ async fn test_call_mode_with_params_env_vars() {
         log: LogConfig::default(),
         shell_executable: None,
         clean_outputs: Default::default(),
+        platform_scope: Default::default(),
         reproducibility: ReproducibilityClass::default(),
     };
 
@@ -1981,6 +1983,7 @@ fn test_call_mode_virtual_input_rejected() {
         log: LogConfig::default(),
         shell_executable: None,
         clean_outputs: Default::default(),
+        platform_scope: Default::default(),
         reproducibility: ReproducibilityClass::default(),
     };
 
@@ -2026,6 +2029,7 @@ fn test_call_mode_virtual_output_rejected() {
         log: LogConfig::default(),
         shell_executable: None,
         clean_outputs: Default::default(),
+        platform_scope: Default::default(),
         reproducibility: ReproducibilityClass::default(),
     };
 
@@ -2081,6 +2085,7 @@ fn test_call_mode_multiple_unnamed_inputs() {
         log: LogConfig::default(),
         shell_executable: None,
         clean_outputs: Default::default(),
+        platform_scope: Default::default(),
         reproducibility: ReproducibilityClass::default(),
     };
 
@@ -2136,6 +2141,7 @@ fn test_call_mode_mixed_named_unnamed_inputs() {
         log: LogConfig::default(),
         shell_executable: None,
         clean_outputs: Default::default(),
+        platform_scope: Default::default(),
         reproducibility: ReproducibilityClass::default(),
     };
 
@@ -2174,6 +2180,7 @@ fn test_call_mode_no_inputs_no_outputs() {
         log: LogConfig::default(),
         shell_executable: None,
         clean_outputs: Default::default(),
+        platform_scope: Default::default(),
         reproducibility: ReproducibilityClass::default(),
     };
 

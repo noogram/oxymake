@@ -41,7 +41,7 @@ pub fn cmd_explain(args: ExplainArgs) -> Result<()> {
         anyhow::bail!("no targets resolved for '{}'", args.target);
     }
 
-    let existing_files = common::discover_source_files(&file_path, &workflow, &config);
+    let existing_files = common::discover_source_files(&file_path, &workflow, &config, true);
 
     let request = resolver::ResolveRequest {
         targets,
