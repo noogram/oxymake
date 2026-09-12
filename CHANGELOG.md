@@ -13,19 +13,16 @@ its adjacent `uv.lock` — to the cache key, so the key format moves from v5 to
 v6: the first run after this upgrade recomputes everything, once.
 
 ### Added
-- **`ox cache-export <targets> [-o <path>]` and `ox cache-import <manifest>` support
-  verified cross-machine continuation.** Export writes a versioned manifest of
-  output hashes and provenance. Import requires the outputs locally, re-hashes
-  all of them before changing the cache, rejects mismatches and
-  non-reproducible rules, and lets downstream jobs continue when the producer's
-  raw inputs are absent (issue #7).
-- **Rules can opt into cross-platform cache keys with
-  `cache_platform = "any"`.** The default remains `"exact"`, preserving
-  platform-specific keys. OxyMake rejects this opt-in for
-  `reproducibility = "non_reproducible"` and cannot verify that an opted-in
-  rule truly produces platform-independent outputs. Cache entries record both
-  the producing platform and the scope in force, so opted-in artefacts can be
-  audited and enumerated for invalidation (issue #7).
+- **Verified cross-machine continuation with `cache_platform = "any"`,
+  `ox cache-export <targets> [-o <path>]`, and `ox cache-import <manifest>`.**
+  Export writes a versioned manifest of output hashes and provenance; after
+  the outputs are copied, import re-hashes them before changing the cache and
+  lets downstream jobs continue without the producer's raw inputs. The default
+  remains `"exact"`; non-reproducible rules, mismatches, and cross-platform
+  imports without the explicit opt-in are rejected. Cache entries record the
+  producing platform and scope so opted-in artefacts can be audited and
+  enumerated for invalidation. OxyMake cannot verify that an opted-in rule's
+  outputs are truly platform-independent (#7).
 
 ### Fixed
 - **`environment = { uv = "pyproject.toml" }` now invalidates outputs when a
