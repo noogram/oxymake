@@ -4,22 +4,14 @@ use std::io::Write;
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
-use anyhow::{bail, ensure};
-use serde::{Deserialize, Serialize};
-
-use ox_cache::CacheStore;
-use ox_core::model::{ArtifactProvenance, PlatformScope};
 
 use ox_translate::export::{export_snakemake, export_wdl, generate_config_yaml, workflow_to_ir};
 
 #[derive(clap::Args)]
 pub struct ExportArgs {
-    /// Targets to export, or the legacy translation format (snakemake/wdl)
-    pub targets: Vec<String>,
-
-    /// Write a versioned output-adoption manifest to this path
-    #[arg(long, value_name = "PATH")]
-    pub manifest: Option<String>,
+    /// Target format to export to
+    #[arg(value_enum)]
+    pub format: ExportFormat,
 
     /// Path to the Oxymakefile to export (default: Oxymakefile.toml)
     #[arg(short = 'f', long, default_value = "Oxymakefile.toml")]
@@ -30,101 +22,19 @@ pub struct ExportArgs {
     pub output: Option<String>,
 }
 
-pub(crate) const ADOPTION_MANIFEST_VERSION: u32 = 1;
-
-#[derive(Debug, Serialize, Deserialize)]
-pub(crate) struct AdoptionManifest {
-    pub(crate) format_version: u32,
-    pub(crate) entries: Vec<AdoptionEntry>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub(crate) struct AdoptionEntry {
-    pub(crate) target: String,
-    pub(crate) outputs: Vec<AdoptionOutput>,
-    pub(crate) provenance: ArtifactProvenance,
-    pub(crate) origin_platform: String,
-    pub(crate) platform_scope: PlatformScope,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub(crate) struct AdoptionOutput {
-    pub(crate) path: String,
-    pub(crate) content_hash: String,
+#[derive(clap::ValueEnum, Clone)]
+pub enum ExportFormat {
+    /// Export to Snakemake format
+    Snakemake,
+    /// Export to WDL (Workflow Description Language) format
+    Wdl,
 }
 
 pub fn cmd_export(args: ExportArgs) -> Result<()> {
-    if let Some(manifest) = args.manifest {
-        ensure!(
-            args.output.is_none(),
-            "--output cannot be used with --manifest"
-        );
-        return export_manifest(&args.targets, &manifest);
+    match args.format {
+        ExportFormat::Snakemake => export_to_snakemake(args.file, args.output),
+        ExportFormat::Wdl => export_to_wdl(args.file, args.output),
     }
-
-    ensure!(
-        args.targets.len() == 1,
-        "specify snakemake or wdl, or use --manifest with one or more targets"
-    );
-    match args.targets[0].as_str() {
-        "snakemake" => export_to_snakemake(args.file, args.output),
-        "wdl" => export_to_wdl(args.file, args.output),
-        other => bail!("unknown export format '{other}'; expected snakemake or wdl"),
-    }
-}
-
-fn export_manifest(targets: &[String], destination: &str) -> Result<()> {
-    ensure!(!targets.is_empty(), "specify at least one target to export");
-    let cache =
-        CacheStore::open(std::path::Path::new(".oxymake")).context("cannot open local cache")?;
-    let mut entries = Vec::new();
-    let mut seen = std::collections::HashSet::new();
-
-    for target in targets {
-        let entry = cache
-            .entry_for_output(std::path::Path::new(target))
-            .with_context(|| format!("target '{target}' has no local cache entry"))?;
-        if !seen.insert(entry.cache_key.clone()) {
-            continue;
-        }
-        let provenance = entry
-            .provenance
-            .context("cache entry predates artifact provenance; rebuild it before export")?;
-        let origin_platform = entry
-            .platform
-            .context("cache entry has no producing platform; rebuild it before export")?;
-        let platform_scope = entry
-            .platform_scope
-            .context("cache entry has no platform scope; rebuild it before export")?;
-        let outputs = entry
-            .output_hashes
-            .into_iter()
-            .map(|(path, content_hash)| AdoptionOutput {
-                path,
-                content_hash: content_hash.to_string(),
-            })
-            .collect();
-        entries.push(AdoptionEntry {
-            target: target.clone(),
-            outputs,
-            provenance,
-            origin_platform,
-            platform_scope,
-        });
-    }
-
-    let manifest = AdoptionManifest {
-        format_version: ADOPTION_MANIFEST_VERSION,
-        entries,
-    };
-    let bytes = serde_json::to_vec_pretty(&manifest)?;
-    std::fs::write(destination, bytes)
-        .with_context(|| format!("failed to write manifest {destination}"))?;
-    println!(
-        "Exported {} cache entry(ies) to {destination}.",
-        manifest.entries.len()
-    );
-    Ok(())
 }
 
 fn export_to_snakemake(oxymakefile_path: String, output: Option<String>) -> Result<()> {

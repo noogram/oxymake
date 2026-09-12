@@ -1,4 +1,4 @@
-//! Implementation of `ox import` — adopt verified outputs from another tree.
+//! Implementation of `ox cache-import`.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -7,14 +7,17 @@ use anyhow::{Context, Result, bail, ensure};
 use ox_cache::{CacheStore, current_platform, hash_file};
 use ox_core::model::{OutputRef, PlatformScope, ReproducibilityClass};
 use ox_core::resolver::{self, ResolveRequest};
+use serde::Deserialize;
 
+use super::cache_export::{
+    AdoptionEntry, AdoptionManifest, MANIFEST_KIND, MAX_SUPPORTED_MANIFEST_VERSION,
+};
 use super::common;
-use super::export::{ADOPTION_MANIFEST_VERSION, AdoptionEntry, AdoptionManifest};
 use super::run::job_cache_key_from_provenance;
 
 #[derive(clap::Args)]
-pub struct ImportArgs {
-    /// Versioned adoption manifest produced by `ox export --manifest`
+pub struct CacheImportArgs {
+    /// Adoption manifest produced by `ox cache-export`
     pub manifest: String,
 
     /// Oxymakefile path
@@ -22,17 +25,41 @@ pub struct ImportArgs {
     pub file: String,
 }
 
-pub fn cmd_import(args: ImportArgs) -> Result<()> {
+#[derive(Deserialize)]
+struct ManifestProbe {
+    kind: String,
+    format_version: u32,
+}
+
+#[derive(Deserialize)]
+struct ProducerProbe {
+    producer_version: Option<String>,
+}
+
+pub fn cmd_cache_import(args: CacheImportArgs) -> Result<()> {
     let bytes = std::fs::read(&args.manifest)
         .with_context(|| format!("failed to read manifest {}", args.manifest))?;
-    let manifest: AdoptionManifest = serde_json::from_slice(&bytes)
+    let probe: ManifestProbe = serde_json::from_slice(&bytes)
         .with_context(|| format!("failed to parse manifest {}", args.manifest))?;
     ensure!(
-        manifest.format_version == ADOPTION_MANIFEST_VERSION,
-        "unsupported adoption manifest version {}; expected {}",
-        manifest.format_version,
-        ADOPTION_MANIFEST_VERSION
+        probe.kind == MANIFEST_KIND,
+        "this is not an adoption manifest (expected kind '{MANIFEST_KIND}')"
     );
+    let producer = serde_json::from_slice::<ProducerProbe>(&bytes)
+        .ok()
+        .and_then(|probe| probe.producer_version)
+        .unwrap_or_else(|| "an unknown version".into());
+    ensure!(
+        probe.format_version <= MAX_SUPPORTED_MANIFEST_VERSION,
+        "manifest format version {} was produced by ox {}, but this ox {} supports through \
+         version {}; upgrade ox on this machine",
+        probe.format_version,
+        producer,
+        env!("CARGO_PKG_VERSION"),
+        MAX_SUPPORTED_MANIFEST_VERSION
+    );
+    let manifest: AdoptionManifest = serde_json::from_slice(&bytes)
+        .with_context(|| format!("failed to parse manifest {}", args.manifest))?;
 
     let file_path = PathBuf::from(&args.file);
     let workflow = common::load_workflow(&file_path)?;

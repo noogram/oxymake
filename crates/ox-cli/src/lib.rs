@@ -93,10 +93,12 @@ enum Commands {
     CheckConsistency(commands::CheckConsistencyArgs),
     /// Translate a workflow file (Snakemake or WDL) into OxyMake TOML
     Translate(commands::TranslateArgs),
-    /// Export cached outputs for adoption, or translate an Oxymakefile
+    /// Export an Oxymakefile to another format (Snakemake or WDL)
     Export(commands::ExportArgs),
-    /// Adopt verified outputs described by a portable manifest
-    Import(commands::ImportArgs),
+    /// Describe cached outputs so another machine can adopt them
+    CacheExport(commands::CacheExportArgs),
+    /// Adopt outputs another machine already built
+    CacheImport(commands::CacheImportArgs),
     /// Display the OxyMake ASCII art logo
     Logo,
     /// Print the operator handbook (orientation + pointers to the docs)
@@ -151,7 +153,8 @@ pub fn run() -> i32 {
         Commands::CheckConsistency(args) => commands::cmd_check_consistency(args),
         Commands::Translate(args) => commands::cmd_translate(args),
         Commands::Export(args) => commands::cmd_export(args),
-        Commands::Import(args) => commands::cmd_import(args),
+        Commands::CacheExport(args) => commands::cmd_cache_export(args),
+        Commands::CacheImport(args) => commands::cmd_cache_import(args),
         Commands::Logo => commands::cmd_logo(),
         Commands::Guide => commands::cmd_guide(),
     };
@@ -172,6 +175,35 @@ mod tests {
     #[test]
     fn verify_cli() {
         Cli::command().debug_assert();
+    }
+
+    #[test]
+    fn adoption_commands_have_flat_names_and_single_verb_abouts() {
+        let cmd = Cli::command();
+        let cache_export = cmd.find_subcommand("cache-export").unwrap();
+        assert_eq!(
+            cache_export.get_about().unwrap().to_string(),
+            "Describe cached outputs so another machine can adopt them"
+        );
+        let cache_import = cmd.find_subcommand("cache-import").unwrap();
+        assert_eq!(
+            cache_import.get_about().unwrap().to_string(),
+            "Adopt outputs another machine already built"
+        );
+        assert!(cmd.find_subcommand("cache").is_none());
+        assert!(cmd.find_subcommand("import").is_none());
+    }
+
+    #[test]
+    fn translation_export_surface_is_unchanged() {
+        let cmd = Cli::command();
+        let export = cmd.find_subcommand("export").unwrap();
+        assert_eq!(
+            export.get_about().unwrap().to_string(),
+            "Export an Oxymakefile to another format (Snakemake or WDL)"
+        );
+        assert!(Cli::try_parse_from(["ox", "export", "snakemake"]).is_ok());
+        assert!(Cli::try_parse_from(["ox", "export", "target", "--manifest", "out.json"]).is_err());
     }
 
     #[test]

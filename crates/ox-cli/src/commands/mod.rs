@@ -3,6 +3,8 @@
 //! Each subcommand has its own module with argument definitions and execution logic.
 //! Stub commands are grouped together in the `stubs` module.
 
+mod cache_export;
+mod cache_import;
 mod cancel;
 mod check_consistency;
 mod clean;
@@ -14,7 +16,6 @@ mod export;
 mod gate;
 mod guide;
 mod history;
-mod import;
 mod init;
 mod invalidate;
 mod lint;
@@ -32,6 +33,8 @@ mod subscribe;
 mod test;
 mod translate;
 
+pub use cache_export::{CacheExportArgs, cmd_cache_export};
+pub use cache_import::{CacheImportArgs, cmd_cache_import};
 pub use cancel::{CancelArgs, cmd_cancel};
 pub use check_consistency::{CheckConsistencyArgs, cmd_check_consistency};
 pub use clean::{CleanArgs, cmd_clean};
@@ -42,7 +45,6 @@ pub use export::{ExportArgs, cmd_export};
 pub use gate::{GateArgs, cmd_gate};
 pub use guide::{HANDBOOK, cmd_guide};
 pub use history::{HistoryArgs, cmd_history};
-pub use import::{ImportArgs, cmd_import};
 pub use init::{InitArgs, cmd_init};
 pub use invalidate::{InvalidateArgs, cmd_invalidate};
 pub use lint::{LintArgs, cmd_lint};

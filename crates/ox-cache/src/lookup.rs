@@ -40,7 +40,7 @@ pub struct CacheEntry {
     /// Platform scope in force when the cache key was computed.
     #[serde(default)]
     pub platform_scope: Option<PlatformScope>,
-    /// Whether this entry was explicitly adopted through `ox import`.
+    /// Whether this entry was explicitly adopted through `ox cache-import`.
     #[serde(default)]
     pub adopted: bool,
 }
