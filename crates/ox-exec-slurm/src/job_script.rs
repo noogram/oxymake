@@ -359,11 +359,11 @@ fn generate_env_setup(script: &mut String, env: &Option<EnvSpec>) {
                 "OXYMAKE_CONTAINER_CMD=\"apptainer exec {image}\"\n"
             ));
         }
-        Some(EnvSpec::Uv { requirements }) => {
+        Some(EnvSpec::Uv { requirements, .. }) => {
             script.push_str("# uv Python environment\n");
             script.push_str("module load uv 2>/dev/null || true\n");
             if let Some(req) = requirements {
-                script.push_str(&format!("uv sync -r {req}\n"));
+                script.push_str(&format!("uv pip install -r {req}\n"));
             }
         }
         Some(EnvSpec::Nix { expr }) => {
@@ -549,6 +549,29 @@ mod tests {
         let script = generate(&job, &config, &staging, &[], &test_project_dir()).unwrap();
         assert!(script.contains("module load conda"));
         assert!(script.contains("conda activate ml-env"));
+    }
+
+    #[test]
+    fn uv_env_setup_installs_requirements() {
+        // Regression (#9): `uv sync` has no `-r` flag; installing a
+        // requirements file is `uv pip install -r <file>`.
+        let mut job = test_job("j-009", "python train.py");
+        job.environment = Some(EnvSpec::Uv {
+            project: None,
+            requirements: Some("requirements.txt".into()),
+        });
+        let config = test_config();
+        let staging = PathBuf::from("/scratch/staging/run-001");
+
+        let script = generate(&job, &config, &staging, &[], &test_project_dir()).unwrap();
+        assert!(
+            script.contains("uv pip install -r requirements.txt\n"),
+            "expected `uv pip install -r`, got:\n{script}"
+        );
+        assert!(
+            !script.contains("uv sync -r"),
+            "stale `uv sync -r` in:\n{script}"
+        );
     }
 
     #[test]

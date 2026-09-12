@@ -36,9 +36,22 @@ from a `pyproject.toml` or `requirements.txt`.
 environment = { uv = "pyproject.toml" }
 ```
 
-OxyMake calls `uv sync` to ensure the environment matches the lockfile.
-The environment hash (from `uv.lock`) is included in the cache key, so
-changing a dependency invalidates affected outputs.
+The value is either a project file (`pyproject.toml`) or a
+requirements-style file:
+
+```toml
+environment = { uv = "pyproject.toml" }    # project: uv discovers it
+environment = { uv = "requirements.txt" }  # requirements file
+```
+
+For a requirements file, OxyMake runs the command as
+`uv run --with-requirements <file> -- …`. For a project file it runs
+`uv run -- …` and lets uv discover the project itself; the file is not
+passed on the command line.
+
+Either way the declared file's **bytes** enter the cache key — and, for a
+project file, the bytes of an adjacent `uv.lock` when one exists. Editing a
+dependency therefore invalidates the affected outputs.
 
 ### conda
 
@@ -79,14 +92,9 @@ environment = { apptainer = "image.sif" }
 
 ### System (default)
 
-No isolation. Uses whatever Python/R/tools are on `$PATH`:
-
-```toml
-environment = { system = true }
-```
-
-This is the default when no `environment` is specified. Suitable for
-`shell`-mode rules that call system utilities.
+No isolation: the command runs with whatever Python/R/tools are on `$PATH`.
+This is what you get by **omitting** `environment` — there is no `system`
+key, and an `environment` table naming no backend is a parse error.
 
 ## How Isolation Works
 
@@ -94,8 +102,8 @@ Each environment backend follows the same lifecycle:
 
 1. **Resolve**: Determine the exact environment specification (lockfile
    hash, image digest, flake hash)
-2. **Prepare**: Create or update the environment if needed (`uv sync`,
-   `docker pull`, `conda env create`)
+2. **Prepare**: Create or update the environment if needed (`uv run
+   --with-requirements`, `docker pull`, `conda env create`)
 3. **Execute**: Run the job inside the environment
 4. **Hash**: Include the environment specification hash in the cache key
 
@@ -109,7 +117,6 @@ Different rules can use different environments in the same workflow:
 
 ```toml
 [rule.download]
-environment = { system = true }
 shell = "wget {url} -O {output}"
 
 [rule.analyze]
