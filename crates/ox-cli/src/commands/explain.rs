@@ -41,13 +41,7 @@ pub fn cmd_explain(args: ExplainArgs) -> Result<()> {
         anyhow::bail!("no targets resolved for '{}'", args.target);
     }
 
-    let mut existing_files = common::discover_existing_files(&file_path);
-    // Remove target outputs from existing files so the resolver doesn't treat
-    // them as sources — explain should always resolve the full dependency chain
-    // even when outputs already exist on disk.
-    let target_paths: std::collections::HashSet<_> =
-        targets.iter().map(std::path::PathBuf::from).collect();
-    existing_files.retain(|p| !target_paths.contains(p));
+    let existing_files = common::discover_source_files(&file_path, &workflow, &config, true);
 
     let request = resolver::ResolveRequest {
         targets,

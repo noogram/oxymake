@@ -597,6 +597,153 @@ shell = "cat {input} | sort > {output}"
         .stdout(predicates::str::contains("2 jobs"));
 }
 
+fn write_two_rule_workflow(base: &std::path::Path) -> std::path::PathBuf {
+    let oxymakefile = base.join("Oxymakefile.toml");
+    fs::write(
+        &oxymakefile,
+        r#"ox_version = "0.1"
+
+[rule.a]
+output = ["a.txt"]
+shell = "printf 'constant\\n' > {output}"
+
+[rule.b]
+input = ["a.txt"]
+output = ["b.txt"]
+shell = "cat {input} > {output}"
+"#,
+    )
+    .unwrap();
+    oxymakefile
+}
+
+fn run_two_rule_workflow(base: &std::path::Path, oxymakefile: &std::path::Path) -> String {
+    let output = ox()
+        .args(["run", "b.txt", "-f", oxymakefile.to_str().unwrap()])
+        .current_dir(base)
+        .output()
+        .expect("run should execute");
+    assert!(output.status.success(), "run failed: {output:?}");
+    String::from_utf8(output.stdout).unwrap()
+}
+
+fn planned_jobs(base: &std::path::Path, oxymakefile: &std::path::Path) -> Vec<serde_json::Value> {
+    let output = ox()
+        .args([
+            "plan",
+            "b.txt",
+            "--json",
+            "-f",
+            oxymakefile.to_str().unwrap(),
+        ])
+        .current_dir(base)
+        .output()
+        .expect("plan should run");
+    assert!(output.status.success(), "plan failed: {output:?}");
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    json["jobs"].as_array().unwrap().clone()
+}
+
+struct RunObservation {
+    started_jobs: Vec<String>,
+    succeeded: u64,
+    skipped: u64,
+}
+
+fn observe_run(base: &std::path::Path, oxymakefile: &std::path::Path) -> RunObservation {
+    let output = ox()
+        .args([
+            "run",
+            "b.txt",
+            "--json",
+            "-f",
+            oxymakefile.to_str().unwrap(),
+        ])
+        .current_dir(base)
+        .output()
+        .expect("run should execute");
+    assert!(output.status.success(), "run failed: {output:?}");
+    let events: Vec<serde_json::Value> = output
+        .stdout
+        .split(|byte| *byte == b'\n')
+        .filter(|line| !line.is_empty())
+        .filter_map(|line| serde_json::from_slice::<serde_json::Value>(line).ok())
+        .collect();
+    let started_jobs = events
+        .iter()
+        .filter(|event| event["event"] == "job_started")
+        .map(|event| event["job_id"].as_str().unwrap().to_owned())
+        .collect();
+    let completed = events
+        .iter()
+        .find(|event| event["event"] == "run_completed")
+        .unwrap();
+    RunObservation {
+        started_jobs,
+        succeeded: completed["succeeded"].as_u64().unwrap(),
+        skipped: completed["skipped"].as_u64().unwrap(),
+    }
+}
+
+fn job_field(jobs: &[serde_json::Value], field: &str) -> Vec<String> {
+    jobs.iter()
+        .map(|job| job[field].as_str().unwrap().to_owned())
+        .collect()
+}
+
+/// A missing intermediate must not make `plan` stop at an existing final output.
+#[test]
+fn plan_resolves_full_chain_when_intermediate_output_is_missing() {
+    let dir = TempDir::new().unwrap();
+    let base = dir.path();
+    let oxymakefile = write_two_rule_workflow(base);
+    assert!(run_two_rule_workflow(base, &oxymakefile).contains("2 succeeded"));
+
+    fs::remove_file(base.join("a.txt")).unwrap();
+    let jobs = planned_jobs(base, &oxymakefile);
+    assert_eq!(job_field(&jobs, "rule"), ["a", "b"]);
+    assert_eq!(
+        job_field(&jobs, "reason"),
+        ["output missing: a.txt", "upstream rebuilt"]
+    );
+
+    let run = observe_run(base, &oxymakefile);
+    assert_eq!(job_field(&jobs, "job_id"), run.started_jobs);
+    assert_eq!((run.succeeded, run.skipped), (2, 0));
+}
+
+/// A missing final output selects only its producer when upstream is cached.
+#[test]
+fn plan_resolves_full_chain_when_final_output_is_missing() {
+    let dir = TempDir::new().unwrap();
+    let base = dir.path();
+    let oxymakefile = write_two_rule_workflow(base);
+    assert!(run_two_rule_workflow(base, &oxymakefile).contains("2 succeeded"));
+
+    fs::remove_file(base.join("b.txt")).unwrap();
+    let jobs = planned_jobs(base, &oxymakefile);
+    assert_eq!(job_field(&jobs, "rule"), ["b"]);
+    assert_eq!(job_field(&jobs, "reason"), ["output missing: b.txt"]);
+
+    let run = observe_run(base, &oxymakefile);
+    assert_eq!(job_field(&jobs, "job_id"), run.started_jobs);
+    assert_eq!((run.succeeded, run.skipped), (1, 1));
+}
+
+#[test]
+fn plan_reports_no_jobs_when_everything_is_up_to_date() {
+    let dir = TempDir::new().unwrap();
+    let base = dir.path();
+    let oxymakefile = write_two_rule_workflow(base);
+    assert!(run_two_rule_workflow(base, &oxymakefile).contains("2 succeeded"));
+
+    let jobs = planned_jobs(base, &oxymakefile);
+    assert!(jobs.is_empty());
+    let run = observe_run(base, &oxymakefile);
+    assert_eq!(job_field(&jobs, "job_id"), run.started_jobs);
+    assert_eq!((run.succeeded, run.skipped), (0, 2));
+}
+
 /// `ox plan` on an Oxymakefile that carries `source_line` (as the translator
 /// emits) and fails with `no rule produces output` must cite the original
 /// Snakefile line in its error message — either directly (`Snakefile:N`)
@@ -2836,6 +2983,40 @@ shell = "cp data/{sample}.csv results/{sample}.txt"
     let stdout = String::from_utf8_lossy(&output.stdout);
     let _parsed: serde_json::Value =
         serde_json::from_str(&stdout).expect("explain --json should produce valid JSON");
+}
+
+/// A missing intermediate must not truncate `explain` at an existing final output.
+#[test]
+fn explain_resolves_full_chain_when_intermediate_output_is_missing() {
+    let dir = TempDir::new().unwrap();
+    let base = dir.path();
+    let oxymakefile = write_two_rule_workflow(base);
+    assert!(run_two_rule_workflow(base, &oxymakefile).contains("2 succeeded"));
+
+    fs::remove_file(base.join("a.txt")).unwrap();
+    let output = ox()
+        .args([
+            "explain",
+            "b.txt",
+            "--json",
+            "-f",
+            oxymakefile.to_str().unwrap(),
+        ])
+        .current_dir(base)
+        .output()
+        .expect("explain should run");
+    assert!(output.status.success(), "explain failed: {output:?}");
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let rules: Vec<_> = json["chain"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|job| job["rule"].as_str().unwrap())
+        .collect();
+    assert_eq!(rules, ["b", "a"]);
+
+    let run = run_two_rule_workflow(base, &oxymakefile);
+    assert!(run.contains("2 succeeded"), "unexpected run output: {run}");
 }
 
 // ---------------------------------------------------------------------------

@@ -135,7 +135,7 @@ fn cancel_by_names(db: &ox_state::db::StateDb, args: &CancelArgs) -> Result<Vec<
     let targets = common::resolve_targets(&workflow, &[]);
 
     // Build full graph so we can traverse dependencies.
-    let existing_files = common::discover_existing_files(&file_path);
+    let existing_files = common::discover_source_files(&file_path, &workflow, &config, true);
     let request = ResolveRequest {
         targets,
         config,

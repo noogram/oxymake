@@ -19,9 +19,7 @@ use ox_core::disk_writer::spawn_disk_writer_confined;
 use ox_core::event::EventBus;
 use ox_core::hashing::{hash_kv_map, update_field, update_opt_field};
 use ox_core::job_graph::JobGraph;
-use ox_core::model::{
-    ConcreteJob, ContentHash, Event, ExecutionBlock, GateId, JobId, OutputRef, RunReason,
-};
+use ox_core::model::{ConcreteJob, ContentHash, Event, ExecutionBlock, GateId, JobId, OutputRef};
 use ox_core::resolver::{self, ResolveRequest};
 use ox_core::scheduler::{self, FailedJobDetail, SchedulerConfig};
 use ox_core::traits::benchmark::{self, BenchmarkSink};
@@ -274,7 +272,7 @@ fn execution_source(job: &ConcreteJob) -> String {
 }
 
 /// Collect the file-system paths from a job's outputs (only File outputs).
-fn output_file_paths(job: &ConcreteJob) -> Vec<PathBuf> {
+pub(super) fn output_file_paths(job: &ConcreteJob) -> Vec<PathBuf> {
     job.outputs
         .iter()
         .filter_map(|o| match &o.reference {
@@ -284,7 +282,7 @@ fn output_file_paths(job: &ConcreteJob) -> Vec<PathBuf> {
         .collect()
 }
 
-fn input_file_paths(job: &ConcreteJob) -> Vec<PathBuf> {
+pub(super) fn input_file_paths(job: &ConcreteJob) -> Vec<PathBuf> {
     job.inputs
         .iter()
         .filter_map(|i| match &i.reference {
@@ -303,6 +301,10 @@ pub(super) struct CacheKeyComponents {
     pub(super) input_hashes: Vec<(String, String)>,
     /// BLAKE3 hash of the job specification (rule source + params + env).
     pub(super) job_spec_hash: String,
+    /// Hash of the resolved wildcard bindings, `None` when the job has none.
+    pub(super) params_hash: Option<String>,
+    /// Content hash of the environment spec, `None` when undeclared.
+    pub(super) env_hash: Option<String>,
 }
 
 fn job_spec_parts(job: &ConcreteJob) -> (String, Option<String>, Option<String>, String) {
@@ -382,8 +384,8 @@ pub(super) fn job_cache_key_from_provenance(
 /// computation for large, unchanged inputs from full-file I/O to a single
 /// `stat()` call.
 ///
-/// See [`job_cache_key`] for the simple version that discards components.
-fn job_cache_key_with_components(
+/// See `job_cache_key` (test-only) for the version that discards components.
+pub(super) fn job_cache_key_with_components(
     job: &ConcreteJob,
     mut store: Option<&mut CacheStore>,
 ) -> Option<CacheKeyComponents> {
@@ -452,6 +454,8 @@ fn job_cache_key_with_components(
             .map(|(p, h)| (p, h.to_string()))
             .collect(),
         job_spec_hash,
+        params_hash,
+        env_hash,
     })
 }
 
@@ -459,6 +463,7 @@ fn job_cache_key_with_components(
 ///
 /// Thin wrapper over [`job_cache_key_with_components`] that discards the
 /// provenance components.
+#[cfg(test)]
 fn job_cache_key(job: &ConcreteJob, store: Option<&mut CacheStore>) -> Option<ContentHash> {
     job_cache_key_with_components(job, store).map(|c| c.cache_key)
 }
@@ -473,11 +478,46 @@ fn job_cache_key(job: &ConcreteJob, store: Option<&mut CacheStore>) -> Option<Co
 struct SchedulerCache {
     store: Mutex<CacheStore>,
     remote: Option<Arc<dyn RemoteCache>>,
+    /// What each job was keyed on, collected as the cache layer computes
+    /// it, so the run can write it into the audit trail afterwards (#12).
+    /// Keyed by `JobId`; a job the cache layer never keyed is absent.
+    provenance: Mutex<HashMap<String, ox_state::db::JobProvenance>>,
+}
+
+/// Build the audit-trail provenance for one job from the components its
+/// cache key was computed from.
+///
+/// `output_hashes` is the cache entry's recorded output hashes when they
+/// are known (after a `record`, or on a hit against a stored entry).
+pub(super) fn job_provenance(
+    job: &ConcreteJob,
+    components: &CacheKeyComponents,
+    output_hashes: Option<&std::collections::BTreeMap<String, ContentHash>>,
+) -> ox_state::db::JobProvenance {
+    let artifact = ox_core::model::ArtifactProvenance {
+        input_hashes: components.input_hashes.clone(),
+        job_spec_hash: components.job_spec_hash.clone(),
+        reproducibility: job.reproducibility,
+    };
+    let output_hashes = output_hashes.and_then(|map| {
+        let plain: std::collections::BTreeMap<&str, &str> =
+            map.iter().map(|(p, h)| (p.as_str(), h.as_str())).collect();
+        serde_json::to_string(&plain).ok()
+    });
+    ox_state::db::JobProvenance {
+        cache_key: Some(components.cache_key.as_str().to_string()),
+        input_hashes: serde_json::to_string(&components.input_hashes).ok(),
+        output_hashes,
+        params_hash: components.params_hash.clone(),
+        env_hash: components.env_hash.clone(),
+        reproducibility_class: Some(job.reproducibility.to_string()),
+        artifact_provenance_json: serde_json::to_string(&artifact).ok(),
+    }
 }
 
 /// Restore all outputs for a known local cache entry from a shared artifact
 /// directory, then validate their hashes through `CacheStore`.
-async fn restore_remote_outputs(
+pub(super) async fn restore_remote_outputs(
     remote: &dyn RemoteCache,
     store: &mut CacheStore,
     cache_key: &ContentHash,
@@ -517,8 +557,87 @@ impl SchedulerCache {
         Self {
             store: Mutex::new(store),
             remote,
+            provenance: Mutex::new(HashMap::new()),
         }
     }
+
+    /// Remember what a job was keyed on, for the audit trail.
+    async fn note_provenance(&self, job: &ConcreteJob, prov: ox_state::db::JobProvenance) {
+        self.provenance
+            .lock()
+            .await
+            .insert(job.id.as_str().to_string(), prov);
+    }
+}
+
+/// Lease under which a peer session counts as alive, from the environment.
+fn resolve_lease_secs() -> u64 {
+    std::env::var(ox_state::claim::LEASE_ENV_VAR)
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .filter(|secs| *secs > 0)
+        .unwrap_or(ox_state::claim::DEFAULT_LEASE_SECS)
+}
+
+/// Record a run in which every job was a cache hit.
+///
+/// The all-cached fast path never reaches the scheduler, so nothing else
+/// writes to `state.db` for it.  Without this the state database could not
+/// answer "did this run hit the cache?" — the question issue #12 is about.
+///
+/// Best-effort throughout: a state database that cannot be opened or
+/// written is a degraded audit trail, never a failed run.
+fn record_fully_cached_run(
+    state_db_path: &Path,
+    run_id: &str,
+    job_graph: &JobGraph,
+    executor: &str,
+    note: Option<&str>,
+    provenance: &HashMap<String, ox_state::db::JobProvenance>,
+    cached: &HashSet<JobId>,
+) {
+    let Ok(db) = ox_state::db::StateDb::open(state_db_path) else {
+        return;
+    };
+    let job_ids = job_graph.topological_order().unwrap_or_default();
+    let records: Vec<ox_state::db::JobRecord> = job_ids
+        .iter()
+        .filter_map(|job_id| {
+            job_graph
+                .get_job(job_id)
+                .map(|job| ox_state::db::JobRecord {
+                    id: job_id.as_str().to_string(),
+                    rule_name: job.rule.as_str().to_string(),
+                    wildcards: serde_json::to_string(&job.wildcards).unwrap_or_default(),
+                    cache_key: None,
+                    run_id: Some(run_id.to_string()),
+                })
+        })
+        .collect();
+
+    // The run record comes first: jobs.run_id references runs(id).
+    let _ = db.begin_run(run_id, None, records.len(), note);
+    let _ = db.register_jobs(&records);
+    // Rows a dead session left `running` / `failed` / `cancelled` are not
+    // this run's verdict; a live peer's rows are left alone (ADR-012).
+    let ids: Vec<String> = records.iter().map(|r| r.id.clone()).collect();
+    let _ = db.reset_inactive_job_rows(&ids, resolve_lease_secs());
+
+    // Only genuine cache hits are recorded as cached: a job excluded by
+    // `--until` / `--omit-from` was not run *and* was not a hit, and
+    // labelling it cached would overstate cache effectiveness.
+    for job_id in job_ids.iter().filter(|id| cached.contains(id)) {
+        let _ = db.skip_job(job_id.as_str());
+    }
+    let _ = db.record_job_cache_keys(run_id, provenance);
+    let _ = db.finalize_job_history(
+        run_id,
+        executor,
+        ox_state::host::hostname(),
+        &HashMap::new(),
+        provenance,
+    );
+    let _ = db.end_run(run_id, 0, 0, ids.len());
 }
 
 impl CacheCheck for SchedulerCache {
@@ -546,18 +665,26 @@ impl CacheCheck for SchedulerCache {
             }
 
             // DB-backed modes (MtimeHash, ContentHash): need cache key.
-            let cache_key = match job_cache_key(job, Some(&mut *store)) {
-                Some(k) => k,
+            // Keep the components: on a hit they are the only record of
+            // what the decision was keyed on (#12).
+            let components = match job_cache_key_with_components(job, Some(&mut *store)) {
+                Some(c) => c,
                 None => return false,
             };
+            let cache_key = components.cache_key.clone();
             if let Some(remote) = &self.remote {
                 if restore_remote_outputs(remote.as_ref(), &mut store, &cache_key, &output_paths)
                     .await
                 {
+                    let entry = store.get(&cache_key);
+                    let prov =
+                        job_provenance(job, &components, entry.as_ref().map(|e| &e.output_hashes));
+                    drop(store);
+                    self.note_provenance(job, prov).await;
                     return true;
                 }
             }
-            match store.check_cached(&cache_key, &output_refs) {
+            let hit = match store.check_cached(&cache_key, &output_refs) {
                 Ok(status) => {
                     if let CacheHitStatus::Mismatch { ref path } = status {
                         eprintln!("cache: output hash mismatch for {}, re-executing", path,);
@@ -565,7 +692,15 @@ impl CacheCheck for SchedulerCache {
                     status.is_hit()
                 }
                 Err(_) => false,
+            };
+            if hit {
+                let entry = store.get(&cache_key);
+                let prov =
+                    job_provenance(job, &components, entry.as_ref().map(|e| &e.output_hashes));
+                drop(store);
+                self.note_provenance(job, prov).await;
             }
+            hit
         })
     }
 
@@ -588,14 +723,15 @@ impl CacheCheck for SchedulerCache {
 
             // Build provenance from the cache key components.
             let provenance = ox_core::model::ArtifactProvenance {
-                input_hashes: components.input_hashes,
-                job_spec_hash: components.job_spec_hash,
+                input_hashes: components.input_hashes.clone(),
+                job_spec_hash: components.job_spec_hash.clone(),
                 reproducibility: job.reproducibility,
             };
 
+            let cache_key = components.cache_key.clone();
             let output_refs: Vec<&Path> = output_paths.iter().map(|p| p.as_path()).collect();
             if let Err(e) = store.record(
-                components.cache_key,
+                cache_key.clone(),
                 &output_refs,
                 Some(&provenance),
                 job.platform_scope,
@@ -603,6 +739,10 @@ impl CacheCheck for SchedulerCache {
                 eprintln!("warning: failed to cache job {}: {e}", job.id.as_str());
                 return;
             }
+
+            let entry = store.get(&cache_key);
+            let prov = job_provenance(job, &components, entry.as_ref().map(|e| &e.output_hashes));
+            self.note_provenance(job, prov).await;
 
             if let Some(remote) = &self.remote {
                 for output in &output_paths {
@@ -809,37 +949,9 @@ fn apply_profile_defaults(args: &mut RunArgs, profile: &ox_format::parse::Profil
     }
 }
 
-/// Read `cache_validation` from the user-global config file.
-///
-/// Checks `$XDG_CONFIG_HOME/oxymake/config.toml` (or `~/.config/oxymake/config.toml`).
-/// Returns `None` if the file doesn't exist or doesn't contain the key.
-/// Read the global config TOML table.
-///
-/// Checks `$XDG_CONFIG_HOME/oxymake/config.toml` (or `~/.config/oxymake/config.toml`).
-fn load_global_config() -> Option<toml::Table> {
-    let config_dir = std::env::var("XDG_CONFIG_HOME")
-        .ok()
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| {
-            let home = std::env::var("HOME").unwrap_or_default();
-            format!("{home}/.config")
-        });
-    let path = PathBuf::from(config_dir).join("oxymake/config.toml");
-    let content = std::fs::read_to_string(&path).ok()?;
-    content.parse().ok()
-}
-
-fn resolve_global_config_cache_validation() -> Option<String> {
-    let table = load_global_config()?;
-    table
-        .get("cache_validation")
-        .and_then(|v| v.as_str())
-        .map(String::from)
-}
-
 /// Read `open_dashboard` from the user-global config file.
 fn resolve_global_config_open_dashboard() -> Option<bool> {
-    let table = load_global_config()?;
+    let table = common::load_global_config()?;
     table.get("open_dashboard").and_then(|v| v.as_bool())
 }
 
@@ -912,67 +1024,12 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
     if args.verbose >= 2 {
         eprintln!("Scanning source files...");
     }
-    let mut existing_files = common::discover_existing_files(&file_path);
-
-    // Exclude rule output files from existing_files so the resolver always
-    // produces the full job graph. Without this, the resolver sees existing
-    // outputs and short-circuits (resolve_target returns early for files in
-    // the `existing` set), producing 0 jobs.
-    //
-    // The cache pre-scan (below) handles skip logic for cached jobs. If we
-    // let the resolver short-circuit, deleted/stale intermediate outputs
-    // won't trigger downstream rebuilds (ox-jxdw).
-    {
-        let mut rule_outputs: HashSet<PathBuf> = HashSet::new();
-        for rule in &workflow.rules {
-            for output in &rule.outputs {
-                let mut expanded = Vec::new();
-                common::expand_pattern(output.pattern.as_str(), &config, &mut expanded);
-                for path in expanded {
-                    rule_outputs.insert(PathBuf::from(path));
-                }
-            }
-        }
-        // An imported entry is the engine's explicit assertion that its
-        // verified outputs may stand in for a producer whose source inputs do
-        // not exist in this checkout. Preserve such outputs as resolver leaves;
-        // ordinary local outputs are still excluded and checked by cache key.
-        let adopted_leaves: HashSet<PathBuf> = if !args.no_cache {
-            CacheStore::open(Path::new(".oxymake"))
-                .ok()
-                .map(|cache| {
-                    rule_outputs
-                        .iter()
-                        .filter(|path| {
-                            let Some(entry) = cache.entry_for_output(path) else {
-                                return false;
-                            };
-                            let Some(provenance) = &entry.provenance else {
-                                return false;
-                            };
-                            if !entry.adopted {
-                                return false;
-                            }
-                            if !provenance
-                                .input_hashes
-                                .iter()
-                                .any(|(input, _)| !Path::new(input).exists())
-                            {
-                                return false;
-                            }
-                            entry.output_hashes.iter().all(|(output, expected)| {
-                                hash_file(Path::new(output)).is_ok_and(|actual| actual == *expected)
-                            })
-                        })
-                        .cloned()
-                        .collect()
-                })
-                .unwrap_or_default()
-        } else {
-            HashSet::new()
-        };
-        existing_files.retain(|p| !rule_outputs.contains(p) || adopted_leaves.contains(p));
-    }
+    // Rule outputs must never masquerade as source files. The cache pre-scan
+    // below decides which jobs are up to date after resolution has built the
+    // complete graph. Adopted outputs (ox cache-import) are the one exception:
+    // their source inputs may not exist here, so they stay resolver leaves.
+    let existing_files =
+        common::discover_source_files(&file_path, &workflow, &config, !args.no_cache);
 
     timer.mark("discover_files");
 
@@ -1220,25 +1277,8 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
     //   3. Oxymakefile.toml: [config] cache_validation = "<strategy>"
     //   4. User global: ~/.config/oxymake/config.toml
     //   5. Built-in default: mtime+hash (content-verifying; ADR-006 amendment)
-    let cache_validation = if let Some(ref cli_val) = args.cache_validation {
-        cli_val
-            .parse::<CacheValidation>()
-            .map_err(|e| anyhow::anyhow!("{e}"))?
-    } else if let Ok(env_val) = std::env::var("OX_CACHE_VALIDATION") {
-        env_val
-            .parse::<CacheValidation>()
-            .map_err(|e| anyhow::anyhow!("OX_CACHE_VALIDATION: {e}"))?
-    } else if let Some(ox_format::parse::ConfigValue::Scalar(s)) =
-        workflow.config.get("cache_validation")
-    {
-        s.parse::<CacheValidation>()
-            .map_err(|e| anyhow::anyhow!("config cache_validation: {e}"))?
-    } else if let Some(val) = resolve_global_config_cache_validation() {
-        val.parse::<CacheValidation>()
-            .map_err(|e| anyhow::anyhow!("global config cache_validation: {e}"))?
-    } else {
-        CacheValidation::default()
-    };
+    let cache_validation =
+        common::resolve_cache_validation(args.cache_validation.as_deref(), &workflow)?;
 
     // A shared cache has no meaningful mtime relationship with this
     // workspace. DirectoryCache verifies each fetched artifact by content, so
@@ -1264,9 +1304,6 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
             }
         }
     };
-
-    let mut skip_jobs: HashSet<JobId> = HashSet::new();
-    let mut run_reasons: HashMap<JobId, RunReason> = HashMap::new();
 
     // The cache pre-scan may restore outputs from a directory cache before
     // deciding which jobs are stale. Reuse this runtime for scheduling below.
@@ -1300,125 +1337,20 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
         None
     };
 
-    if args.no_cache {
-        // All jobs run — mark each with CacheDisabled reason.
-        for job_id in job_graph.job_ids() {
-            run_reasons.insert(job_id.clone(), RunReason::CacheDisabled);
-        }
-    } else if let Some(ref mut store) = cache_store {
-        // Track jobs that will re-execute (not cached). Any downstream job
-        // must also re-execute even if its own outputs look valid on disk,
-        // because its inputs may change once the upstream job runs. This is
-        // transitive invalidation — the foundation of incremental builds.
-        let mut stale_jobs: HashSet<JobId> = HashSet::new();
-        if let Ok(topo) = job_graph.topological_order() {
-            for job_id in topo {
-                // If an upstream job is stale, this job is stale too —
-                // its inputs will be regenerated and may differ.
-                if stale_jobs.contains(job_id) {
-                    // Propagate staleness to direct downstream dependents.
-                    for dep in job_graph.downstream(job_id) {
-                        stale_jobs.insert(dep.clone());
-                    }
-                    // Reason will be UpstreamRebuilt — set by the scheduler
-                    // at emit time since it knows which jobs were force-rerun.
-                    continue;
-                }
-
-                let mut is_hit = false;
-                if let Some(job) = job_graph.get_job(job_id) {
-                    let output_paths = output_file_paths(job);
-                    let output_refs: Vec<&Path> =
-                        output_paths.iter().map(|p| p.as_path()).collect();
-
-                    if output_paths.is_empty() {
-                        // No outputs — not cacheable.
-                        run_reasons.insert(job_id.clone(), RunReason::NotCacheable);
-                    } else if store.validation() == CacheValidation::Mtime {
-                        // Stateless mtime mode: pure filesystem comparison.
-                        let input_paths = input_file_paths(job);
-                        let input_refs: Vec<&Path> =
-                            input_paths.iter().map(|p| p.as_path()).collect();
-                        match CacheStore::check_mtime_stateless(&input_refs, &output_refs) {
-                            Ok(CacheHitStatus::Hit) => {
-                                is_hit = true;
-                                skip_jobs.insert(job_id.clone());
-                            }
-                            Ok(CacheHitStatus::Mismatch { ref path }) => {
-                                run_reasons.insert(
-                                    job_id.clone(),
-                                    RunReason::OutputStale { path: path.clone() },
-                                );
-                            }
-                            Ok(CacheHitStatus::OutputMissing { ref path }) => {
-                                run_reasons.insert(
-                                    job_id.clone(),
-                                    RunReason::OutputMissing { path: path.clone() },
-                                );
-                            }
-                            Ok(CacheHitStatus::Miss) => {
-                                run_reasons.insert(job_id.clone(), RunReason::CacheMiss);
-                            }
-                            Err(_) => {
-                                run_reasons.insert(job_id.clone(), RunReason::CacheMiss);
-                            }
-                        }
-                    } else if let Some(cache_key) = job_cache_key(job, Some(&mut *store)) {
-                        // DB-backed modes (MtimeHash, ContentHash).
-                        let status = if let Some(remote) = &remote_cache {
-                            if rt.block_on(restore_remote_outputs(
-                                remote.as_ref(),
-                                store,
-                                &cache_key,
-                                &output_paths,
-                            )) {
-                                CacheHitStatus::Hit
-                            } else {
-                                store
-                                    .check_cached(&cache_key, &output_refs)
-                                    .unwrap_or(CacheHitStatus::Miss)
-                            }
-                        } else {
-                            store
-                                .check_cached(&cache_key, &output_refs)
-                                .unwrap_or(CacheHitStatus::Miss)
-                        };
-                        match status {
-                            CacheHitStatus::Hit => {
-                                is_hit = true;
-                                skip_jobs.insert(job_id.clone());
-                            }
-                            CacheHitStatus::Mismatch { ref path } => {
-                                run_reasons.insert(
-                                    job_id.clone(),
-                                    RunReason::OutputStale { path: path.clone() },
-                                );
-                            }
-                            CacheHitStatus::OutputMissing { ref path } => {
-                                run_reasons.insert(
-                                    job_id.clone(),
-                                    RunReason::OutputMissing { path: path.clone() },
-                                );
-                            }
-                            CacheHitStatus::Miss => {
-                                run_reasons.insert(job_id.clone(), RunReason::CacheMiss);
-                            }
-                        }
-                    } else {
-                        // No cache key — not cacheable.
-                        run_reasons.insert(job_id.clone(), RunReason::NotCacheable);
-                    }
-                }
-
-                // If this job is not cached, mark all downstream as stale.
-                if !is_hit {
-                    for dep in job_graph.downstream(job_id) {
-                        stale_jobs.insert(dep.clone());
-                    }
-                }
-            }
-        }
-    }
+    let remote_scan = remote_cache.as_deref().map(|remote| (remote, &rt));
+    let execution = super::execution_plan::determine_execution(
+        &job_graph,
+        !args.no_cache,
+        cache_validation,
+        cache_store.as_mut(),
+        remote_scan,
+    );
+    let mut skip_jobs = execution.skip_jobs;
+    let run_reasons = execution.run_reasons;
+    // What the shared prescan keyed each cache hit on, for the audit trail
+    // (#12). A fully cached run computes nothing else, so this is the only
+    // provenance it has.
+    let prescan_provenance = execution.provenance;
 
     // -----------------------------------------------------------------------
     // --forcerun: remove matching jobs (and downstream) from skip set
@@ -1464,6 +1396,9 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
 
     timer.mark("cache_prescan");
 
+    // Jobs skipped because the cache answered for them, as opposed to jobs
+    // excluded by `--until` / `--omit-from`.
+    let cache_hits: HashSet<JobId> = skip_jobs.difference(&selective_skip).cloned().collect();
     let cached_count = skip_jobs.len().saturating_sub(selective_skip.len());
     if cached_count > 0 {
         println!("Cache: {cached_count} of {job_count} job(s) up-to-date, skipping.");
@@ -1480,6 +1415,22 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
     // -----------------------------------------------------------------------
     let to_run = job_count - skip_jobs.len();
     if to_run == 0 {
+        // A fully cached run used to leave no trace at all: it returned
+        // here before state.db was even opened, so `jobs.cached` kept
+        // whatever the run that executed the jobs had written (0), and
+        // there was no `runs` row for the run that hit the cache (#12).
+        // Recording costs one transaction plus one write per job, paid
+        // only on the warm path it documents.
+        std::fs::create_dir_all(&oxymake_dir).ok();
+        record_fully_cached_run(
+            &oxymake_dir.join("state.db"),
+            &format!("run-{}", std::process::id()),
+            &job_graph,
+            &args.executor,
+            args.note.as_deref(),
+            &prescan_provenance,
+            &cache_hits,
+        );
         if !args.json {
             println!(
                 "Completed: 0 succeeded, 0 failed, {} skipped, 0 cancelled (0.0s)",
@@ -1572,19 +1523,19 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
             None
         }
     };
+    // Resolved once here and reused for the session row and for every
+    // job_history row: the audit trail has to say which machine ran the
+    // job, and both sites used to write the literal "localhost" (#12).
+    let hostname = ox_state::host::hostname();
     let session_id = if let Some(ref db) = state_db {
         let pid = std::process::id();
-        db.create_session(pid, "localhost", None).ok()
+        db.create_session(pid, hostname, None).ok()
     } else {
         None
     };
     // Lease of this session's claims: a session whose heartbeat is older
     // than this is dead to its peers and its running jobs are reclaimed.
-    let lease_secs = std::env::var(ox_state::claim::LEASE_ENV_VAR)
-        .ok()
-        .and_then(|v| v.trim().parse::<u64>().ok())
-        .filter(|secs| *secs > 0)
-        .unwrap_or(ox_state::claim::DEFAULT_LEASE_SECS);
+    let lease_secs = resolve_lease_secs();
 
     timer.mark("state_db_open");
 
@@ -2464,8 +2415,22 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
 
         // Record audit-trail history entries from the post-flush DB state.
         // The jobs table already has rule_name, wildcards, status, timing,
-        // and exit_code — no need to iterate the in-memory job graph.
-        let _ = db.finalize_job_history(&run_id, &args.executor, "localhost", &durations);
+        // and exit_code; the hashes the decision was keyed on exist only in
+        // the cache layer, so they are threaded in from there (#12).
+        // The prescan keyed the jobs it decided were cache hits; the
+        // scheduler's cache layer keyed the rest as it ran them. Later wins.
+        let mut cache_provenance = prescan_provenance.clone();
+        if let Some(ref sc) = scheduler_cache_impl {
+            cache_provenance.extend(sc.provenance.blocking_lock().clone());
+        }
+        let _ = db.record_job_cache_keys(&run_id, &cache_provenance);
+        let _ = db.finalize_job_history(
+            &run_id,
+            &args.executor,
+            hostname,
+            &durations,
+            &cache_provenance,
+        );
 
         // Close the session (a session interrupted by a signal keeps that
         // status): its terminal rows are then history to the next run,
@@ -2569,9 +2534,19 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
             Ok(())
         }
         Err(e) => {
-            // Finalise the run record even on error.
+            // Finalise the run record even on error. The scheduler returned
+            // no result, but the jobs table was flushed above and is
+            // authoritative, so the counts come from there instead of the
+            // zeros that made an aborted run indistinguishable from an
+            // empty one (#12). `runs` has no status column, so this is the
+            // whole of the fix that the schema supports without a
+            // migration.
             if let Some(ref db) = state_db {
-                let _ = db.end_run(&run_id, 0, 0, 0);
+                let (succeeded, failed, skipped) = db
+                    .job_counts_for_run(&run_id)
+                    .map(|c| (c.completed.saturating_sub(c.cached), c.failed, c.cached))
+                    .unwrap_or((0, 0, 0));
+                let _ = db.end_run(&run_id, succeeded, failed, skipped);
             }
             bail!("{e}");
         }

@@ -11,6 +11,7 @@ mod clean;
 mod common;
 mod dag;
 mod dashboard;
+mod execution_plan;
 mod explain;
 mod export;
 mod gate;
