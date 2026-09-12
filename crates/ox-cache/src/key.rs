@@ -30,7 +30,7 @@ use std::path::{Component, Path, PathBuf};
 /// Bump this whenever the set of hashed ingredients or their encoding
 /// changes: old cache entries then become unreachable (clean invalidation)
 /// instead of being wrongly reused under the new semantics.
-pub const CACHE_KEY_FORMAT_VERSION: &str = "oxymake-cache-key-v5";
+pub const CACHE_KEY_FORMAT_VERSION: &str = "oxymake-cache-key-v6";
 
 /// Express an in-workflow path relative to the workflow root before it enters
 /// a cache key.
@@ -196,7 +196,10 @@ pub fn env_spec_content_hash(env: &EnvSpec) -> String {
         EnvSpec::System => {
             update_field(&mut hasher, "env.system", b"");
         }
-        EnvSpec::Uv { requirements } => {
+        EnvSpec::Uv {
+            project,
+            requirements,
+        } => {
             update_opt_field(
                 &mut hasher,
                 "env.uv.requirements",
@@ -208,6 +211,31 @@ pub fn env_spec_content_hash(env: &EnvSpec) -> String {
                 "env.uv.requirements_content",
                 content.as_deref(),
             );
+            // A project file declares the dependencies just as a
+            // requirements file does, so its bytes — and those of the
+            // adjacent `uv.lock`, which pins what actually gets installed —
+            // must enter the key (issue #8).
+            update_opt_field(
+                &mut hasher,
+                "env.uv.project",
+                project.as_deref().map(str::as_bytes),
+            );
+            let project_content = project.as_deref().and_then(|p| std::fs::read(p).ok());
+            update_opt_field(
+                &mut hasher,
+                "env.uv.project_content",
+                project_content.as_deref(),
+            );
+            let lock_content = project
+                .as_deref()
+                .map(|p| {
+                    std::path::Path::new(p)
+                        .parent()
+                        .unwrap_or(std::path::Path::new(""))
+                        .join("uv.lock")
+                })
+                .and_then(|lock| std::fs::read(lock).ok());
+            update_opt_field(&mut hasher, "env.uv.lock_content", lock_content.as_deref());
         }
         EnvSpec::Conda { env } => {
             update_field(&mut hasher, "env.conda.spec", env.as_bytes());
@@ -485,7 +513,7 @@ mod tests {
         });
         assert_eq!(
             key.as_str(),
-            "21323fdbbbfb88623f7cf1711106e5bd2f97a4d48f04555d1f41a654a53a551b",
+            "ca08d6640469e7ecb8d6c0c36eaad3ccf8fa967a5d746ab4ddf55bb3aeba0c85",
             "cache key format drifted — bump CACHE_KEY_FORMAT_VERSION and update the golden value"
         );
     }
@@ -498,6 +526,7 @@ mod tests {
         let req = dir.path().join("requirements.txt");
         std::fs::write(&req, "numpy==1.0").unwrap();
         let env = EnvSpec::Uv {
+            project: None,
             requirements: Some(req.display().to_string()),
         };
 
@@ -506,6 +535,46 @@ mod tests {
         let h2 = env_spec_content_hash(&env);
 
         assert_ne!(h1, h2, "requirements content must enter the env hash");
+    }
+
+    #[test]
+    fn env_hash_tracks_project_file_content() {
+        // Regression (#8): `environment = { uv = "pyproject.toml" }` used to
+        // contribute a constant to the key, so editing `dependencies` never
+        // invalidated the rule's outputs.
+        let dir = tempfile::tempdir().unwrap();
+        let proj = dir.path().join("pyproject.toml");
+        std::fs::write(&proj, "[project]\ndependencies = []\n").unwrap();
+        let env = EnvSpec::Uv {
+            project: Some(proj.display().to_string()),
+            requirements: None,
+        };
+
+        let h1 = env_spec_content_hash(&env);
+        std::fs::write(&proj, "[project]\ndependencies = [\"six\"]\n").unwrap();
+        let h2 = env_spec_content_hash(&env);
+
+        assert_ne!(h1, h2, "pyproject.toml content must enter the env hash");
+    }
+
+    #[test]
+    fn env_hash_tracks_uv_lock_content() {
+        let dir = tempfile::tempdir().unwrap();
+        let proj = dir.path().join("pyproject.toml");
+        std::fs::write(&proj, "[project]\ndependencies = [\"six\"]\n").unwrap();
+        let env = EnvSpec::Uv {
+            project: Some(proj.display().to_string()),
+            requirements: None,
+        };
+
+        let h1 = env_spec_content_hash(&env);
+        std::fs::write(dir.path().join("uv.lock"), "version = 1\n").unwrap();
+        let h2 = env_spec_content_hash(&env);
+        assert_ne!(h1, h2, "uv.lock must enter the env hash when present");
+
+        std::fs::write(dir.path().join("uv.lock"), "version = 2\n").unwrap();
+        let h3 = env_spec_content_hash(&env);
+        assert_ne!(h2, h3, "uv.lock content must enter the env hash");
     }
 
     #[test]

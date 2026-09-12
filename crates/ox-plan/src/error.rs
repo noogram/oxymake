@@ -295,8 +295,11 @@ mod tests {
 
     #[test]
     fn no_producer_finds_specific_dropped_rule_line() {
-        let tmp = std::env::temp_dir().join("ox-plan-error-test-no-producer");
-        let _ = std::fs::remove_dir_all(&tmp);
+        // A per-test directory: a fixed path under the system temp dir is
+        // shared by every concurrent `cargo test` process, and one run's
+        // `remove_dir_all` raced another run's writes.
+        let dir = tempfile::tempdir().unwrap();
+        let tmp = dir.path().to_path_buf();
         let oxy = tmp.join("Oxymakefile.toml");
         let esc = tmp.join("Oxymakefile.toml.escalations.toml");
         write_temp(&oxy, "ox_version = \"0.1\"\n");
@@ -334,18 +337,15 @@ rule produce_results:
             s.contains("Snakefile:17"),
             "expected a specific Snakefile:17 reference, got: {s}"
         );
-        std::fs::remove_dir_all(&tmp).ok();
     }
 
     #[test]
     fn locate_escalations_returns_none_when_file_absent() {
-        let tmp = std::env::temp_dir().join("ox-plan-error-test-absent");
-        let _ = std::fs::remove_dir_all(&tmp);
-        std::fs::create_dir_all(&tmp).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let tmp = dir.path().to_path_buf();
         let oxy = tmp.join("Oxymakefile.toml");
         std::fs::File::create(&oxy).unwrap();
         assert!(locate_escalations(&oxy).is_none());
-        std::fs::remove_dir_all(&tmp).ok();
     }
 
     #[test]

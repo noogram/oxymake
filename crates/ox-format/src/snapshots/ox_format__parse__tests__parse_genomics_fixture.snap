@@ -228,6 +228,9 @@ Workflow {
             resources: {},
             environment: Some(
                 Uv {
+                    project: Some(
+                        "pyproject.toml",
+                    ),
                     requirements: None,
                 },
             ),
