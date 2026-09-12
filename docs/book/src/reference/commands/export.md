@@ -46,4 +46,5 @@ This enables zero-friction migration in both directions.
 ## See Also
 
 - [ox translate](./translate.md) -- import from Snakemake
+- [ox cache-export](./cache-export.md) -- describe cached outputs for another machine
 - [Oxymakefile Format](../format.md) -- the OxyMake workflow format

@@ -1,6 +1,7 @@
 //! Integration tests for the OxyMake CLI binary.
 
 use assert_cmd::Command;
+use predicates::prelude::PredicateBooleanExt;
 use std::fs;
 use tempfile::TempDir;
 
@@ -89,6 +90,129 @@ cache_platform = "any"
         )
         .unwrap();
     assert_eq!(any_count, 1);
+}
+
+/// A transferred product becomes a trusted leaf even when the producer's raw
+/// input is intentionally absent in the consuming tree.
+#[test]
+fn cache_export_import_continues_without_raw_inputs() {
+    let producer = TempDir::new().unwrap();
+    let consumer = TempDir::new().unwrap();
+    let manifest = producer.path().join("portable-cache.json");
+    let workflow = r#"ox_version = "0.1"
+
+[rule.upstream]
+input = ["raw.txt"]
+output = ["product.txt"]
+shell = "printf upstream-ran >> executions.log; cat raw.txt > product.txt"
+cache_platform = "any"
+
+[rule.downstream]
+input = ["product.txt"]
+output = ["final.txt"]
+shell = "printf downstream-ran >> executions.log; cat product.txt > final.txt"
+"#;
+    for root in [producer.path(), consumer.path()] {
+        fs::write(root.join("Oxymakefile.toml"), workflow).unwrap();
+    }
+    fs::write(producer.path().join("raw.txt"), "foreign result\n").unwrap();
+
+    ox().args(["run", "product.txt"])
+        .current_dir(producer.path())
+        .assert()
+        .success();
+    ox().args([
+        "cache-export",
+        "product.txt",
+        "--output",
+        manifest.to_str().unwrap(),
+    ])
+    .current_dir(producer.path())
+    .assert()
+    .success();
+    fs::copy(
+        producer.path().join("product.txt"),
+        consumer.path().join("product.txt"),
+    )
+    .unwrap();
+
+    fs::write(consumer.path().join("product.txt"), "tampered\n").unwrap();
+    ox().args(["cache-import", manifest.to_str().unwrap()])
+        .current_dir(consumer.path())
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("output hash mismatch"));
+    fs::copy(
+        producer.path().join("product.txt"),
+        consumer.path().join("product.txt"),
+    )
+    .unwrap();
+
+    ox().args(["cache-import", manifest.to_str().unwrap()])
+        .current_dir(consumer.path())
+        .assert()
+        .success();
+    assert!(!consumer.path().join("raw.txt").exists());
+
+    ox().args(["run", "final.txt"])
+        .current_dir(consumer.path())
+        .assert()
+        .success();
+    assert_eq!(
+        fs::read_to_string(consumer.path().join("final.txt")).unwrap(),
+        "foreign result\n"
+    );
+    assert_eq!(
+        fs::read_to_string(consumer.path().join("executions.log")).unwrap(),
+        "downstream-ran"
+    );
+}
+
+#[test]
+fn unsupported_future_adoption_manifest_reports_version_before_body_schema() {
+    let dir = TempDir::new().unwrap();
+    let manifest = dir.path().join("future.json");
+    fs::write(
+        &manifest,
+        r#"{
+  "kind": "oxymake.cache-adoption-manifest",
+  "format_version": 2,
+  "producer_version": "0.4.0",
+  "new_required_field": true
+}"#,
+    )
+    .unwrap();
+
+    ox().args(["cache-import", manifest.to_str().unwrap()])
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("format version 2"))
+        .stderr(predicates::str::contains("produced by ox 0.4.0"))
+        .stderr(predicates::str::contains("upgrade ox on this machine"))
+        .stderr(predicates::str::contains("missing field").not());
+}
+
+#[test]
+fn cache_import_rejects_the_wrong_manifest_kind_before_workflow_loading() {
+    let dir = TempDir::new().unwrap();
+    let manifest = dir.path().join("other.json");
+    fs::write(
+        &manifest,
+        r#"{
+  "kind": "some.other.document",
+  "format_version": 1,
+  "producer_version": "0.3.0",
+  "entries": []
+}"#,
+    )
+    .unwrap();
+
+    ox().args(["cache-import", manifest.to_str().unwrap()])
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("not an adoption manifest"));
 }
 
 /// A directory remote cache restores a missing output from the shared

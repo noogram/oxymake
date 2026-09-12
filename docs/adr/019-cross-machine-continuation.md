@@ -406,3 +406,26 @@ platform field would invalidate every existing key is false —
 `update_opt_field(…, Some(v))` calls `update_field(…, v)` verbatim
 (`crates/ox-core/src/hashing.rs:41-44`). Frame, per-persona responses, and
 synthesis are retained with the molecule.
+
+## Amendment — 2026-09-12: adoption command names
+
+The original naming decision above (`ox export --manifest` / `ox import`)
+rested on a false premise: `ox export` already shipped in v0.3.0 with the
+meaning “translate an Oxymakefile to Snakemake or WDL”, while the book already
+uses the word “Import” for the reverse translation performed by `ox translate`
+(`docs/book/src/reference/commands/export.md`). The adoption commands are
+therefore `ox cache-export <targets>... [-o <path>]` and
+`ox cache-import <path>`. The translation command `ox export` is unchanged.
+
+The operator declined to create an `ox cache` command group because the project
+has not committed that future cache operations will acquire CLI verbs. Grouping
+only two of the six existing cache-related operations would teach a false
+taxonomy: `ox invalidate`, `ox clean --cache-only`, `ox run --cache-remote`, and
+`ox run --cache-validation` remain flat or attached to `run`. The decision is
+about the concrete workflow goal—repatriating artefacts built on another machine
+so execution can continue or be piloted elsewhere—not about promoting the cache
+into a named user-addressable artifact.
+
+This amendment records operator arbitration from deliberation
+`delib-20260912-c712`; it supersedes only the command spellings in the original
+decision.

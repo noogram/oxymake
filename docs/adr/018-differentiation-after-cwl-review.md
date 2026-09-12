@@ -51,13 +51,17 @@ Meanwhile an internal audit of this repository (evidence below) found that the
 | Claim | Where stated | Reality |
 |---|---|---|
 | `trust_scope` is a cache-key dimension | `OXYMAKE-THESIS.md` §3.1 formula; `docs/book/src/concepts/cache.md:119` | **Not in the key.** `crates/ox-cache/src/key.rs:70-107` hashes version tag, rule source, sorted `(path, hash)` inputs, params, env, shell, platform. No `trust_scope` symbol exists in `crates/ox-cache*`. |
-| `ox run --cache-remote s3://…` | `docs/book/src/concepts/cache.md:116` | **Flag does not exist.** No `cache_remote` arg in `crates/ox-cli`; `ox-cli/Cargo.toml` does not even depend on `ox-cache-remote`. |
+| `ox run --cache-remote s3://…` | `docs/book/src/concepts/cache.md:116` | **The flag exists, but the claimed backend does not.** `RunArgs::cache_remote` is wired to `DirectoryCache`; `ox-cli` depends on `ox-cache-remote`, whose S3 and GCS implementations still return `Unavailable`. A URI is not routed to either backend. |
 | Remote cache backends | book, same page | `DirectoryCache` is fully implemented (`crates/ox-cache-remote/src/directory.rs:57-141`, with fetch-time hash re-verification). `S3Cache` and `GcsCache` return `Unavailable("… not yet implemented")` (`s3.rs:93-137`, `gcs.rs:63-105`). |
 | Cache keys travel across trees | ADR-001 "shareable across machines" | **True, and verified.** Input paths enter the key as workflow-declared *relative* patterns (`crates/ox-core/src/resolver.rs:490,507` → `crates/ox-cli/src/commands/run.rs:328`); no cwd or absolute root is hashed. Identical content in `/a/proj` and `/b/proj` yields the same key on the same platform. |
 | Content-addressing "by default" | thesis §3.1, paper abstract | **Half true.** The *key* is always content-derived. Output *re-verification* depth is policy-dependent: the default `mtime+hash` (ADR-006, 2026-06-10 amendment) skips hashing when mtime+size match, so a same-size/same-mtime output corruption is invisible unless the operator opts into `--cache-validation=hash`. |
 
 The glass-house note is part of the context: the only pure-mtime engine the
 paper actually measured was OxyMake's own former default (ADR-006 pre-amendment).
+
+The corrected `--cache-remote` fact does not change this ADR's conclusion: the
+wired backend is a daemon-free shared filesystem directory, not a deployed CAS
+service, and the advertised S3 path remains unavailable.
 
 ## Decision
 

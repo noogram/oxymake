@@ -13,6 +13,12 @@ its adjacent `uv.lock` — to the cache key, so the key format moves from v5 to
 v6: the first run after this upgrade recomputes everything, once.
 
 ### Added
+- **`ox cache-export <targets> [-o <path>]` and `ox cache-import <manifest>` support
+  verified cross-machine continuation.** Export writes a versioned manifest of
+  output hashes and provenance. Import requires the outputs locally, re-hashes
+  all of them before changing the cache, rejects mismatches and
+  non-reproducible rules, and lets downstream jobs continue when the producer's
+  raw inputs are absent (issue #7).
 - **Rules can opt into cross-platform cache keys with
   `cache_platform = "any"`.** The default remains `"exact"`, preserving
   platform-specific keys. OxyMake rejects this opt-in for

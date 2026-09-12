@@ -34,7 +34,26 @@ pub struct CacheEntry {
     pub completed_at: u64,
     /// Provenance metadata for cache correctness (Stage 2).
     pub provenance: Option<ox_core::model::ArtifactProvenance>,
+    /// Platform on which the outputs were originally produced.
+    #[serde(default)]
+    pub platform: Option<String>,
+    /// Platform scope in force when the cache key was computed.
+    #[serde(default)]
+    pub platform_scope: Option<PlatformScope>,
+    /// Whether this entry was explicitly adopted through `ox cache-import`.
+    #[serde(default)]
+    pub adopted: bool,
 }
+
+type CacheEntryRow = (
+    i64,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    i64,
+);
 
 /// Result of checking whether a job's cached outputs are still valid.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -107,7 +126,11 @@ fn migrate_cache_entry_schema(conn: &mut Connection) -> Result<(), CacheError> {
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(|e| CacheError::Manifest(format!("sqlite migration tx: {e}")))?;
 
-    for column in ["platform", "platform_scope"] {
+    for (column, definition) in [
+        ("platform", "TEXT"),
+        ("platform_scope", "TEXT"),
+        ("adopted", "INTEGER NOT NULL DEFAULT 0"),
+    ] {
         let exists: bool = tx
             .query_row(
                 "SELECT EXISTS(
@@ -119,7 +142,7 @@ fn migrate_cache_entry_schema(conn: &mut Connection) -> Result<(), CacheError> {
             .map_err(|e| CacheError::Manifest(format!("sqlite migration inspect: {e}")))?;
         if !exists {
             tx.execute(
-                &format!("ALTER TABLE cache_entries ADD COLUMN {column} TEXT"),
+                &format!("ALTER TABLE cache_entries ADD COLUMN {column} {definition}"),
                 [],
             )
             .map_err(|e| CacheError::Manifest(format!("sqlite migration: {e}")))?;
@@ -176,7 +199,8 @@ impl CacheStore {
                 input_hashes_json TEXT,
                 job_spec_hash TEXT,
                 platform TEXT,
-                platform_scope TEXT
+                platform_scope TEXT,
+                adopted INTEGER NOT NULL DEFAULT 0
             );
             CREATE TABLE IF NOT EXISTS output_records (
                 cache_key    TEXT NOT NULL,
@@ -523,6 +547,48 @@ impl CacheStore {
             counter = "cache.record",
             "record"
         );
+        let platform = crate::key::current_platform();
+        self.record_with_platform(
+            cache_key,
+            outputs,
+            provenance,
+            &platform,
+            platform_scope,
+            false,
+        )
+    }
+
+    /// Record verified outputs adopted from another machine.
+    ///
+    /// Unlike [`Self::record`], this preserves the producing platform supplied
+    /// by the manifest instead of attributing the outputs to this machine.
+    pub fn record_adopted(
+        &mut self,
+        cache_key: ContentHash,
+        outputs: &[&Path],
+        provenance: &ox_core::model::ArtifactProvenance,
+        origin_platform: &str,
+        platform_scope: PlatformScope,
+    ) -> Result<(), CacheError> {
+        self.record_with_platform(
+            cache_key,
+            outputs,
+            Some(provenance),
+            origin_platform,
+            platform_scope,
+            true,
+        )
+    }
+
+    fn record_with_platform(
+        &mut self,
+        cache_key: ContentHash,
+        outputs: &[&Path],
+        provenance: Option<&ox_core::model::ArtifactProvenance>,
+        platform: &str,
+        platform_scope: PlatformScope,
+        adopted: bool,
+    ) -> Result<(), CacheError> {
         let completed_at = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -533,7 +599,6 @@ impl CacheStore {
             .transaction()
             .map_err(|e| CacheError::Manifest(format!("sqlite tx: {e}")))?;
 
-        // Upsert the entry (replace if key already exists), including provenance columns.
         let (repro_class, input_hashes_json, job_spec_hash) = match provenance {
             Some(prov) => (
                 Some(prov.reproducibility.to_string()),
@@ -543,12 +608,11 @@ impl CacheStore {
             None => (None, None, None),
         };
 
-        let platform = crate::key::current_platform();
         tx.execute(
             "INSERT OR REPLACE INTO cache_entries
                 (cache_key, completed_at, reproducibility_class, input_hashes_json, job_spec_hash,
-                 platform, platform_scope)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                 platform, platform_scope, adopted)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             params![
                 cache_key.as_str(),
                 completed_at as i64,
@@ -557,6 +621,7 @@ impl CacheStore {
                 job_spec_hash,
                 platform,
                 platform_scope.to_string(),
+                adopted,
             ],
         )
         .map_err(|e| CacheError::Manifest(format!("sqlite insert: {e}")))?;
@@ -730,17 +795,36 @@ impl CacheStore {
 
     /// Get a cache entry by key.
     pub fn get(&self, cache_key: &ContentHash) -> Option<CacheEntry> {
-        let row_data: (i64, Option<String>, Option<String>, Option<String>) = self
+        let row_data: CacheEntryRow = self
             .conn
             .query_row(
-                "SELECT completed_at, reproducibility_class, input_hashes_json, job_spec_hash
+                "SELECT completed_at, reproducibility_class, input_hashes_json, job_spec_hash,
+                        platform, platform_scope, adopted
                  FROM cache_entries WHERE cache_key = ?1",
                 params![cache_key.as_str()],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                        row.get(6)?,
+                    ))
+                },
             )
             .ok()?;
 
-        let (completed_at, repro_class, input_hashes_json, job_spec_hash) = row_data;
+        let (
+            completed_at,
+            repro_class,
+            input_hashes_json,
+            job_spec_hash,
+            platform,
+            platform_scope,
+            adopted,
+        ) = row_data;
 
         let provenance = match (repro_class, job_spec_hash) {
             (Some(rc), Some(jsh)) => {
@@ -795,7 +879,32 @@ impl CacheStore {
             output_mtimes,
             completed_at: completed_at as u64,
             provenance,
+            platform,
+            platform_scope: platform_scope.and_then(|scope| match scope.as_str() {
+                "exact" => Some(PlatformScope::Exact),
+                "any" => Some(PlatformScope::Any),
+                _ => None,
+            }),
+            adopted: adopted != 0,
         })
+    }
+
+    /// Find the cache entry that records `path` as an output.
+    pub fn entry_for_output(&self, path: &Path) -> Option<CacheEntry> {
+        let cache_key: String = self
+            .conn
+            .query_row(
+                "SELECT records.cache_key
+                 FROM output_records AS records
+                 JOIN cache_entries AS entries ON entries.cache_key = records.cache_key
+                 WHERE records.path = ?1
+                 ORDER BY entries.completed_at DESC
+                 LIMIT 1",
+                params![path.to_string_lossy().as_ref()],
+                |row| row.get(0),
+            )
+            .ok()?;
+        self.get(&ContentHash::from_hex(cache_key).ok()?)
     }
 
     /// Count cache entries whose output files no longer exist on disk.
@@ -1437,6 +1546,9 @@ mod tests {
                 output_mtimes,
                 completed_at: 12345,
                 provenance: None,
+                platform: None,
+                platform_scope: None,
+                adopted: false,
             },
         );
 
