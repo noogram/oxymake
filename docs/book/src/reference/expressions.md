@@ -83,7 +83,7 @@ shell = "python process.py --input {input} --output {output} --sample {wildcards
 > escaped and `{input}`/`{output}` lists are space-joined. Never interpolate
 > third-party file names, wildcard values, or configuration values into
 > `shell` without validating them for the shell context. See
-> [SECURITY.md](../../../../SECURITY.md#shell-interpolation-is-a-datacode-boundary).
+> [SECURITY.md](https://github.com/noogram/oxymake/blob/main/SECURITY.md#shell-interpolation-is-a-datacode-boundary).
 
 Double braces `{{` and `}}` produce literal braces (useful in Python code):
 

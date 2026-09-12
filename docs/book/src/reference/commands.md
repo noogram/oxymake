@@ -148,7 +148,7 @@ Pending: 10 jobs waiting
 `ox status` is a **reader**: it never rewrites a row it reports as
 orphaned. Reclaiming happens at the start of the next `ox run`. The same
 derivation backs `ox top` and the web dashboard — see
-[ADR-012](../../adr/012-cooperative-multi-session.md).
+[ADR-012](https://github.com/noogram/oxymake/blob/main/docs/adr/012-cooperative-multi-session.md).
 
 `--json` carries the distinction too: `jobs.orphaned` alongside
 `jobs.running`, an `orphaned_jobs` array (each entry with `reason`,

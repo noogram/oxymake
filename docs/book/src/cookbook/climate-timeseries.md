@@ -337,5 +337,6 @@ expands the wildcards and parallelizes automatically.
   LLM agents and NDJSON event streams
 - [Rules and Wildcards](../concepts/rules-and-wildcards.md) -- wildcard expansion
   and constraints
-- [Snapshots](../concepts/snapshots.md) -- saving and comparing workflow state
+- [Snapshots](../reference/commands.md#ox-snapshot) -- saving and comparing
+  workflow state
 ```
