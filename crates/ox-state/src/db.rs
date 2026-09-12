@@ -115,6 +115,42 @@ pub struct JobCounts {
     pub cancelled: usize,
 }
 
+/// What the cache layer computed for one job during a run.
+///
+/// The cache key and its component hashes only exist at run time — they
+/// are derived from the files on disk — but the audit trail has to record
+/// them, otherwise a cache decision cannot be reconstructed afterwards
+/// (#12).  A run collects one of these per job and hands the map to
+/// [`StateDb::record_job_cache_keys`] and
+/// [`StateDb::finalize_job_history`].
+///
+/// ```
+/// use ox_state::db::JobProvenance;
+///
+/// let p = JobProvenance {
+///     cache_key: Some("9f86d0…".into()),
+///     ..JobProvenance::default()
+/// };
+/// assert!(p.input_hashes.is_none());
+/// ```
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct JobProvenance {
+    /// The job's cache key, as computed for this run.
+    pub cache_key: Option<String>,
+    /// JSON-encoded `[[path, hash], …]` for the job's content-tracked inputs.
+    pub input_hashes: Option<String>,
+    /// JSON-encoded `{path: hash}` for the job's outputs, when known.
+    pub output_hashes: Option<String>,
+    /// Hash of the resolved wildcard bindings, when the job has any.
+    pub params_hash: Option<String>,
+    /// Content hash of the environment spec, when the job declares one.
+    pub env_hash: Option<String>,
+    /// The rule's declared reproducibility class.
+    pub reproducibility_class: Option<String>,
+    /// JSON-encoded `ox_core::model::ArtifactProvenance`.
+    pub artifact_provenance_json: Option<String>,
+}
+
 /// A single entry in the append-only job execution audit trail.
 ///
 /// ```
@@ -666,14 +702,30 @@ impl StateDb {
 
     /// Mark a job as completed via cache hit (no execution needed).
     ///
-    /// Only transitions from `pending` → `completed` with `cached = 1`.
-    /// Returns `true` if the transition happened, `false` if the job was
-    /// not in `pending` state (or does not exist).
+    /// Accepts `pending` → `completed` *and* `completed` → `completed`,
+    /// both with `cached = 1`.  Returns `true` when the row was marked
+    /// cached by this call.
+    ///
+    /// The `completed` source state is what makes a repeated run's cache
+    /// hit visible (#12).  A job row is keyed by job id and survives the
+    /// run that created it; [`reset_inactive_job_rows`] deliberately
+    /// leaves `completed` rows alone (resetting them at start-up costs
+    /// ~100 ms on a warm 1000-job graph, issue #3), so from the second
+    /// run onwards every cache hit met an already-`completed` row and the
+    /// `pending`-only guard silently dropped it: `jobs.cached` stayed 0
+    /// while the console reported a full cache hit.
+    ///
+    /// This is not the reset ADR-012 forbids on a live peer's row — the
+    /// status, exit code and output hashes are left as they are, and the
+    /// two states a peer can be actively holding (`running`, `failed`)
+    /// are still excluded by the guard.
+    ///
+    /// [`reset_inactive_job_rows`]: StateDb::reset_inactive_job_rows
     pub fn skip_job(&self, job_id: &str) -> Result<bool, StateError> {
         let now = unix_now();
         let rows = self.conn.execute(
             "UPDATE jobs SET status = 'completed', cached = 1, completed_at = ?1
-             WHERE id = ?2 AND status = 'pending'",
+             WHERE id = ?2 AND status IN ('pending', 'completed')",
             rusqlite::params![now, job_id],
         )?;
         Ok(rows > 0)
@@ -1332,6 +1384,37 @@ impl StateDb {
         Ok(())
     }
 
+    /// Persist the cache key each job was keyed on during a run.
+    ///
+    /// `jobs.cache_key` cannot be filled at registration time: the key is
+    /// a function of the input files' contents, and an intermediate
+    /// input does not exist yet when the graph is registered.  The run
+    /// therefore collects the keys as the cache layer computes them and
+    /// writes them here, once, before finalising the history (#12).
+    ///
+    /// Only rows belonging to `run_id` are touched, so a concurrent peer's
+    /// rows are left alone.  Returns the number of rows updated.
+    pub fn record_job_cache_keys(
+        &self,
+        run_id: &str,
+        provenance: &std::collections::HashMap<String, JobProvenance>,
+    ) -> Result<usize, StateError> {
+        let tx = self.conn.unchecked_transaction()?;
+        let mut updated = 0;
+        {
+            let mut stmt =
+                tx.prepare("UPDATE jobs SET cache_key = ?1 WHERE id = ?2 AND run_id = ?3")?;
+            for (job_id, prov) in provenance {
+                let Some(key) = prov.cache_key.as_deref() else {
+                    continue;
+                };
+                updated += stmt.execute(rusqlite::params![key, job_id, run_id])?;
+            }
+        }
+        tx.commit()?;
+        Ok(updated)
+    }
+
     /// Finalize audit-trail history from the post-flush jobs table.
     ///
     /// Reads all jobs for `run_id` that reached a terminal state
@@ -1342,14 +1425,19 @@ impl StateDb {
     /// can read it directly (hq-9in00).
     ///
     /// `wall_times` maps `job_id → duration_ms` collected from
-    /// `Event::JobCompleted` events.  `executor` and `hostname` are
-    /// constant for the whole run.
+    /// `Event::JobCompleted` events.  `provenance` maps `job_id →`
+    /// [`JobProvenance`], the hashes the cache layer computed for the job
+    /// during this run; a job the cache layer never keyed (mtime-only
+    /// validation, `--no-cache`) is simply absent and its provenance
+    /// columns stay `NULL`.  `executor` and `hostname` are constant for
+    /// the whole run.
     pub fn finalize_job_history(
         &self,
         run_id: &str,
         executor: &str,
         hostname: &str,
         wall_times: &std::collections::HashMap<String, u64>,
+        provenance: &std::collections::HashMap<String, JobProvenance>,
     ) -> Result<usize, StateError> {
         let mut stmt = self.conn.prepare(
             "SELECT id, rule_name, wildcards, status, started_at, completed_at, exit_code
@@ -1367,24 +1455,31 @@ impl StateDb {
                     _ => None,
                 });
                 let wall_time_ms = wall_times.get(job_id.as_str()).copied();
+                let prov = provenance.get(job_id.as_str()).cloned().unwrap_or_default();
                 Ok(JobHistoryEntry {
                     run_id: run_id.to_string(),
                     job_id,
                     rule_name: row.get(1)?,
                     wildcards: row.get(2)?,
-                    input_hashes: None,
-                    output_hashes: None,
-                    params_hash: None,
-                    env_hash: None,
+                    input_hashes: prov.input_hashes,
+                    output_hashes: prov.output_hashes,
+                    params_hash: prov.params_hash,
+                    env_hash: prov.env_hash,
                     executor: Some(executor.to_string()),
                     hostname: Some(hostname.to_string()),
                     started_at: row.get(4)?,
                     completed_at: row.get(5)?,
                     wall_time_ms,
+                    // Deliberately left NULL. The only peak-memory figure
+                    // this process has comes from getrusage(RUSAGE_CHILDREN),
+                    // which is process-wide: under `-j N` it aggregates every
+                    // child, so attributing it to one job would record a
+                    // plausible-looking wrong number. Populating this column
+                    // needs per-job accounting (a cgroup, or wait4 per child).
                     peak_mem_mb: None,
                     exit_code,
-                    reproducibility_class: None,
-                    artifact_provenance_json: None,
+                    reproducibility_class: prov.reproducibility_class,
+                    artifact_provenance_json: prov.artifact_provenance_json,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
@@ -2186,8 +2281,9 @@ impl StateBackend for StateDb {
         executor: &str,
         hostname: &str,
         wall_times: &std::collections::HashMap<String, u64>,
+        provenance: &std::collections::HashMap<String, JobProvenance>,
     ) -> Result<usize, StateError> {
-        self.finalize_job_history(run_id, executor, hostname, wall_times)
+        self.finalize_job_history(run_id, executor, hostname, wall_times, provenance)
     }
 
     fn job_history_for_run(&self, run_id: &str) -> Result<Vec<JobHistoryEntry>, StateError> {
@@ -2689,8 +2785,22 @@ mod tests {
         let mut wall_times = std::collections::HashMap::new();
         wall_times.insert("j1".to_string(), 500u64);
 
+        let mut provenance = std::collections::HashMap::new();
+        provenance.insert(
+            "j1".to_string(),
+            JobProvenance {
+                cache_key: Some("key-j1".into()),
+                input_hashes: Some(r#"[["in.txt","aa"]]"#.into()),
+                output_hashes: Some(r#"{"out.txt":"bb"}"#.into()),
+                params_hash: Some("pp".into()),
+                env_hash: Some("ee".into()),
+                reproducibility_class: Some("deterministic".into()),
+                artifact_provenance_json: Some("{}".into()),
+            },
+        );
+
         let count = db
-            .finalize_job_history(run_id, "local", "localhost", &wall_times)
+            .finalize_job_history(run_id, "local", "localhost", &wall_times, &provenance)
             .unwrap();
         // j1 (completed) and j2 (failed) — j3 is still pending so excluded.
         assert_eq!(count, 2);
@@ -2702,6 +2812,32 @@ mod tests {
         assert_eq!(h1.rule_name, "build");
         assert_eq!(h1.wildcards.as_deref(), Some(r#"{"x":"1"}"#));
         assert_eq!(h1.exit_code, Some(0));
+        // The provenance columns are what the cache layer computed, not
+        // the literal None they used to be (#12).
+        assert_eq!(h1.input_hashes.as_deref(), Some(r#"[["in.txt","aa"]]"#));
+        assert_eq!(h1.output_hashes.as_deref(), Some(r#"{"out.txt":"bb"}"#));
+        assert_eq!(h1.params_hash.as_deref(), Some("pp"));
+        assert_eq!(h1.env_hash.as_deref(), Some("ee"));
+        assert_eq!(h1.reproducibility_class.as_deref(), Some("deterministic"));
+        // A job with no recorded provenance keeps NULL columns.
+        let h2 = history.iter().find(|h| h.job_id == "j2").unwrap();
+        assert_eq!(h2.input_hashes, None);
+        assert_eq!(h2.artifact_provenance_json, None);
+
+        // The cache key lands on the jobs row, scoped to the run.
+        assert_eq!(db.record_job_cache_keys(run_id, &provenance).unwrap(), 1);
+        let key: Option<String> = db
+            .conn
+            .query_row("SELECT cache_key FROM jobs WHERE id = 'j1'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(key.as_deref(), Some("key-j1"));
+        assert_eq!(
+            db.record_job_cache_keys("other-run", &provenance).unwrap(),
+            0,
+            "a row belonging to another run must not be touched"
+        );
         assert_eq!(h1.wall_time_ms, Some(500));
         assert_eq!(h1.executor.as_deref(), Some("local"));
         assert_eq!(h1.hostname.as_deref(), Some("localhost"));
@@ -2734,6 +2870,7 @@ mod tests {
                 run_id,
                 "local",
                 "localhost",
+                &std::collections::HashMap::new(),
                 &std::collections::HashMap::new(),
             )
             .unwrap();
@@ -3343,7 +3480,7 @@ mod tests {
     }
 
     #[test]
-    fn skip_job_only_from_pending() {
+    fn skip_job_from_pending_or_completed() {
         let (_tmp, db) = temp_db();
         let sid = db.create_session(1, "localhost", None).unwrap();
 
@@ -3369,12 +3506,29 @@ mod tests {
         assert!(db.skip_job("j1").unwrap());
         assert_eq!(db.job_status("j1").unwrap().as_deref(), Some("completed"));
 
-        // Skipping an already-completed (cached) job must return false.
-        assert!(!db.skip_job("j1").unwrap());
+        // Skipping an already-completed job records the cache hit again:
+        // from the second run onwards the row a previous run left behind is
+        // the only row there is (#12).
+        db.conn
+            .execute("UPDATE jobs SET cached = 0 WHERE id = 'j1'", [])
+            .unwrap();
+        assert!(db.skip_job("j1").unwrap());
+        assert_eq!(db.job_status("j1").unwrap().as_deref(), Some("completed"));
+        let cached: i64 = db
+            .conn
+            .query_row("SELECT cached FROM jobs WHERE id = 'j1'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(cached, 1, "a cache hit on a completed row must be recorded");
 
-        // Skipping a running job must return false.
+        // Skipping a running job must return false — a row a live peer is
+        // executing is not ours to terminalize (ADR-012).
         db.claim_job("j2", &sid).unwrap();
         assert!(!db.skip_job("j2").unwrap());
         assert_eq!(db.job_status("j2").unwrap().as_deref(), Some("running"));
+
+        // Nor is a failed row: a failure must not be laundered into a hit.
+        db.fail_job("j2", &sid, 1).unwrap();
+        assert!(!db.skip_job("j2").unwrap());
+        assert_eq!(db.job_status("j2").unwrap().as_deref(), Some("failed"));
     }
 }

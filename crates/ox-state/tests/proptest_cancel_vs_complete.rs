@@ -7,7 +7,7 @@
 //! - `claim_job`  : pending → running       (atomic CAS)
 //! - `complete_job`: running → completed    (atomic CAS)
 //! - `fail_job`   : running → failed        (atomic CAS)
-//! - `skip_job`   : pending → completed     (atomic CAS, cached=1)
+//! - `skip_job`   : pending|completed → completed  (atomic CAS, cached=1)
 //! - `cancel_job_ids`: pending|running → cancelled (atomic CAS)
 //!
 //! A prior fix closed the
@@ -66,6 +66,11 @@ fn step(state: JobState, op: Op) -> (JobState, bool) {
         (JobState::Running, Op::Complete) => (JobState::Completed, true),
         (JobState::Running, Op::Fail) => (JobState::Failed, true),
         (JobState::Pending, Op::Skip) => (JobState::Completed, true),
+        // `skip_job` also accepts an already-completed row, so a repeated
+        // run's cache hit is recorded on the row a previous run left
+        // behind (#12). The state does not change — `Completed` stays
+        // absorbing — only `cached` is set, so the write reports `true`.
+        (JobState::Completed, Op::Skip) => (JobState::Completed, true),
         (JobState::Pending, Op::Cancel) | (JobState::Running, Op::Cancel) => {
             (JobState::Cancelled, true)
         }
@@ -232,7 +237,13 @@ proptest! {
         // Invariant 4 — the OX-6 audit-trail invariant must hold for any
         // arbitrary interleaving, including those that finalize the run.
         db
-            .finalize_job_history("run-prop", "local", "proptest", &Default::default())
+            .finalize_job_history(
+                "run-prop",
+                "local",
+                "proptest",
+                &Default::default(),
+                &Default::default(),
+            )
             .unwrap();
         let violations = db.terminal_status_violations().unwrap();
         prop_assert!(

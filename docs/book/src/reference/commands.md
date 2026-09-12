@@ -176,9 +176,20 @@ ox logs --failed            # Logs for all failed jobs
 List past runs.
 
 ```bash
-ox history                  # Recent runs
-ox history --json           # Structured history
+ox history                     # Recent runs
+ox history --json              # Structured history
+ox history --run-id run-1234   # Per-job detail for one run
 ```
+
+With `--run-id … --json`, each job is emitted as one JSON object per line.
+Besides timing and exit code, the object carries the provenance of the
+cache decision — `input_hashes`, `output_hashes`, `params_hash`,
+`env_hash`, `reproducibility_class` and `artifact_provenance` — so a cache
+report can be reconstructed from recorded state instead of being caught
+live. A job the cache layer never keyed (`--no-cache`, or
+`cache_validation = "mtime"`) reports `null` for these. `peak_mem_mb` is
+always `null`: the only measurement available is process-wide and cannot
+be attributed to one job under `-j N`.
 
 ## Management Commands
 

@@ -16,8 +16,8 @@
 use ox_core::model::ContentHash;
 
 use crate::db::{
-    AllJobDetail, JobCounts, JobHistoryEntry, JobLogInfo, JobRecord, JobWithLog, PipelineStats,
-    RunRecord, RunningJobDetail,
+    AllJobDetail, JobCounts, JobHistoryEntry, JobLogInfo, JobProvenance, JobRecord, JobWithLog,
+    PipelineStats, RunRecord, RunningJobDetail,
 };
 use crate::error::StateError;
 use crate::session::SessionInfo;
@@ -156,6 +156,7 @@ pub trait StateBackend {
         executor: &str,
         hostname: &str,
         wall_times: &std::collections::HashMap<String, u64>,
+        provenance: &std::collections::HashMap<String, JobProvenance>,
     ) -> Result<usize, StateError>;
 
     /// Query job history for a run.

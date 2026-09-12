@@ -17,8 +17,12 @@ thiserror.workspace = true
 tracing.workspace = true
 uuid.workspace = true
 
+# gethostname(3) for the audit trail's host column (#12); also used by the
+# fault-injection tests to SIGKILL a child.
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
 [dev-dependencies]
 tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "rt"] }
 proptest.workspace = true
-libc.workspace = true

@@ -8,6 +8,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **The state database can now substantiate a cache decision** (#12). Four
+  fields of the audit trail were declared but never filled on the `ox run`
+  path, so a cache report could only be caught live:
+  - `job_history.input_hashes`, `output_hashes`, `params_hash`, `env_hash`,
+    `reproducibility_class` and `artifact_provenance_json` carry the hashes
+    the cache layer actually keyed the job on, instead of `NULL`. A job the
+    cache layer never keyed (`--no-cache`, `cache.validation = "mtime"`)
+    still records `NULL`. `peak_mem_mb` stays `NULL` on purpose: the only
+    figure available comes from `getrusage(RUSAGE_CHILDREN)`, which is
+    process-wide and cannot be attributed to one job under `-j N`.
+  - `job_history.hostname` and `sessions.hostname` record the real machine
+    name instead of the literal `"localhost"`.
+  - `jobs.cached` is set and `jobs.cache_key` is filled on **every** cache
+    hit, not only on the first run. Previously the row a prior run left
+    `completed` blocked the update, so the console reported a full cache hit
+    while the table reported none.
+  - A run that ends in an error records the job counts it knows instead of
+    `0/0/0`, so an aborted run is no longer indistinguishable from an empty
+    one.
+
+### Changed
+- `ox history <run> --json` now also emits `input_hashes`, `output_hashes`,
+  `params_hash`, `env_hash`, `reproducibility_class` and
+  `artifact_provenance` for each job (#12).
+- `ox-state`: `StateDb::finalize_job_history` takes an additional
+  `provenance` map, `StateDb::record_job_cache_keys` is new, and
+  `StateDb::skip_job` now also accepts an already-`completed` row (both
+  changes are what make the cache hit above visible). `ox_state::host`
+  exposes the resolved host name. Unstable surface (#12).
+
 
 - `ox plan`, `ox run`, `ox explain`, `ox query`, `ox cancel`, `ox test`, and
   `ox check-consistency` now resolve through existing generated outputs instead

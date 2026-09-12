@@ -8,12 +8,18 @@ use ox_cache_remote::RemoteCache;
 use ox_core::job_graph::JobGraph;
 use ox_core::model::{JobId, RunReason};
 
-use super::run::{input_file_paths, job_cache_key, output_file_paths, restore_remote_outputs};
+use super::run::{
+    input_file_paths, job_cache_key_with_components, job_provenance, output_file_paths,
+    restore_remote_outputs,
+};
 
 /// The jobs satisfied by cache and the reason every other job must execute.
 pub struct ExecutionPlan {
     pub skip_jobs: HashSet<JobId>,
     pub run_reasons: HashMap<JobId, RunReason>,
+    /// What each cache hit was keyed on, for the audit trail (#12). Only
+    /// hits appear here: a job that runs is keyed again by the scheduler.
+    pub provenance: HashMap<String, ox_state::db::JobProvenance>,
 }
 
 /// Determine which jobs would execute for the current filesystem and cache.
@@ -32,6 +38,7 @@ pub fn determine_execution(
 ) -> ExecutionPlan {
     let mut skip_jobs = HashSet::new();
     let mut run_reasons = HashMap::new();
+    let mut provenance = HashMap::new();
 
     if !cache_enabled {
         for job_id in job_graph.job_ids() {
@@ -40,6 +47,7 @@ pub fn determine_execution(
         return ExecutionPlan {
             skip_jobs,
             run_reasons,
+            provenance,
         };
     }
 
@@ -80,7 +88,10 @@ pub fn determine_execution(
                         }
                     }
                 } else if let Some(cache_store) = store.as_deref_mut() {
-                    if let Some(cache_key) = job_cache_key(job, Some(&mut *cache_store)) {
+                    if let Some(components) =
+                        job_cache_key_with_components(job, Some(&mut *cache_store))
+                    {
+                        let cache_key = components.cache_key.clone();
                         let status = if let Some((remote_cache, runtime)) = remote {
                             if runtime.block_on(restore_remote_outputs(
                                 remote_cache,
@@ -103,6 +114,15 @@ pub fn determine_execution(
                             CacheHitStatus::Hit => {
                                 is_hit = true;
                                 skip_jobs.insert(job_id.clone());
+                                let entry = cache_store.get(&cache_key);
+                                provenance.insert(
+                                    job_id.as_str().to_string(),
+                                    job_provenance(
+                                        job,
+                                        &components,
+                                        entry.as_ref().map(|e| &e.output_hashes),
+                                    ),
+                                );
                             }
                             CacheHitStatus::Mismatch { path } => {
                                 run_reasons.insert(job_id.clone(), RunReason::OutputStale { path });
@@ -134,5 +154,6 @@ pub fn determine_execution(
     ExecutionPlan {
         skip_jobs,
         run_reasons,
+        provenance,
     }
 }
