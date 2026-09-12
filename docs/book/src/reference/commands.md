@@ -85,6 +85,13 @@ the exit code stays `1`, since a job did fail.
 
 Show the execution plan without running anything.
 
+Planning resolves the complete dependency graph, applies the same cache and
+staleness analysis as `ox run`, and displays only the jobs that would execute.
+Existing generated outputs are not treated as source files, so a missing
+intermediate includes its producer and downstream rebuilds; a warm cache
+reports zero jobs. Job lines (and the JSON `reason` field) explain selections
+such as `output missing` and `upstream rebuilt`.
+
 ```bash
 ox plan                     # Show what would run (optimized)
 ox plan --json              # Structured plan output

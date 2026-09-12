@@ -19,9 +19,7 @@ use ox_core::disk_writer::spawn_disk_writer_confined;
 use ox_core::event::EventBus;
 use ox_core::hashing::{hash_kv_map, update_field, update_opt_field};
 use ox_core::job_graph::JobGraph;
-use ox_core::model::{
-    ConcreteJob, ContentHash, Event, ExecutionBlock, GateId, JobId, OutputRef, RunReason,
-};
+use ox_core::model::{ConcreteJob, ContentHash, Event, ExecutionBlock, GateId, JobId, OutputRef};
 use ox_core::resolver::{self, ResolveRequest};
 use ox_core::scheduler::{self, FailedJobDetail, SchedulerConfig};
 use ox_core::traits::benchmark::{self, BenchmarkSink};
@@ -274,7 +272,7 @@ fn execution_source(job: &ConcreteJob) -> String {
 }
 
 /// Collect the file-system paths from a job's outputs (only File outputs).
-fn output_file_paths(job: &ConcreteJob) -> Vec<PathBuf> {
+pub(super) fn output_file_paths(job: &ConcreteJob) -> Vec<PathBuf> {
     job.outputs
         .iter()
         .filter_map(|o| match &o.reference {
@@ -284,7 +282,7 @@ fn output_file_paths(job: &ConcreteJob) -> Vec<PathBuf> {
         .collect()
 }
 
-fn input_file_paths(job: &ConcreteJob) -> Vec<PathBuf> {
+pub(super) fn input_file_paths(job: &ConcreteJob) -> Vec<PathBuf> {
     job.inputs
         .iter()
         .filter_map(|i| match &i.reference {
@@ -296,17 +294,17 @@ fn input_file_paths(job: &ConcreteJob) -> Vec<PathBuf> {
 
 /// Components of a cache key computation, preserving intermediate hashes
 /// for provenance tracking (Stage 2).
-struct CacheKeyComponents {
+pub(super) struct CacheKeyComponents {
     /// The final cache key (BLAKE3 of all components).
-    cache_key: ContentHash,
+    pub(super) cache_key: ContentHash,
     /// Content hashes of each input file, paired with their path.
-    input_hashes: Vec<(String, String)>,
+    pub(super) input_hashes: Vec<(String, String)>,
     /// BLAKE3 hash of the job specification (rule source + params + env).
-    job_spec_hash: String,
+    pub(super) job_spec_hash: String,
     /// Hash of the resolved wildcard bindings, `None` when the job has none.
-    params_hash: Option<String>,
+    pub(super) params_hash: Option<String>,
     /// Content hash of the environment spec, `None` when undeclared.
-    env_hash: Option<String>,
+    pub(super) env_hash: Option<String>,
 }
 
 /// Compute cache key for a job, returning components for provenance tracking.
@@ -318,7 +316,7 @@ struct CacheKeyComponents {
 /// `stat()` call.
 ///
 /// See `job_cache_key` (test-only) for the version that discards components.
-fn job_cache_key_with_components(
+pub(super) fn job_cache_key_with_components(
     job: &ConcreteJob,
     mut store: Option<&mut CacheStore>,
 ) -> Option<CacheKeyComponents> {
@@ -432,9 +430,7 @@ fn job_cache_key_with_components(
 /// Compute cache key for a job by hashing its inputs, rule source, and env.
 ///
 /// Thin wrapper over [`job_cache_key_with_components`] that discards the
-/// provenance components. Every production call site needs the components
-/// (the audit trail records them, #12), so this survives for the tests
-/// that only assert on the key.
+/// provenance components.
 #[cfg(test)]
 fn job_cache_key(job: &ConcreteJob, store: Option<&mut CacheStore>) -> Option<ContentHash> {
     job_cache_key_with_components(job, store).map(|c| c.cache_key)
@@ -461,7 +457,7 @@ struct SchedulerCache {
 ///
 /// `output_hashes` is the cache entry's recorded output hashes when they
 /// are known (after a `record`, or on a hit against a stored entry).
-fn job_provenance(
+pub(super) fn job_provenance(
     job: &ConcreteJob,
     components: &CacheKeyComponents,
     output_hashes: Option<&std::collections::BTreeMap<String, ContentHash>>,
@@ -489,7 +485,7 @@ fn job_provenance(
 
 /// Restore all outputs for a known local cache entry from a shared artifact
 /// directory, then validate their hashes through `CacheStore`.
-async fn restore_remote_outputs(
+pub(super) async fn restore_remote_outputs(
     remote: &dyn RemoteCache,
     store: &mut CacheStore,
     cache_key: &ContentHash,
@@ -916,37 +912,9 @@ fn apply_profile_defaults(args: &mut RunArgs, profile: &ox_format::parse::Profil
     }
 }
 
-/// Read `cache_validation` from the user-global config file.
-///
-/// Checks `$XDG_CONFIG_HOME/oxymake/config.toml` (or `~/.config/oxymake/config.toml`).
-/// Returns `None` if the file doesn't exist or doesn't contain the key.
-/// Read the global config TOML table.
-///
-/// Checks `$XDG_CONFIG_HOME/oxymake/config.toml` (or `~/.config/oxymake/config.toml`).
-fn load_global_config() -> Option<toml::Table> {
-    let config_dir = std::env::var("XDG_CONFIG_HOME")
-        .ok()
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| {
-            let home = std::env::var("HOME").unwrap_or_default();
-            format!("{home}/.config")
-        });
-    let path = PathBuf::from(config_dir).join("oxymake/config.toml");
-    let content = std::fs::read_to_string(&path).ok()?;
-    content.parse().ok()
-}
-
-fn resolve_global_config_cache_validation() -> Option<String> {
-    let table = load_global_config()?;
-    table
-        .get("cache_validation")
-        .and_then(|v| v.as_str())
-        .map(String::from)
-}
-
 /// Read `open_dashboard` from the user-global config file.
 fn resolve_global_config_open_dashboard() -> Option<bool> {
-    let table = load_global_config()?;
+    let table = common::load_global_config()?;
     table.get("open_dashboard").and_then(|v| v.as_bool())
 }
 
@@ -1019,29 +987,10 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
     if args.verbose >= 2 {
         eprintln!("Scanning source files...");
     }
-    let mut existing_files = common::discover_existing_files(&file_path);
-
-    // Exclude rule output files from existing_files so the resolver always
-    // produces the full job graph. Without this, the resolver sees existing
-    // outputs and short-circuits (resolve_target returns early for files in
-    // the `existing` set), producing 0 jobs.
-    //
-    // The cache pre-scan (below) handles skip logic for cached jobs. If we
-    // let the resolver short-circuit, deleted/stale intermediate outputs
-    // won't trigger downstream rebuilds (ox-jxdw).
-    {
-        let mut rule_outputs: HashSet<PathBuf> = HashSet::new();
-        for rule in &workflow.rules {
-            for output in &rule.outputs {
-                let mut expanded = Vec::new();
-                common::expand_pattern(output.pattern.as_str(), &config, &mut expanded);
-                for path in expanded {
-                    rule_outputs.insert(PathBuf::from(path));
-                }
-            }
-        }
-        existing_files.retain(|p| !rule_outputs.contains(p));
-    }
+    // Rule outputs must never masquerade as source files. The cache pre-scan
+    // below decides which jobs are up to date after resolution has built the
+    // complete graph.
+    let existing_files = common::discover_source_files(&file_path, &workflow, &config);
 
     timer.mark("discover_files");
 
@@ -1288,25 +1237,8 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
     //   3. Oxymakefile.toml: [config] cache_validation = "<strategy>"
     //   4. User global: ~/.config/oxymake/config.toml
     //   5. Built-in default: mtime+hash (content-verifying; ADR-006 amendment)
-    let cache_validation = if let Some(ref cli_val) = args.cache_validation {
-        cli_val
-            .parse::<CacheValidation>()
-            .map_err(|e| anyhow::anyhow!("{e}"))?
-    } else if let Ok(env_val) = std::env::var("OX_CACHE_VALIDATION") {
-        env_val
-            .parse::<CacheValidation>()
-            .map_err(|e| anyhow::anyhow!("OX_CACHE_VALIDATION: {e}"))?
-    } else if let Some(ox_format::parse::ConfigValue::Scalar(s)) =
-        workflow.config.get("cache_validation")
-    {
-        s.parse::<CacheValidation>()
-            .map_err(|e| anyhow::anyhow!("config cache_validation: {e}"))?
-    } else if let Some(val) = resolve_global_config_cache_validation() {
-        val.parse::<CacheValidation>()
-            .map_err(|e| anyhow::anyhow!("global config cache_validation: {e}"))?
-    } else {
-        CacheValidation::default()
-    };
+    let cache_validation =
+        common::resolve_cache_validation(args.cache_validation.as_deref(), &workflow)?;
 
     // A shared cache has no meaningful mtime relationship with this
     // workspace. DirectoryCache verifies each fetched artifact by content, so
@@ -1332,11 +1264,6 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
             }
         }
     };
-
-    let mut skip_jobs: HashSet<JobId> = HashSet::new();
-    let mut run_reasons: HashMap<JobId, RunReason> = HashMap::new();
-    // What the prescan keyed each cache hit on, for the audit trail (#12).
-    let mut prescan_provenance: HashMap<String, ox_state::db::JobProvenance> = HashMap::new();
 
     // The cache pre-scan may restore outputs from a directory cache before
     // deciding which jobs are stale. Reuse this runtime for scheduling below.
@@ -1370,141 +1297,20 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
         None
     };
 
-    if args.no_cache {
-        // All jobs run — mark each with CacheDisabled reason.
-        for job_id in job_graph.job_ids() {
-            run_reasons.insert(job_id.clone(), RunReason::CacheDisabled);
-        }
-    } else if let Some(ref mut store) = cache_store {
-        // Track jobs that will re-execute (not cached). Any downstream job
-        // must also re-execute even if its own outputs look valid on disk,
-        // because its inputs may change once the upstream job runs. This is
-        // transitive invalidation — the foundation of incremental builds.
-        let mut stale_jobs: HashSet<JobId> = HashSet::new();
-        if let Ok(topo) = job_graph.topological_order() {
-            for job_id in topo {
-                // If an upstream job is stale, this job is stale too —
-                // its inputs will be regenerated and may differ.
-                if stale_jobs.contains(job_id) {
-                    // Propagate staleness to direct downstream dependents.
-                    for dep in job_graph.downstream(job_id) {
-                        stale_jobs.insert(dep.clone());
-                    }
-                    // Reason will be UpstreamRebuilt — set by the scheduler
-                    // at emit time since it knows which jobs were force-rerun.
-                    continue;
-                }
-
-                let mut is_hit = false;
-                if let Some(job) = job_graph.get_job(job_id) {
-                    let output_paths = output_file_paths(job);
-                    let output_refs: Vec<&Path> =
-                        output_paths.iter().map(|p| p.as_path()).collect();
-
-                    if output_paths.is_empty() {
-                        // No outputs — not cacheable.
-                        run_reasons.insert(job_id.clone(), RunReason::NotCacheable);
-                    } else if store.validation() == CacheValidation::Mtime {
-                        // Stateless mtime mode: pure filesystem comparison.
-                        let input_paths = input_file_paths(job);
-                        let input_refs: Vec<&Path> =
-                            input_paths.iter().map(|p| p.as_path()).collect();
-                        match CacheStore::check_mtime_stateless(&input_refs, &output_refs) {
-                            Ok(CacheHitStatus::Hit) => {
-                                is_hit = true;
-                                skip_jobs.insert(job_id.clone());
-                            }
-                            Ok(CacheHitStatus::Mismatch { ref path }) => {
-                                run_reasons.insert(
-                                    job_id.clone(),
-                                    RunReason::OutputStale { path: path.clone() },
-                                );
-                            }
-                            Ok(CacheHitStatus::OutputMissing { ref path }) => {
-                                run_reasons.insert(
-                                    job_id.clone(),
-                                    RunReason::OutputMissing { path: path.clone() },
-                                );
-                            }
-                            Ok(CacheHitStatus::Miss) => {
-                                run_reasons.insert(job_id.clone(), RunReason::CacheMiss);
-                            }
-                            Err(_) => {
-                                run_reasons.insert(job_id.clone(), RunReason::CacheMiss);
-                            }
-                        }
-                    } else if let Some(components) =
-                        job_cache_key_with_components(job, Some(&mut *store))
-                    {
-                        // DB-backed modes (MtimeHash, ContentHash).
-                        let cache_key = components.cache_key.clone();
-                        let status = if let Some(remote) = &remote_cache {
-                            if rt.block_on(restore_remote_outputs(
-                                remote.as_ref(),
-                                store,
-                                &cache_key,
-                                &output_paths,
-                            )) {
-                                CacheHitStatus::Hit
-                            } else {
-                                store
-                                    .check_cached(&cache_key, &output_refs)
-                                    .unwrap_or(CacheHitStatus::Miss)
-                            }
-                        } else {
-                            store
-                                .check_cached(&cache_key, &output_refs)
-                                .unwrap_or(CacheHitStatus::Miss)
-                        };
-                        match status {
-                            CacheHitStatus::Hit => {
-                                is_hit = true;
-                                skip_jobs.insert(job_id.clone());
-                                // The prescan is the only place a fully
-                                // cached run computes anything, so its
-                                // components are what the audit trail gets
-                                // (#12).
-                                let entry = store.get(&cache_key);
-                                prescan_provenance.insert(
-                                    job_id.as_str().to_string(),
-                                    job_provenance(
-                                        job,
-                                        &components,
-                                        entry.as_ref().map(|e| &e.output_hashes),
-                                    ),
-                                );
-                            }
-                            CacheHitStatus::Mismatch { ref path } => {
-                                run_reasons.insert(
-                                    job_id.clone(),
-                                    RunReason::OutputStale { path: path.clone() },
-                                );
-                            }
-                            CacheHitStatus::OutputMissing { ref path } => {
-                                run_reasons.insert(
-                                    job_id.clone(),
-                                    RunReason::OutputMissing { path: path.clone() },
-                                );
-                            }
-                            CacheHitStatus::Miss => {
-                                run_reasons.insert(job_id.clone(), RunReason::CacheMiss);
-                            }
-                        }
-                    } else {
-                        // No cache key — not cacheable.
-                        run_reasons.insert(job_id.clone(), RunReason::NotCacheable);
-                    }
-                }
-
-                // If this job is not cached, mark all downstream as stale.
-                if !is_hit {
-                    for dep in job_graph.downstream(job_id) {
-                        stale_jobs.insert(dep.clone());
-                    }
-                }
-            }
-        }
-    }
+    let remote_scan = remote_cache.as_deref().map(|remote| (remote, &rt));
+    let execution = super::execution_plan::determine_execution(
+        &job_graph,
+        !args.no_cache,
+        cache_validation,
+        cache_store.as_mut(),
+        remote_scan,
+    );
+    let mut skip_jobs = execution.skip_jobs;
+    let run_reasons = execution.run_reasons;
+    // What the shared prescan keyed each cache hit on, for the audit trail
+    // (#12). A fully cached run computes nothing else, so this is the only
+    // provenance it has.
+    let prescan_provenance = execution.provenance;
 
     // -----------------------------------------------------------------------
     // --forcerun: remove matching jobs (and downstream) from skip set

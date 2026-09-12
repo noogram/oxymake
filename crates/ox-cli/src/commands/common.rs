@@ -1,10 +1,11 @@
 //! Shared utilities used across multiple commands.
 
-use std::collections::BTreeMap;
-use std::path::Path;
+use std::collections::{BTreeMap, HashSet};
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 
+use ox_cache::CacheValidation;
 use ox_core::model::ResourceValue;
 use ox_core::resolver::Config;
 use ox_format::parse::{ConfigValue, Profile, Workflow};
@@ -153,12 +154,77 @@ pub fn apply_profile_config(config: &mut Config, profile: &Profile) {
     apply_overrides(config, &overrides);
 }
 
-/// Discover files that exist on disk, relative to the Oxymakefile's directory.
+/// Resolve the cache validation strategy using the same precedence as `run`.
+pub fn resolve_cache_validation(
+    cli_value: Option<&str>,
+    workflow: &Workflow,
+) -> Result<CacheValidation> {
+    if let Some(value) = cli_value {
+        return value
+            .parse::<CacheValidation>()
+            .map_err(|error| anyhow::anyhow!("{error}"));
+    }
+    if let Ok(value) = std::env::var("OX_CACHE_VALIDATION") {
+        return value
+            .parse::<CacheValidation>()
+            .map_err(|error| anyhow::anyhow!("OX_CACHE_VALIDATION: {error}"));
+    }
+    if let Some(ConfigValue::Scalar(value)) = workflow.config.get("cache_validation") {
+        return value
+            .parse::<CacheValidation>()
+            .map_err(|error| anyhow::anyhow!("config cache_validation: {error}"));
+    }
+    if let Some(value) = load_global_config().and_then(|table| {
+        table
+            .get("cache_validation")
+            .and_then(|value| value.as_str())
+            .map(String::from)
+    }) {
+        return value
+            .parse::<CacheValidation>()
+            .map_err(|error| anyhow::anyhow!("global config cache_validation: {error}"));
+    }
+    Ok(CacheValidation::default())
+}
+
+/// Read the user-global OxyMake configuration table.
+pub fn load_global_config() -> Option<toml::Table> {
+    let config_dir = std::env::var("XDG_CONFIG_HOME")
+        .ok()
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| {
+            let home = std::env::var("HOME").unwrap_or_default();
+            format!("{home}/.config")
+        });
+    let path = PathBuf::from(config_dir).join("oxymake/config.toml");
+    std::fs::read_to_string(path).ok()?.parse().ok()
+}
+
+/// Discover source files relative to the Oxymakefile's directory.
 ///
-/// Delegates to [`ox_api::discover::discover_existing_files`] which caches
-/// results per base directory with mtime invalidation.
-pub fn discover_existing_files(oxymakefile_path: &Path) -> Vec<std::path::PathBuf> {
-    ox_api::discover::discover_existing_files(oxymakefile_path)
+/// Rule outputs are excluded even when they exist on disk, so the resolver
+/// cannot mistake generated files for sources and truncate the job graph.
+/// Filesystem discovery delegates to [`ox_api::discover::discover_existing_files`],
+/// which caches results per base directory with mtime invalidation.
+pub fn discover_source_files(
+    oxymakefile_path: &Path,
+    workflow: &Workflow,
+    config: &Config,
+) -> Vec<PathBuf> {
+    let rule_outputs: HashSet<PathBuf> = workflow
+        .rules
+        .iter()
+        .flat_map(|rule| &rule.outputs)
+        .flat_map(|output| {
+            let mut expanded = Vec::new();
+            expand_pattern(output.pattern.as_str(), config, &mut expanded);
+            expanded.into_iter().map(PathBuf::from)
+        })
+        .collect();
+
+    let mut files = ox_api::discover::discover_existing_files(oxymakefile_path);
+    files.retain(|path| !rule_outputs.contains(path));
+    files
 }
 
 #[cfg(test)]
