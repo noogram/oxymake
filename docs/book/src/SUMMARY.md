@@ -46,6 +46,7 @@
   - [ox translate](./reference/commands/translate.md)
   - [ox query](./reference/commands/query.md)
   - [ox export](./reference/commands/export.md)
-  - [ox import](./reference/commands/import.md)
+  - [ox cache-export](./reference/commands/cache-export.md)
+  - [ox cache-import](./reference/commands/cache-import.md)
 - [Configuration](./reference/configuration.md)
 - [Expression Language](./reference/expressions.md)

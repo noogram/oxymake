@@ -113,10 +113,10 @@ tree:
 
 ```bash
 # Producing machine
-ox export build/counts.parquet --manifest counts.ox-cache.json
+ox cache-export build/counts.parquet -o counts.ox-cache.json
 
 # Consuming machine, after copying both files
-ox import counts.ox-cache.json
+ox cache-import counts.ox-cache.json
 ox run build/model.rds
 ```
 

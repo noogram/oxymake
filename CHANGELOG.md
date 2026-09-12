@@ -13,7 +13,7 @@ its adjacent `uv.lock` — to the cache key, so the key format moves from v5 to
 v6: the first run after this upgrade recomputes everything, once.
 
 ### Added
-- **`ox export <targets> --manifest <path>` and `ox import <manifest>` support
+- **`ox cache-export <targets> [-o <path>]` and `ox cache-import <manifest>` support
   verified cross-machine continuation.** Export writes a versioned manifest of
   output hashes and provenance. Import requires the outputs locally, re-hashes
   all of them before changing the cache, rejects mismatches and
