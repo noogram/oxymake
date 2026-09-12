@@ -67,6 +67,11 @@ The `ox` binary exposes 27 subcommands today (see `crates/ox-cli/src/lib.rs`).
   (see §7).
 - **`ox cancel`**, **`ox invalidate`**, **`ox clean`** — names and the
   fact that they mutate state stable; specific flags unstable.
+- **`ox translate`**, **`ox export`** — *names* and the positional
+  `FORMAT` argument (`snakemake`, `wdl`) are stable. Promoted in 0.4.0, the
+  release that chose not to touch them: the cache-adoption commands were
+  named `cache-export` / `cache-import` precisely so that `ox export` keeps
+  its one meaning (ADR-019 amendment). Output shape is unstable.
 - Global flags: `--color {auto,always,never}` is stable. `--version` is
   stable (Cargo guarantee).
 
@@ -74,8 +79,8 @@ The `ox` binary exposes 27 subcommands today (see `crates/ox-cli/src/lib.rs`).
 
 - **All other subcommands**: `dag`, `snapshot`, `gate`, `serve`,
   `subscribe`, `top`, `dashboard`, `test`, `check-consistency`,
-  `translate`, `export`, `cache-export`, `cache-import`, `logo`. These exist
-  for exploration and may be renamed, restructured, or removed before `1.0`.
+  `cache-export`, `cache-import`, `logo`. These exist for exploration and
+  may be renamed, restructured, or removed before `1.0`.
 - The cache-adoption JSON manifest is an **unstable, versioned** compatibility
   surface. Readers dispatch on kind `oxymake.cache-adoption-manifest` and
   `format_version`; incompatible additions require a new format version.
