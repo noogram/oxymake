@@ -95,8 +95,10 @@ such as `output missing` and `upstream rebuilt`.
 With the same filesystem and cache settings, **plan reports an upper bound of
 what run executes**. Planning cannot know the bytes a rebuilt job will produce,
 so it conservatively selects downstream jobs with `upstream rebuilt`. At runtime,
-if all rebuilt outputs match their previously recorded content hashes, consumers
-receive their normal cache check and may be skipped. Changed outputs still
+if all rebuilt outputs match content hashes recorded under the same cache key,
+consumers receive their normal cache check and may be skipped. A producer whose
+cache key changed still forces its consumers, even when its bytes are identical.
+Changed outputs still
 invalidate consumers transitively. Missing recorded hashes, non-cacheable rules,
 `--no-cache`, and `cache.validation = "mtime"` retain conservative rebuilding.
 

@@ -18,7 +18,7 @@ use std::collections::BTreeMap;
 use std::future::Future;
 use std::pin::Pin;
 
-use crate::model::{ConcreteJob, ContentHash};
+use crate::model::{ConcreteJob, ContentHash, RunReason};
 
 /// Recorded output content hashes, keyed by [`crate::job_graph::output_ref_key`].
 pub type OutputHashes = BTreeMap<String, ContentHash>;
@@ -41,10 +41,28 @@ pub trait CacheCheck: Send + Sync {
         job: &'a ConcreteJob,
     ) -> Pin<Box<dyn Future<Output = bool> + Send + 'a>>;
 
+    /// Check at dispatch, preserving the actual reason for a cache miss.
+    ///
+    /// `Ok(())` means a hit. Implementations can report missing or stale outputs;
+    /// the default maps [`Self::is_cached`] misses to [`RunReason::CacheMiss`].
+    fn check_with_reason<'a>(
+        &'a self,
+        job: &'a ConcreteJob,
+    ) -> Pin<Box<dyn Future<Output = Result<(), RunReason>> + Send + 'a>> {
+        Box::pin(async move {
+            if self.is_cached(job).await {
+                Ok(())
+            } else {
+                Err(RunReason::CacheMiss)
+            }
+        })
+    }
+
     /// Snapshot previously recorded output content hashes before execution.
     ///
-    /// Keys use [`crate::job_graph::output_ref_key`]. The scheduler compares
-    /// these hashes with produced bytes before recording the new result. Return
+    /// Keys use [`crate::job_graph::output_ref_key`]. Return hashes recorded under
+    /// the same cache key as the current job. The scheduler compares these hashes
+    /// with produced bytes before recording the new result. Return
     /// `None` when comparison is unavailable (including mtime-only validation
     /// and non-cacheable jobs). Missing entries also force conservative
     /// downstream invalidation. The default preserves that behavior for plugins.
@@ -53,6 +71,18 @@ pub trait CacheCheck: Send + Sync {
         _job: &'a ConcreteJob,
     ) -> Pin<Box<dyn Future<Output = Option<OutputHashes>> + Send + 'a>> {
         Box::pin(async { None })
+    }
+
+    /// Record outputs using hashes already computed from disk after execution.
+    ///
+    /// Keys use [`crate::job_graph::output_ref_key`]. Missing hashes must be
+    /// computed by the implementation. The default delegates to [`Self::record`].
+    fn record_with_hashes<'a>(
+        &'a self,
+        job: &'a ConcreteJob,
+        _hashes: &'a OutputHashes,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
+        self.record(job)
     }
 
     /// Record a successfully completed job's outputs in the cache.

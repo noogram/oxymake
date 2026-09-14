@@ -150,3 +150,136 @@ fn parallel_identical_producers_allow_fan_in_consumer_to_skip() {
         "ran\n"
     );
 }
+
+#[test]
+fn restored_missing_output_with_same_metadata_is_rehashed() {
+    let dir = workflow();
+    let base = dir.path();
+    fs::write(base.join("seed.txt"), "AAAA\n").unwrap();
+    counts(&run(base, &[], true), 2, 0);
+    // Exact issue #19 repro, including a separate planning process.
+    Command::new("sh")
+        .current_dir(base)
+        .args([
+            "-c",
+            "echo BBBB > other.txt; touch -r mid.txt other.txt; rm -f mid.txt",
+        ])
+        .assert()
+        .success();
+    Command::cargo_bin("ox")
+        .unwrap()
+        .current_dir(base)
+        .args(["plan", "final.txt"])
+        .assert()
+        .success();
+    fs::rename(base.join("other.txt"), base.join("mid.txt")).unwrap();
+    counts(&run(base, &[], true), 2, 0);
+    assert_eq!(fs::read_to_string(base.join("mid.txt")).unwrap(), "AAAA\n");
+    assert_eq!(
+        fs::read_to_string(base.join("final.txt")).unwrap(),
+        "AAAA\n"
+    );
+}
+
+#[test]
+fn identical_rebuild_reports_consumers_own_run_reason() {
+    for cause in ["output_missing", "cache_miss", "output_stale"] {
+        let dir = workflow();
+        let base = dir.path();
+        let spec = base.join("Oxymakefile.toml");
+        fs::write(
+            &spec,
+            fs::read_to_string(&spec).unwrap().replace(
+                "input = [\"mid.txt\"]",
+                "input = [\"mid.txt\", \"extra.txt\"]",
+            ),
+        )
+        .unwrap();
+        fs::write(base.join("extra.txt"), "original").unwrap();
+        counts(&run(base, &[], true), 2, 0);
+        fs::remove_file(base.join("mid.txt")).unwrap();
+        match cause {
+            "output_missing" => fs::remove_file(base.join("final.txt")).unwrap(),
+            "cache_miss" => fs::write(base.join("extra.txt"), "new input").unwrap(),
+            _ => fs::write(base.join("final.txt"), "corrupt output").unwrap(),
+        }
+        let output = Command::cargo_bin("ox")
+            .unwrap()
+            .current_dir(base)
+            .args(["run", "final.txt", "--json"])
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        let started = output
+            .stdout
+            .split(|b| *b == b'\n')
+            .filter_map(|line| serde_json::from_slice::<serde_json::Value>(line).ok())
+            .find(|event| event["event"] == "job_started" && event["job_id"] == "final")
+            .expect("consumer started");
+        if cause == "cache_miss" {
+            assert_eq!(started["reason"], cause, "{started}");
+        } else {
+            assert!(started["reason"].get(cause).is_some(), "{started}");
+        }
+    }
+}
+
+#[test]
+fn changed_producer_key_forces_consumer_even_with_identical_bytes() {
+    let dir = workflow();
+    let base = dir.path();
+    fs::write(base.join("mid.sh"), "printf constant > mid.txt\n").unwrap();
+    counts(&run(base, &[], true), 2, 0);
+    fs::write(base.join("seed.txt"), "changed dependency\n").unwrap();
+    counts(&run(base, &[], true), 2, 0);
+    assert_eq!(
+        fs::read_to_string(base.join("final-runs.txt")).unwrap(),
+        "ran\nran\n"
+    );
+}
+
+#[test]
+fn deferred_consumer_retains_observed_stale_reason() {
+    let dir = workflow();
+    let base = dir.path();
+    fs::write(
+        base.join("Oxymakefile.toml"),
+        r#"ox_version = "0.1"
+[rule.mid]
+output = ["mid.txt"]
+shell = "echo AAAA > mid.txt"
+[rule.a]
+priority = 100
+input = ["mid.txt"]
+output = ["a.txt"]
+shell = "sleep 0.2; cat mid.txt > a.txt"
+[rule.b]
+input = ["mid.txt"]
+output = ["b.txt"]
+shell = "cat mid.txt > b.txt"
+[rule.final]
+input = ["a.txt", "b.txt"]
+output = ["final.txt"]
+shell = "cat a.txt b.txt > final.txt"
+"#,
+    )
+    .unwrap();
+    counts(&run(base, &["-j", "1"], true), 4, 0);
+    fs::remove_file(base.join("mid.txt")).unwrap();
+    fs::remove_file(base.join("a.txt")).unwrap();
+    fs::write(base.join("b.txt"), "corrupt output").unwrap();
+    let output = Command::cargo_bin("ox")
+        .unwrap()
+        .current_dir(base)
+        .args(["run", "final.txt", "--json", "-j", "1"])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let started = output
+        .stdout
+        .split(|b| *b == b'\n')
+        .filter_map(|line| serde_json::from_slice::<serde_json::Value>(line).ok())
+        .find(|event| event["event"] == "job_started" && event["job_id"] == "b")
+        .expect("deferred consumer started");
+    assert!(started["reason"].get("output_stale").is_some(), "{started}");
+}

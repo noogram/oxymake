@@ -76,8 +76,9 @@ the requested targets and the concrete jobs, each shown as
 
 The plan is an upper bound of what `ox run` executes with the same tree and
 cache settings. A planned `upstream rebuilt` job may be skipped at runtime if
-its producer rebuilds identical bytes and the consumer's normal cache check
-passes.
+its producer rebuilds bytes matching hashes recorded under the same cache key
+and the consumer's normal cache check passes. A producer whose cache key changed
+still forces its consumers, even with identical bytes.
 
 ## JSON Output (Agent Mode)
 
