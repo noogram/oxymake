@@ -10,10 +10,17 @@ use ox_core::model::ContentHash;
 
 use crate::error::CacheError;
 
+#[cfg(test)]
+thread_local! {
+    pub(crate) static HASH_FILE_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 /// Compute the BLAKE3 hash of a file's contents.
 ///
 /// Reads the file in 16 KiB chunks to limit memory usage on large files.
 pub fn hash_file(path: &Path) -> Result<ContentHash, CacheError> {
+    #[cfg(test)]
+    HASH_FILE_CALLS.with(|calls| calls.set(calls.get() + 1));
     let mut hasher = Hasher::new();
     let mut file = std::fs::File::open(path)?;
     let mut buf = [0u8; 16 * 1024];

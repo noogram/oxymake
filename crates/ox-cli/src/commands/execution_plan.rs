@@ -28,7 +28,9 @@ pub struct ExecutionPlan {
 /// Invariant: with the same tree and cache settings, plan reports an upper
 /// bound of what run executes. A stale job selects its downstream consumers
 /// as UpstreamRebuilt because planning cannot know the produced bytes. At
-/// runtime, an identical rebuild lets consumers pass their normal cache check.
+/// runtime, bytes matching hashes recorded under the same cache key let consumers
+/// pass their normal cache check. A changed producer key still forces consumers,
+/// even when the produced bytes are identical.
 pub fn determine_execution(
     job_graph: &JobGraph,
     cache_enabled: bool,

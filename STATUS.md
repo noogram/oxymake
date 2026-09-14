@@ -256,8 +256,11 @@ exposes the following public traits:
   `OptimizationPass`.
 
 `CacheCheck::recorded_output_hashes` optionally supplies a snapshot before
-execution so identical rebuilds can leave consumers cached. Its default returns
-no snapshot and preserves conservative downstream invalidation.
+execution so rebuilds matching hashes recorded under the same cache key can
+leave consumers cached. Its default returns no snapshot and preserves
+conservative downstream invalidation. `check_with_reason` defaults to the boolean
+cache check plus a generic cache-miss reason; `record_with_hashes` defaults to
+`record` and lets implementations reuse completed disk hashes.
 
 ### Status
 
