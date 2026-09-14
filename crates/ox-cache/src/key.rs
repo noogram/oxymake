@@ -6,7 +6,7 @@
 //! This ensures that any change in inputs, code, or environment produces a
 //! different key.
 //!
-//! # Key format v5 (injective framing)
+//! # Key format v7 (injective framing)
 //!
 //! Every field is framed via [`ox_core::hashing`] (length-prefixed tag +
 //! presence byte + length-prefixed value), so the encoding is injective:
@@ -30,7 +30,7 @@ use std::path::{Component, Path, PathBuf};
 /// Bump this whenever the set of hashed ingredients or their encoding
 /// changes: old cache entries then become unreachable (clean invalidation)
 /// instead of being wrongly reused under the new semantics.
-pub const CACHE_KEY_FORMAT_VERSION: &str = "oxymake-cache-key-v6";
+pub const CACHE_KEY_FORMAT_VERSION: &str = "oxymake-cache-key-v7";
 
 /// Express an in-workflow path relative to the workflow root before it enters
 /// a cache key.
@@ -93,7 +93,7 @@ fn lexical_normalize(path: &Path) -> PathBuf {
     normalized
 }
 
-/// All ingredients of a cache key (format v6).
+/// All ingredients of a cache key (format v7).
 #[derive(Debug, Clone)]
 pub struct CacheKeySpec<'a> {
     /// Serialized execution block (command, inline code, script path +
@@ -195,12 +195,20 @@ pub fn current_platform() -> String {
 /// spec string is unchanged. When the reference is not a readable file
 /// (e.g. a named conda environment), only the literal reference is hashed.
 ///
-/// **Documented divergence**: container image references (`docker:`,
-/// `apptainer:`) are hashed as written — a mutable tag like
-/// `python:3.12-slim` is *not* resolved to a digest, so re-tagged images
-/// do not invalidate the cache. Pin images by digest
-/// (`python@sha256:…`) when this matters. See the paper's limitations
-/// section.
+/// For uv environments, the bytes of the `.python-version` uv discovers from
+/// the spec's directory are also hashed. Discovery walks towards the filesystem
+/// root and stops at uv's project or workspace boundary. This is resolved from
+/// the filesystem only; key computation never spawns `uv python find`.
+///
+/// **Documented divergences**:
+///
+/// - `UV_PYTHON` and changes to the set of installed interpreters are not
+///   represented in uv environment hashes. Use a checked-in `.python-version`
+///   when interpreter selection must invalidate outputs.
+/// - Container image references (`docker:`, `apptainer:`) are hashed as written
+///   — a mutable tag like `python:3.12-slim` is *not* resolved to a digest, so
+///   re-tagged images do not invalidate the cache. Pin images by digest
+///   (`python@sha256:…`) when this matters. See the paper's limitations section.
 pub fn env_spec_content_hash(env: &EnvSpec) -> String {
     let mut hasher = Hasher::new();
     match env {
@@ -247,6 +255,12 @@ pub fn env_spec_content_hash(env: &EnvSpec) -> String {
                 })
                 .and_then(|lock| std::fs::read(lock).ok());
             update_opt_field(&mut hasher, "env.uv.lock_content", lock_content.as_deref());
+            let python_version_content = uv_python_version_content(project, requirements);
+            update_opt_field(
+                &mut hasher,
+                "env.uv.python_version_content",
+                python_version_content.as_deref(),
+            );
         }
         EnvSpec::Conda { env } => {
             update_field(&mut hasher, "env.conda.spec", env.as_bytes());
@@ -266,6 +280,80 @@ pub fn env_spec_content_hash(env: &EnvSpec) -> String {
         }
     }
     hasher.finalize().to_hex().to_string()
+}
+
+/// Read the `.python-version` uv would discover for an environment.
+///
+/// uv begins in the project directory, selects the nearest pin, and does not
+/// walk above the containing project or workspace. A requirements-only
+/// environment outside a project has no boundary and can inherit a pin from
+/// any ancestor. Parse failures are treated like no project boundary here; uv
+/// will report the malformed project itself when the job executes.
+fn uv_python_version_content(
+    project: &Option<String>,
+    requirements: &Option<String>,
+) -> Option<Vec<u8>> {
+    let start = project
+        .as_deref()
+        .or(requirements.as_deref())
+        .and_then(|spec| Path::new(spec).parent())
+        .unwrap_or_else(|| Path::new(""));
+    let boundary = uv_project_or_workspace_boundary(start);
+
+    for directory in start.ancestors() {
+        let version_file = directory.join(".python-version");
+        if version_file.is_file() {
+            return std::fs::read(version_file).ok();
+        }
+        if boundary.as_deref() == Some(directory) {
+            break;
+        }
+    }
+    None
+}
+
+/// Find the inclusive upper boundary for uv's `.python-version` discovery.
+fn uv_project_or_workspace_boundary(start: &Path) -> Option<PathBuf> {
+    let project_root = start
+        .ancestors()
+        .find(|directory| directory.join("pyproject.toml").is_file())?;
+    let project = read_pyproject(project_root)?;
+
+    if has_uv_workspace(&project) {
+        return Some(project_root.to_path_buf());
+    }
+    if !project.get("project").is_some_and(toml::Value::is_table) {
+        return None;
+    }
+
+    for directory in project_root.ancestors().skip(1) {
+        let Some(parent_project) = read_pyproject(directory) else {
+            continue;
+        };
+        if has_uv_workspace(&parent_project) {
+            return Some(directory.to_path_buf());
+        }
+        if parent_project
+            .get("project")
+            .is_some_and(toml::Value::is_table)
+        {
+            break;
+        }
+    }
+    Some(project_root.to_path_buf())
+}
+
+fn read_pyproject(directory: &Path) -> Option<toml::Value> {
+    let content = std::fs::read_to_string(directory.join("pyproject.toml")).ok()?;
+    toml::from_str(&content).ok()
+}
+
+fn has_uv_workspace(project: &toml::Value) -> bool {
+    project
+        .get("tool")
+        .and_then(|tool| tool.get("uv"))
+        .and_then(|uv| uv.get("workspace"))
+        .is_some_and(toml::Value::is_table)
 }
 
 #[cfg(test)]
@@ -556,7 +644,7 @@ mod tests {
         });
         assert_eq!(
             key.as_str(),
-            "ca08d6640469e7ecb8d6c0c36eaad3ccf8fa967a5d746ab4ddf55bb3aeba0c85",
+            "7eb7b98391844dd195a6c5b0c9368ff1e4f5f043f8b144185192e3895426a83c",
             "cache key format drifted — bump CACHE_KEY_FORMAT_VERSION and update the golden value"
         );
     }
@@ -579,7 +667,7 @@ mod tests {
         });
         assert_eq!(
             key.as_str(),
-            "f61b4cac173e039d50a1d959d5d5599711750bf570d492e89ec90ca8232443ef"
+            "4b498f88d78d84eb09c5084e3558a35d84992631e4f6329844d0cc851da85389"
         );
     }
 
@@ -640,6 +728,110 @@ mod tests {
         std::fs::write(dir.path().join("uv.lock"), "version = 2\n").unwrap();
         let h3 = env_spec_content_hash(&env);
         assert_ne!(h2, h3, "uv.lock content must enter the env hash");
+    }
+
+    #[test]
+    fn env_hash_tracks_uv_python_version_content() {
+        // Regression (#18): uv selects the interpreter requested by
+        // `.python-version`, but the pin was absent from the cache key.
+        let dir = tempfile::tempdir().unwrap();
+        let proj = dir.path().join("pyproject.toml");
+        std::fs::write(
+            &proj,
+            "[project]\nname = \"probe\"\nversion = \"0.1.0\"\nrequires-python = \">=3.11\"\n",
+        )
+        .unwrap();
+        let python_version = dir.path().join(".python-version");
+        std::fs::write(&python_version, "3.11\n").unwrap();
+        let env = EnvSpec::Uv {
+            project: Some(proj.display().to_string()),
+            requirements: None,
+        };
+
+        let h1 = env_spec_content_hash(&env);
+        std::fs::write(&python_version, "3.13\n").unwrap();
+        let h2 = env_spec_content_hash(&env);
+
+        assert_ne!(h1, h2, ".python-version content must enter the env hash");
+    }
+
+    #[test]
+    fn env_hash_uses_nearest_parent_uv_python_version() {
+        let dir = tempfile::tempdir().unwrap();
+        let nested = dir.path().join("env/specs");
+        std::fs::create_dir_all(&nested).unwrap();
+        let req = nested.join("requirements.txt");
+        std::fs::write(&req, "six==1.17.0\n").unwrap();
+        let parent_pin = dir.path().join(".python-version");
+        std::fs::write(&parent_pin, "3.11\n").unwrap();
+        let env = EnvSpec::Uv {
+            project: None,
+            requirements: Some(req.display().to_string()),
+        };
+
+        let h1 = env_spec_content_hash(&env);
+        std::fs::write(&parent_pin, "3.13\n").unwrap();
+        let h2 = env_spec_content_hash(&env);
+        assert_ne!(h1, h2, "uv inherits a pin from the nearest ancestor");
+
+        std::fs::write(nested.join(".python-version"), "3.12\n").unwrap();
+        let h3 = env_spec_content_hash(&env);
+        std::fs::write(&parent_pin, "3.10\n").unwrap();
+        let h4 = env_spec_content_hash(&env);
+        assert_eq!(h3, h4, "a nearer pin must hide pins above it");
+    }
+
+    #[test]
+    fn env_hash_does_not_cross_uv_project_boundary_for_python_version() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path().join("project");
+        let specs = project.join("specs");
+        std::fs::create_dir_all(&specs).unwrap();
+        std::fs::write(
+            project.join("pyproject.toml"),
+            "[project]\nname = \"probe\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+        let req = specs.join("requirements.txt");
+        std::fs::write(&req, "six==1.17.0\n").unwrap();
+        let outside_pin = dir.path().join(".python-version");
+        std::fs::write(&outside_pin, "3.11\n").unwrap();
+        let env = EnvSpec::Uv {
+            project: None,
+            requirements: Some(req.display().to_string()),
+        };
+
+        let h1 = env_spec_content_hash(&env);
+        std::fs::write(&outside_pin, "3.13\n").unwrap();
+        let h2 = env_spec_content_hash(&env);
+
+        assert_eq!(h1, h2, "uv does not discover pins above a project root");
+    }
+
+    #[test]
+    fn env_hash_discovers_uv_python_version_at_workspace_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let member = dir.path().join("packages/member");
+        std::fs::create_dir_all(&member).unwrap();
+        std::fs::write(
+            dir.path().join("pyproject.toml"),
+            "[tool.uv.workspace]\nmembers = [\"packages/*\"]\n",
+        )
+        .unwrap();
+        let proj = member.join("pyproject.toml");
+        std::fs::write(&proj, "[project]\nname = \"member\"\nversion = \"0.1.0\"\n").unwrap();
+        let workspace_pin = dir.path().join(".python-version");
+        std::fs::write(&workspace_pin, "3.11\n").unwrap();
+        let env = EnvSpec::Uv {
+            project: Some(proj.display().to_string()),
+            requirements: None,
+        };
+
+        let h1 = env_spec_content_hash(&env);
+        std::fs::write(&workspace_pin, "3.13\n").unwrap();
+        let h2 = env_spec_content_hash(&env);
+
+        assert_ne!(h1, h2, "a workspace-root pin must enter a member's hash");
     }
 
     #[test]

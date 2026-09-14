@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+**Upgrading invalidates your cache.** A uv environment now contributes the
+bytes of the `.python-version` uv selects to the cache key, so the key format
+moves from v6 to v7: the first run after this upgrade recomputes everything,
+once.
+
+### Fixed
+
+- **Changing a uv environment's `.python-version` now invalidates its
+  outputs.** OxyMake follows uv's parent-directory discovery up to the project
+  or workspace boundary and hashes the selected pin without invoking uv.
+  `UV_PYTHON` overrides and changes to installed interpreters remain outside
+  the cache key (issue #18).
+
 ## [0.4.0] - 2026-09-14
 
 A workflow started on one machine can be continued on another, `ox plan` and
