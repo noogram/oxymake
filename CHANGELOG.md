@@ -7,10 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-09-14
+
+A workflow started on one machine can be continued on another, `ox plan` and
+`ox run` agree on what will run, uv environments behave as documented, and the
+state database records enough to substantiate a cache decision after the fact.
+
 **Upgrading invalidates your cache.** A uv environment now contributes the
 bytes of the file it declares — including a `pyproject.toml` project file and
 its adjacent `uv.lock` — to the cache key, so the key format moves from v5 to
 v6: the first run after this upgrade recomputes everything, once.
+
+**Workflows that relied on an ignored `environment` key no longer parse.**
+An unknown key in an `environment` table is now an error (issue #10, below).
+
+Highlights:
+- **`ox cache-export` / `ox cache-import`** with `cache_platform = "any"`
+  move verified artefacts between machines so downstream jobs continue there
+  without the producer's raw inputs (issue #7).
+- **`ox plan` reports what `ox run` will do**: zero jobs on a warm cache, the
+  full rebuild graph when an intermediate is missing (issue #11).
+- **uv environments work and invalidate correctly** (issues #8, #9, #10).
+- **`job_history` carries the hashes and host behind each cache decision**
+  (issue #12).
 
 ### Added
 - **Verified cross-machine continuation with `cache_platform = "any"`,
@@ -22,71 +41,64 @@ v6: the first run after this upgrade recomputes everything, once.
   imports without the explicit opt-in are rejected. Cache entries record the
   producing platform and scope so opted-in artefacts can be audited and
   enumerated for invalidation. OxyMake cannot verify that an opted-in rule's
-  outputs are truly platform-independent (#7).
-
-### Fixed
-- **`environment = { uv = "pyproject.toml" }` now invalidates outputs when a
-  dependency changes.** The project file reference was dropped at parse time,
-  so nothing about it entered the cache key: editing `dependencies` left
-  `ox run` reporting the rule up-to-date and keeping outputs built with the
-  old dependency set — the opposite of what the book promised. The reference
-  is kept (`EnvSpec::Uv { project, requirements }`), and the key now hashes
-  the project file and, when present, the `uv.lock` beside it. The executor
-  still passes no requirements flag for a project file: uv discovers it
-  (issue #8).
-- **An `environment` table naming no known backend is now rejected.**
-  `environment = { type = "uv", requirements = "…" }` — the natural spelling
-  to try — was silently dropped: the rule ran on the host, its cache key
-  recorded no environment, and `ox lint` reported the workflow as valid.
-  Such a table, and any unrecognised key alongside a recognised backend, is
-  now a parse error naming the accepted keys (`uv`, `conda`, `docker`, `nix`,
-  `apptainer`), surfaced by `ox lint` and by every command that parses the
-  workflow. If you relied on an ignored key, remove it or spell the backend
-  as its own key (issue #10).
-- **`environment = { uv = "requirements.txt" }` now runs.** The local
-  executor wrapped the command as `uv run -r <file>`, and `uv run` has no
-  `-r` flag, so every rule with a uv requirements file failed with uv's usage
-  message before its command started. The flag is now
-  `--with-requirements <file>`, on both the shell wrapper and the warm-worker
-  argv. The SLURM job script had the same shape (`uv sync -r <file>`, also not
-  a uv flag) and now emits `uv pip install -r <file>` (issue #9).
-- **The state database can now substantiate a cache decision** (#12). Four
-  fields of the audit trail were declared but never filled on the `ox run`
-  path, so a cache report could only be caught live:
-  - `job_history.input_hashes`, `output_hashes`, `params_hash`, `env_hash`,
-    `reproducibility_class` and `artifact_provenance_json` carry the hashes
-    the cache layer actually keyed the job on, instead of `NULL`. A job the
-    cache layer never keyed (`--no-cache`, `cache.validation = "mtime"`)
-    still records `NULL`. `peak_mem_mb` stays `NULL` on purpose: the only
-    figure available comes from `getrusage(RUSAGE_CHILDREN)`, which is
-    process-wide and cannot be attributed to one job under `-j N`.
-  - `job_history.hostname` and `sessions.hostname` record the real machine
-    name instead of the literal `"localhost"`.
-  - `jobs.cached` is set and `jobs.cache_key` is filled on **every** cache
-    hit, not only on the first run. Previously the row a prior run left
-    `completed` blocked the update, so the console reported a full cache hit
-    while the table reported none.
-  - A run that ends in an error records the job counts it knows instead of
-    `0/0/0`, so an aborted run is no longer indistinguishable from an empty
-    one.
+  outputs are truly platform-independent. The existing `ox export` command is
+  unchanged (issue #7, #17).
 
 ### Changed
 - `ox history <run> --json` now also emits `input_hashes`, `output_hashes`,
   `params_hash`, `env_hash`, `reproducibility_class` and
-  `artifact_provenance` for each job (#12).
+  `artifact_provenance` for each job (issue #12, #15).
 - `ox-state`: `StateDb::finalize_job_history` takes an additional
   `provenance` map, `StateDb::record_job_cache_keys` is new, and
-  `StateDb::skip_job` now also accepts an already-`completed` row (both
-  changes are what make the cache hit above visible). `ox_state::host`
-  exposes the resolved host name. Unstable surface (#12).
+  `StateDb::skip_job` now also accepts an already-`completed` row.
+  `ox_state::host` exposes the resolved host name. Unstable surface
+  (issue #12, #15).
 
-
-- `ox plan`, `ox run`, `ox explain`, `ox query`, `ox cancel`, `ox test`, and
-  `ox check-consistency` now resolve through existing generated outputs instead
-  of mistaking them for source files, so a missing intermediate produces the
-  complete rebuild graph. `ox plan` then applies the same cache and transitive
-  staleness analysis as `ox run`, reports zero jobs for a warm cache, and
-  includes each selected job's execution reason (#11).
+### Fixed
+- **`ox plan` and `ox run` now resolve the same graph and apply the same
+  cache pass.** `ox plan`, `ox run`, `ox explain`, `ox query`, `ox cancel`,
+  `ox test`, and `ox check-consistency` resolve through existing generated
+  outputs instead of mistaking them for source files, so a missing
+  intermediate produces the complete rebuild graph. `ox plan` then applies the
+  same cache and transitive staleness analysis as `ox run`, reports zero jobs
+  for a warm cache, and includes each selected job's execution reason
+  (issue #11, #16).
+- **`environment = { uv = "pyproject.toml" }` now invalidates outputs when a
+  dependency changes.** The project file reference was dropped at parse time,
+  so editing `dependencies` left `ox run` reporting the rule up-to-date and
+  keeping outputs built with the old dependency set. The key now hashes the
+  project file and, when present, the `uv.lock` beside it. The executor still
+  passes no requirements flag for a project file: uv discovers it
+  (issue #8, #13).
+- **`environment = { uv = "requirements.txt" }` now runs.** The local
+  executor wrapped the command as `uv run -r <file>`, and `uv run` has no
+  `-r` flag, so every such rule failed before its command started. The flag is
+  now `--with-requirements <file>`, on both the shell wrapper and the
+  warm-worker argv. The SLURM job script had the same shape and now emits
+  `uv pip install -r <file>` (issue #9, #13).
+- **An `environment` table naming no known backend is now rejected.**
+  `environment = { type = "uv", requirements = "…" }` was silently dropped:
+  the rule ran on the host, its cache key recorded no environment, and
+  `ox lint` reported the workflow as valid. Such a table, and any unrecognised
+  key alongside a recognised backend, is now a parse error naming the accepted
+  keys (`uv`, `conda`, `docker`, `nix`, `apptainer`). If you relied on an
+  ignored key, remove it or spell the backend as its own key
+  (issue #10, #13).
+- **The state database can now substantiate a cache decision**
+  (issue #12, #15):
+  - `job_history.input_hashes`, `output_hashes`, `params_hash`, `env_hash`,
+    `reproducibility_class` and `artifact_provenance_json` carry the hashes
+    the cache layer keyed the job on, instead of `NULL`. A job the cache
+    layer never keyed (`--no-cache`, `cache.validation = "mtime"`) still
+    records `NULL`. `peak_mem_mb` stays `NULL` on purpose: the only figure
+    available, `getrusage(RUSAGE_CHILDREN)`, is process-wide and cannot be
+    attributed to one job under `-j N`.
+  - `job_history.hostname` and `sessions.hostname` record the real machine
+    name instead of the literal `"localhost"`.
+  - `jobs.cached` is set and `jobs.cache_key` is filled on every cache hit,
+    not only on the first run, so the table agrees with the console.
+  - A run that ends in an error records the job counts it knows instead of
+    `0/0/0`.
 
 ## [0.3.0] - 2026-09-09
 
