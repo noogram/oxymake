@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Rebuilding an intermediate with identical output content no longer forces
+  cached consumers to execute. Missing files retain their last successful hashes
+  for comparison after rebuilding. Changed or unknown output hashes still propagate
+  invalidation, including ignored failures; mtime-only and disabled caching keep
+  conservative rebuilding. `ox plan` reports an upper bound of runtime work,
+  since it cannot predict rebuilt bytes (#19).
+
+### Changed
+- `CacheCheck` gains an optional `recorded_output_hashes` hook and an
+  `OutputHashes` snapshot type for comparing outputs
+  across execution; existing implementations default to conservative invalidation.
+
 ## [0.4.0] - 2026-09-14
 
 A workflow started on one machine can be continued on another, `ox plan` and

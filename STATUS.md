@@ -255,6 +255,10 @@ exposes the following public traits:
   `BenchmarkSink`, `MaterializationStrategy`, `StateBackend`,
   `OptimizationPass`.
 
+`CacheCheck::recorded_output_hashes` optionally supplies a snapshot before
+execution so identical rebuilds can leave consumers cached. Its default returns
+no snapshot and preserves conservative downstream invalidation.
+
 ### Status
 
 **All of these are unstable.** OxyMake does not yet load external

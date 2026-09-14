@@ -708,8 +708,11 @@ fn plan_resolves_full_chain_when_intermediate_output_is_missing() {
     );
 
     let run = observe_run(base, &oxymakefile);
-    assert_eq!(job_field(&jobs, "job_id"), run.started_jobs);
-    assert_eq!((run.succeeded, run.skipped), (2, 0));
+    // Plan is an upper bound: it cannot predict that a rebuild is byte-identical.
+    let planned = job_field(&jobs, "job_id");
+    assert!(run.started_jobs.iter().all(|id| planned.contains(id)));
+    assert_eq!(run.started_jobs, ["a"]);
+    assert_eq!((run.succeeded, run.skipped), (1, 1));
 }
 
 /// A missing final output selects only its producer when upstream is cached.
@@ -726,6 +729,8 @@ fn plan_resolves_full_chain_when_final_output_is_missing() {
     assert_eq!(job_field(&jobs, "reason"), ["output missing: b.txt"]);
 
     let run = observe_run(base, &oxymakefile);
+    // The plan's upper bound is exact here: no consumer can benefit from an
+    // identical producer rebuild (only the final output is missing, or all hit).
     assert_eq!(job_field(&jobs, "job_id"), run.started_jobs);
     assert_eq!((run.succeeded, run.skipped), (1, 1));
 }
@@ -740,6 +745,8 @@ fn plan_reports_no_jobs_when_everything_is_up_to_date() {
     let jobs = planned_jobs(base, &oxymakefile);
     assert!(jobs.is_empty());
     let run = observe_run(base, &oxymakefile);
+    // The plan's upper bound is exact here: no consumer can benefit from an
+    // identical producer rebuild (only the final output is missing, or all hit).
     assert_eq!(job_field(&jobs, "job_id"), run.started_jobs);
     assert_eq!((run.succeeded, run.skipped), (0, 2));
 }
@@ -1898,8 +1905,8 @@ fn clean_refuses_when_live_session_exists() {
 /// Pipeline: step_a → step_b → step_c (linear chain).
 /// 1. Run once — all 3 jobs execute.
 /// 2. Run again — all 3 are cached (0 to run).
-/// 3. Delete step_a's output, run again — step_a re-executes, which should
-///    transitively invalidate step_b and step_c even though their outputs
+/// 3. Change what step_a produces and delete its output — step_a re-executes,
+///    transitively invalidating step_b and step_c even though their outputs
 ///    still exist on disk from the first run.
 #[test]
 fn cache_invalidation_cascades_through_dag() {
@@ -1917,7 +1924,7 @@ input = ["c.txt"]
 
 [rule.step_a]
 output = ["a.txt"]
-shell = "echo step_a > a.txt"
+shell = "cat producer-bytes.txt > a.txt"
 
 [rule.step_b]
 input = ["a.txt"]
@@ -1931,6 +1938,10 @@ shell = "cat b.txt > c.txt && echo step_c >> c.txt"
 "#,
     )
     .unwrap();
+
+    // Deliberately leave this control file out of the inputs: exercise changed
+    // produced bytes with the SAME producer cache key (not just a cache miss).
+    fs::write(base.join("producer-bytes.txt"), "step_a\n").unwrap();
 
     // Run 1: all 3 jobs should execute.
     ox().args(["run", "-f", oxymakefile.to_str().unwrap()])
@@ -1951,6 +1962,7 @@ shell = "cat b.txt > c.txt && echo step_c >> c.txt"
         .success()
         .stdout(predicates::str::contains("up-to-date"));
 
+    fs::write(base.join("producer-bytes.txt"), "changed step_a\n").unwrap();
     // Delete step_a's output to force re-execution.
     fs::remove_file(base.join("a.txt")).unwrap();
 
@@ -3015,8 +3027,11 @@ fn explain_resolves_full_chain_when_intermediate_output_is_missing() {
         .collect();
     assert_eq!(rules, ["b", "a"]);
 
-    let run = run_two_rule_workflow(base, &oxymakefile);
-    assert!(run.contains("2 succeeded"), "unexpected run output: {run}");
+    // The full dependency explanation does not promise that every job runs:
+    // identical rebuilt bytes let the consumer pass its normal cache check.
+    let run = observe_run(base, &oxymakefile);
+    assert_eq!(run.started_jobs, ["a"]);
+    assert_eq!((run.succeeded, run.skipped), (1, 1));
 }
 
 // ---------------------------------------------------------------------------

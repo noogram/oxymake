@@ -439,7 +439,10 @@ impl CacheStore {
             };
 
             if !path.exists() {
-                self.remove_entry(cache_key);
+                // Missing materialization is still a cache miss, but retain the
+                // last successful hashes for comparison after a rebuild (#19).
+                // Planning also calls this method, so the snapshot must survive
+                // across separate plan/run invocations and failed rebuilds.
                 return Ok(CacheHitStatus::OutputMissing { path: key });
             }
 
@@ -1422,7 +1425,7 @@ mod tests {
     }
 
     #[test]
-    fn check_cached_output_missing_invalidates_entry() {
+    fn check_cached_output_missing_retains_hashes_for_rebuild() {
         let dir = tempfile::tempdir().unwrap();
         let oxdir = dir.path().join(".oxymake");
         let mut store = make_store(&oxdir);
@@ -1443,8 +1446,26 @@ mod tests {
             matches!(status, CacheHitStatus::OutputMissing { .. }),
             "expected OutputMissing, got {status:?}",
         );
-        // Self-healing: stale entry should be removed.
-        assert_eq!(store.len(), 0);
+        assert_eq!(store.len(), 1, "keep the last successful output hashes");
+        let path_key = out.to_string_lossy().to_string();
+        assert_eq!(
+            store.get(&key).unwrap().output_hashes[&path_key],
+            ContentHash::from(blake3::hash(b"data"))
+        );
+        assert!(!store.is_cached(&key, &[out.as_path()]).unwrap());
+
+        // An identical restoration can reuse the record; different bytes still
+        // invalidate it through the normal content check.
+        std::fs::write(&out, b"data").unwrap();
+        assert_eq!(
+            store.check_cached(&key, &[out.as_path()]).unwrap(),
+            CacheHitStatus::Hit
+        );
+        std::fs::write(&out, b"different").unwrap();
+        assert!(matches!(
+            store.check_cached(&key, &[out.as_path()]).unwrap(),
+            CacheHitStatus::Mismatch { .. }
+        ));
     }
 
     #[test]
