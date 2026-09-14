@@ -332,12 +332,15 @@ tag-release version:
     cargo clippy --workspace -- -D warnings
     cargo fmt --all -- --check
     RUSTDOCFLAGS="-Dwarnings" cargo doc --workspace --no-deps --quiet
-    echo "→ Regenerating man pages (docs/man/*.1 from the clap definitions)"
-    just man
+    # Bump before regenerating the man pages: they embed the binary's version.
     echo "→ Setting workspace version to {{version}}"
     sed -i '' 's/^version = ".*"/version = "{{version}}"/' Cargo.toml
+    sed -i '' 's/^# ox [0-9][0-9.]*$/# ox {{version}}/' docs/book/src/getting-started/installation.md docs/book/src/getting-started/quickstart.md
     cargo check --workspace --quiet
-    git add -A
+    echo "→ Regenerating man pages (docs/man/*.1 from the clap definitions)"
+    just man
+    # Stage only what a release touches, never stray untracked files.
+    git add Cargo.toml Cargo.lock docs/man docs/book/src/getting-started
     git diff --cached --quiet || git commit -m "release: v{{version}}"
     git tag -a "v{{version}}" -m "Release v{{version}}"
     echo "→ Pushing main + tag (triggers release workflow)"

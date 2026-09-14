@@ -52,8 +52,8 @@ In order, the recipe (see `justfile`, `[release]` group):
 | 6 | `cargo clippy --workspace -- -D warnings` | lint floor |
 | 7 | `cargo fmt --all -- --check` | format floor |
 | 8 | `RUSTDOCFLAGS=-Dwarnings cargo doc --workspace --no-deps` | doc floor — broken intra-doc links fail CI but slip past `cargo check` |
-| 9 | `just man` regenerates `docs/man/*.1` | tracked man pages stay in sync with the CLI |
-| 10 | bump `[workspace.package] version` → `X.Y.Z`, `cargo check` | one version source of truth |
+| 9 | bump `[workspace.package] version` and the book's `ox --version` examples → `X.Y.Z`, `cargo check` | one version source of truth |
+| 10 | `just man` regenerates `docs/man/*.1` | tracked man pages stay in sync with the CLI |
 | 11 | commit `release: vX.Y.Z`, annotated tag `vX.Y.Z` | the tag points at the release commit |
 | 12 | `git push origin main` then `git push origin vX.Y.Z` | the tag push triggers CI |
 
