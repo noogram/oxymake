@@ -195,10 +195,13 @@ pub fn current_platform() -> String {
 /// spec string is unchanged. When the reference is not a readable file
 /// (e.g. a named conda environment), only the literal reference is hashed.
 ///
-/// For uv environments, the bytes of the `.python-version` uv discovers from
-/// the spec's directory are also hashed. Discovery walks towards the filesystem
-/// root and stops at uv's project or workspace boundary. This is resolved from
-/// the filesystem only; key computation never spawns `uv python find`.
+/// For uv environments, the bytes of every `.python-version` in the process
+/// working directory (the workflow root, where `uv run` starts its discovery)
+/// and in each of its ancestors are also hashed. This is deliberately a
+/// superset of the pin uv selects: which one it reads depends on the command,
+/// the uv version and the project or workspace layout, so the key does not
+/// re-implement that choice. A pin uv ignores can cost a re-run, never a stale
+/// output. Key computation reads the filesystem only and never spawns uv.
 ///
 /// **Documented divergences**:
 ///
@@ -255,12 +258,10 @@ pub fn env_spec_content_hash(env: &EnvSpec) -> String {
                 })
                 .and_then(|lock| std::fs::read(lock).ok());
             update_opt_field(&mut hasher, "env.uv.lock_content", lock_content.as_deref());
-            let python_version_content = uv_python_version_content(project, requirements);
-            update_opt_field(
-                &mut hasher,
-                "env.uv.python_version_content",
-                python_version_content.as_deref(),
-            );
+            // Issue #18: the interpreter pin selects what the rule runs under.
+            if let Ok(cwd) = std::env::current_dir() {
+                hash_python_version_pins(&mut hasher, &cwd);
+            }
         }
         EnvSpec::Conda { env } => {
             update_field(&mut hasher, "env.conda.spec", env.as_bytes());
@@ -282,78 +283,21 @@ pub fn env_spec_content_hash(env: &EnvSpec) -> String {
     hasher.finalize().to_hex().to_string()
 }
 
-/// Read the `.python-version` uv would discover for an environment.
-///
-/// uv begins in the project directory, selects the nearest pin, and does not
-/// walk above the containing project or workspace. A requirements-only
-/// environment outside a project has no boundary and can inherit a pin from
-/// any ancestor. Parse failures are treated like no project boundary here; uv
-/// will report the malformed project itself when the job executes.
-fn uv_python_version_content(
-    project: &Option<String>,
-    requirements: &Option<String>,
-) -> Option<Vec<u8>> {
-    let start = project
-        .as_deref()
-        .or(requirements.as_deref())
-        .and_then(|spec| Path::new(spec).parent())
-        .unwrap_or_else(|| Path::new(""));
-    let boundary = uv_project_or_workspace_boundary(start);
-
-    for directory in start.ancestors() {
-        let version_file = directory.join(".python-version");
-        if version_file.is_file() {
-            return std::fs::read(version_file).ok();
-        }
-        if boundary.as_deref() == Some(directory) {
-            break;
+/// Hash every `.python-version` in `start` and its ancestors, framed by its
+/// distance from `start` so a pin moving between directories changes the key.
+/// The distance, not the absolute path, is hashed: the key stays independent
+/// of where the workflow is checked out.
+fn hash_python_version_pins(hasher: &mut Hasher, start: &Path) {
+    for (depth, directory) in start.ancestors().enumerate() {
+        if let Ok(content) = std::fs::read(directory.join(".python-version")) {
+            update_field(
+                hasher,
+                "env.uv.python_version.depth",
+                depth.to_string().as_bytes(),
+            );
+            update_field(hasher, "env.uv.python_version.content", &content);
         }
     }
-    None
-}
-
-/// Find the inclusive upper boundary for uv's `.python-version` discovery.
-fn uv_project_or_workspace_boundary(start: &Path) -> Option<PathBuf> {
-    let project_root = start
-        .ancestors()
-        .find(|directory| directory.join("pyproject.toml").is_file())?;
-    let project = read_pyproject(project_root)?;
-
-    if has_uv_workspace(&project) {
-        return Some(project_root.to_path_buf());
-    }
-    if !project.get("project").is_some_and(toml::Value::is_table) {
-        return None;
-    }
-
-    for directory in project_root.ancestors().skip(1) {
-        let Some(parent_project) = read_pyproject(directory) else {
-            continue;
-        };
-        if has_uv_workspace(&parent_project) {
-            return Some(directory.to_path_buf());
-        }
-        if parent_project
-            .get("project")
-            .is_some_and(toml::Value::is_table)
-        {
-            break;
-        }
-    }
-    Some(project_root.to_path_buf())
-}
-
-fn read_pyproject(directory: &Path) -> Option<toml::Value> {
-    let content = std::fs::read_to_string(directory.join("pyproject.toml")).ok()?;
-    toml::from_str(&content).ok()
-}
-
-fn has_uv_workspace(project: &toml::Value) -> bool {
-    project
-        .get("tool")
-        .and_then(|tool| tool.get("uv"))
-        .and_then(|uv| uv.get("workspace"))
-        .is_some_and(toml::Value::is_table)
 }
 
 #[cfg(test)]
@@ -730,108 +674,60 @@ mod tests {
         assert_ne!(h2, h3, "uv.lock content must enter the env hash");
     }
 
+    fn pins_hash(start: &Path) -> String {
+        let mut hasher = Hasher::new();
+        hash_python_version_pins(&mut hasher, start);
+        hasher.finalize().to_hex().to_string()
+    }
+
     #[test]
-    fn env_hash_tracks_uv_python_version_content() {
-        // Regression (#18): uv selects the interpreter requested by
+    fn python_version_pin_in_workflow_root_changes_hash() {
+        // Regression (#18): `uv run` selects the interpreter from
         // `.python-version`, but the pin was absent from the cache key.
         let dir = tempfile::tempdir().unwrap();
-        let proj = dir.path().join("pyproject.toml");
-        std::fs::write(
-            &proj,
-            "[project]\nname = \"probe\"\nversion = \"0.1.0\"\nrequires-python = \">=3.11\"\n",
-        )
-        .unwrap();
-        let python_version = dir.path().join(".python-version");
-        std::fs::write(&python_version, "3.11\n").unwrap();
-        let env = EnvSpec::Uv {
-            project: Some(proj.display().to_string()),
-            requirements: None,
-        };
-
-        let h1 = env_spec_content_hash(&env);
-        std::fs::write(&python_version, "3.13\n").unwrap();
-        let h2 = env_spec_content_hash(&env);
-
-        assert_ne!(h1, h2, ".python-version content must enter the env hash");
+        let pin = dir.path().join(".python-version");
+        std::fs::write(&pin, "3.11\n").unwrap();
+        let h1 = pins_hash(dir.path());
+        std::fs::write(&pin, "3.13\n").unwrap();
+        assert_ne!(h1, pins_hash(dir.path()));
     }
 
     #[test]
-    fn env_hash_uses_nearest_parent_uv_python_version() {
+    fn python_version_pin_above_workflow_root_changes_hash() {
+        // uv 0.5.9 reads the workspace-root pin for a member, and a
+        // requirements-only run inherits a pin from any ancestor of its
+        // working directory: both live above the workflow root.
         let dir = tempfile::tempdir().unwrap();
-        let nested = dir.path().join("env/specs");
-        std::fs::create_dir_all(&nested).unwrap();
-        let req = nested.join("requirements.txt");
-        std::fs::write(&req, "six==1.17.0\n").unwrap();
-        let parent_pin = dir.path().join(".python-version");
-        std::fs::write(&parent_pin, "3.11\n").unwrap();
-        let env = EnvSpec::Uv {
-            project: None,
-            requirements: Some(req.display().to_string()),
-        };
-
-        let h1 = env_spec_content_hash(&env);
-        std::fs::write(&parent_pin, "3.13\n").unwrap();
-        let h2 = env_spec_content_hash(&env);
-        assert_ne!(h1, h2, "uv inherits a pin from the nearest ancestor");
-
-        std::fs::write(nested.join(".python-version"), "3.12\n").unwrap();
-        let h3 = env_spec_content_hash(&env);
-        std::fs::write(&parent_pin, "3.10\n").unwrap();
-        let h4 = env_spec_content_hash(&env);
-        assert_eq!(h3, h4, "a nearer pin must hide pins above it");
+        let root = dir.path().join("workspace/packages/member");
+        std::fs::create_dir_all(&root).unwrap();
+        let pin = dir.path().join("workspace/.python-version");
+        std::fs::write(&pin, "3.11\n").unwrap();
+        let h1 = pins_hash(&root);
+        std::fs::write(&pin, "3.13\n").unwrap();
+        assert_ne!(h1, pins_hash(&root));
     }
 
     #[test]
-    fn env_hash_does_not_cross_uv_project_boundary_for_python_version() {
+    fn python_version_pin_below_workflow_root_is_not_hashed() {
+        // uv starts from the working directory; a pin beside a spec file in
+        // a subdirectory is never read by `uv run`.
         let dir = tempfile::tempdir().unwrap();
-        let project = dir.path().join("project");
-        let specs = project.join("specs");
-        std::fs::create_dir_all(&specs).unwrap();
-        std::fs::write(
-            project.join("pyproject.toml"),
-            "[project]\nname = \"probe\"\nversion = \"0.1.0\"\n",
-        )
-        .unwrap();
-        let req = specs.join("requirements.txt");
-        std::fs::write(&req, "six==1.17.0\n").unwrap();
-        let outside_pin = dir.path().join(".python-version");
-        std::fs::write(&outside_pin, "3.11\n").unwrap();
-        let env = EnvSpec::Uv {
-            project: None,
-            requirements: Some(req.display().to_string()),
-        };
-
-        let h1 = env_spec_content_hash(&env);
-        std::fs::write(&outside_pin, "3.13\n").unwrap();
-        let h2 = env_spec_content_hash(&env);
-
-        assert_eq!(h1, h2, "uv does not discover pins above a project root");
+        std::fs::create_dir_all(dir.path().join("envs")).unwrap();
+        let h1 = pins_hash(dir.path());
+        std::fs::write(dir.path().join("envs/.python-version"), "3.12\n").unwrap();
+        assert_eq!(h1, pins_hash(dir.path()));
     }
 
     #[test]
-    fn env_hash_discovers_uv_python_version_at_workspace_root() {
+    fn python_version_pin_moving_between_levels_changes_hash() {
         let dir = tempfile::tempdir().unwrap();
-        let member = dir.path().join("packages/member");
-        std::fs::create_dir_all(&member).unwrap();
-        std::fs::write(
-            dir.path().join("pyproject.toml"),
-            "[tool.uv.workspace]\nmembers = [\"packages/*\"]\n",
-        )
-        .unwrap();
-        let proj = member.join("pyproject.toml");
-        std::fs::write(&proj, "[project]\nname = \"member\"\nversion = \"0.1.0\"\n").unwrap();
-        let workspace_pin = dir.path().join(".python-version");
-        std::fs::write(&workspace_pin, "3.11\n").unwrap();
-        let env = EnvSpec::Uv {
-            project: Some(proj.display().to_string()),
-            requirements: None,
-        };
-
-        let h1 = env_spec_content_hash(&env);
-        std::fs::write(&workspace_pin, "3.13\n").unwrap();
-        let h2 = env_spec_content_hash(&env);
-
-        assert_ne!(h1, h2, "a workspace-root pin must enter a member's hash");
+        let root = dir.path().join("root");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join(".python-version"), "3.12\n").unwrap();
+        let h1 = pins_hash(&root);
+        std::fs::remove_file(root.join(".python-version")).unwrap();
+        std::fs::write(dir.path().join(".python-version"), "3.12\n").unwrap();
+        assert_ne!(h1, pins_hash(&root));
     }
 
     #[test]
