@@ -93,7 +93,7 @@ use crate::event::EventBus;
 use crate::job_graph::{JobGraph, output_ref_key};
 use crate::model::*;
 use crate::traits::benchmark::BenchmarkSink;
-use crate::traits::cache::CacheCheck;
+use crate::traits::cache::{CacheCheck, OutputHashes};
 use crate::traits::claim::{ClaimOutcome, JobClaim, PeerJobState};
 use crate::traits::executor::{ExecContext, Executor, JobResult, JobStatus};
 use crate::traits::gate::{GateCheck, GateStatus};
@@ -819,6 +819,13 @@ pub async fn run_scheduler_with_claims<E: Executor + 'static>(
                     "dispatch"
                 );
 
+                // Snapshot before prepare/execute can remove or overwrite outputs.
+                // Never compare against the newly recorded result at completion.
+                let previous_output_hashes = match &cache {
+                    Some(cache) => cache.recorded_output_hashes(&job).await,
+                    None => None,
+                };
+
                 // Spawn execution task with the pre-acquired permit.
                 in_flight.insert(job_id.clone());
                 let exec = executor.clone();
@@ -879,6 +886,11 @@ pub async fn run_scheduler_with_claims<E: Executor + 'static>(
                                 // jobs need the data from the memory map.
                                 if matches!(output.materialize, MaterializePolicy::Never) {
                                     let key = output_ref_key(&output.reference);
+                                    // An in-process executor may already have supplied
+                                    // the new bytes; a disk copy can belong to an old run.
+                                    if mem_map.contains(&key) {
+                                        continue;
+                                    }
                                     if let OutputRef::File(p) = &output.reference {
                                         if let Ok(data) = tokio::fs::read(p).await {
                                             mem_map.put(key, Arc::from(data));
@@ -896,6 +908,7 @@ pub async fn run_scheduler_with_claims<E: Executor + 'static>(
                         job_id: jid,
                         job: job_clone,
                         result,
+                        previous_output_hashes,
                     })
                 });
             }
@@ -1340,9 +1353,9 @@ struct Frontier {
     /// O(pending × deps) full rescan with O(completed_downstream) incremental
     /// updates.
     ready_frontier: HashSet<JobId>,
-    /// Jobs that must bypass the dynamic cache check because an upstream job
-    /// was re-executed in this run. This ensures transitive cache invalidation:
-    /// if any ancestor ran, all descendants must also run (ox-jxdw).
+    /// Jobs forced explicitly or by an upstream output change (or unknown
+    /// comparison). Identical rebuilds leave consumers to the dynamic cache
+    /// check; changed outputs still invalidate transitively (ox-jxdw).
     force_rerun: HashSet<JobId>,
     /// Per-output materialization tracking (Stage 2: in-memory data transport).
     ///
@@ -1956,6 +1969,57 @@ struct CompletionMsg {
     job_id: JobId,
     job: ConcreteJob,
     result: JobResult,
+    previous_output_hashes: Option<OutputHashes>,
+}
+
+/// Compare produced bytes with the snapshot captured before dispatch. Unknown
+/// or incomplete comparisons conservatively invalidate consumers. Capture memory
+/// data before register_materializations drains it or queues deferred disk writes.
+async fn outputs_changed(
+    job: &ConcreteJob,
+    previous: Option<&OutputHashes>,
+    memory_map: Option<&crate::memory_map::OutputMemoryMap>,
+) -> bool {
+    let Some(previous) = previous else {
+        return true;
+    };
+    if job.outputs.is_empty() {
+        return true;
+    }
+    let mut outputs = Vec::with_capacity(job.outputs.len());
+    for output in &job.outputs {
+        let key = output_ref_key(&output.reference);
+        let Some(expected) = previous.get(&key) else {
+            return true;
+        };
+        let bytes = memory_map.and_then(|map| map.get(&key));
+        outputs.push((output.reference.clone(), bytes, expected.clone()));
+    }
+
+    // File reads and hashing large outputs must not block the async scheduler
+    // thread or hold its state mutex. In-memory bytes take precedence over disk:
+    // the file may still contain the previous build while persistence is deferred.
+    tokio::task::spawn_blocking(move || {
+        outputs.into_iter().any(|(reference, bytes, expected)| {
+            let actual = if let Some(bytes) = bytes {
+                ContentHash::from(blake3::hash(&bytes))
+            } else if let OutputRef::File(path) = reference {
+                let Ok(file) = std::fs::File::open(path) else {
+                    return true;
+                };
+                let mut hasher = blake3::Hasher::new();
+                if hasher.update_reader(file).is_err() {
+                    return true;
+                }
+                ContentHash::from(hasher.finalize())
+            } else {
+                return true;
+            };
+            actual != expected
+        })
+    })
+    .await
+    .unwrap_or(true)
 }
 
 // ---------------------------------------------------------------------------
@@ -2128,6 +2192,8 @@ async fn poll_peer_waits<E: Executor + ?Sized>(
                 let msg = CompletionMsg {
                     job_id: job_id.clone(),
                     job: job.clone(),
+                    // This session did not observe the peer's pre-run state.
+                    previous_output_hashes: None,
                     result: JobResult {
                         job_id: job_id.clone(),
                         exit_code,
@@ -2416,6 +2482,17 @@ async fn handle_completion<E: Executor + ?Sized>(
         }
     }
 
+    let changed = if exit_code == 0 || matches!(msg.job.error_strategy, ErrorStrategy::Ignore) {
+        outputs_changed(
+            &msg.job,
+            msg.previous_output_hashes.as_ref(),
+            ctx.memory_map.as_ref(),
+        )
+        .await
+    } else {
+        true
+    };
+
     if exit_code == 0 {
         // Success.
         let outputs: Vec<String> = msg
@@ -2449,10 +2526,13 @@ async fn handle_completion<E: Executor + ?Sized>(
             s.decrement_input_consumers(&msg.job);
             // Enforce memory budget — evict largest-first (Belady optimal).
             s.enforce_memory_budget();
-            // This job actually executed — mark all downstream as needing
-            // re-execution to ensure transitive cache invalidation (ox-jxdw).
-            for dep in graph.downstream(&msg.job_id) {
-                s.force_rerun.insert(dep.clone());
+            // Preserve transitive invalidation (ox-jxdw) when outputs changed
+            // or comparison is impossible. Identical rebuilds let consumers
+            // go through their normal input-content cache check (#19).
+            if changed {
+                for dep in graph.downstream(&msg.job_id) {
+                    s.force_rerun.insert(dep.clone());
+                }
             }
             s.promote_downstream(&msg.job_id, graph);
             writes
@@ -2503,8 +2583,10 @@ async fn handle_completion<E: Executor + ?Sized>(
                     );
                     s.decrement_input_consumers(&msg.job);
                     s.enforce_memory_budget();
-                    for dep in graph.downstream(&msg.job_id) {
-                        s.force_rerun.insert(dep.clone());
+                    if changed {
+                        for dep in graph.downstream(&msg.job_id) {
+                            s.force_rerun.insert(dep.clone());
+                        }
                     }
                     s.promote_downstream(&msg.job_id, graph);
                     writes
@@ -7026,6 +7108,167 @@ mod tests {
         assert_eq!(s.len(), 4);
     }
 
+    // -- Content-aware invalidation (#19) ------------------------------------
+
+    #[tokio::test]
+    async fn output_comparison_prefers_produced_memory_bytes_over_stale_disk() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("output");
+        let key = path.to_str().unwrap();
+        let job = make_job("A", "rA", vec![], vec![key]);
+        let previous = BTreeMap::from([(key.to_string(), ContentHash::from(blake3::hash(b"old")))]);
+        let map = crate::memory_map::OutputMemoryMap::new();
+        std::fs::write(&path, b"old").unwrap();
+        map.put(key.to_string(), Arc::from(&b"new"[..]));
+        assert!(outputs_changed(&job, Some(&previous), Some(&map)).await);
+
+        // Identical produced bytes also compare correctly while the disk file
+        // is missing: persistence has not happened yet.
+        std::fs::remove_file(&path).unwrap();
+        map.put(key.to_string(), Arc::from(&b"old"[..]));
+        assert!(!outputs_changed(&job, Some(&previous), Some(&map)).await);
+        assert!(
+            map.contains(key),
+            "comparison must not drain produced bytes"
+        );
+        map.remove(key);
+        assert!(outputs_changed(&job, Some(&previous), Some(&map)).await);
+    }
+
+    #[tokio::test]
+    async fn memory_only_output_keeps_executor_bytes_for_invalidation() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("output");
+        let key = path.to_str().unwrap();
+        std::fs::write(&path, b"old").unwrap();
+        let mut producer = make_job("A", "rA", vec![], vec![key]);
+        producer.outputs[0].materialize = MaterializePolicy::Never;
+        let graph = JobGraph::build(vec![
+            producer,
+            make_job("B", "rB", vec![key], vec!["consumer"]),
+        ])
+        .unwrap();
+        let map = crate::memory_map::OutputMemoryMap::new();
+        // The mock executor leaves these produced bytes untouched, while a
+        // previous disk copy still exists. Never-policy population must keep them.
+        map.put(key.to_string(), Arc::from(&b"new"[..]));
+        let ctx = ExecContext {
+            memory_map: Some(map),
+            ..default_ctx()
+        };
+        let cache = Arc::new(SnapshotCache {
+            previous: Some(BTreeMap::from([(
+                key.to_string(),
+                ContentHash::from(blake3::hash(b"old")),
+            )])),
+        });
+        let result = run_scheduler_with_cache(
+            &graph,
+            Arc::new(MockExecutor::new()),
+            &SchedulerConfig::default(),
+            &EventBus::new(),
+            &ctx,
+            Some(cache),
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!((result.succeeded, result.skipped), (2, 0));
+    }
+
+    struct SnapshotCache {
+        previous: Option<OutputHashes>,
+    }
+
+    impl CacheCheck for SnapshotCache {
+        fn is_cached<'a>(
+            &'a self,
+            job: &'a ConcreteJob,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send + 'a>> {
+            Box::pin(async move { job.id.as_str() == "B" })
+        }
+
+        fn recorded_output_hashes<'a>(
+            &'a self,
+            _job: &'a ConcreteJob,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<OutputHashes>> + Send + 'a>>
+        {
+            Box::pin(async { self.previous.clone() })
+        }
+
+        fn record<'a>(
+            &'a self,
+            _job: &'a ConcreteJob,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
+            Box::pin(async {})
+        }
+    }
+
+    #[tokio::test]
+    async fn success_and_ignored_failure_compare_all_outputs_before_invalidating() {
+        for exit_code in [0, 1] {
+            // Identical, one changed output, incomplete snapshot, no snapshot.
+            for scenario in 0..4 {
+                let dir = tempfile::tempdir().unwrap();
+                let first = dir.path().join("first");
+                let second = dir.path().join("second");
+                let first = first.to_str().unwrap();
+                let second = second.to_str().unwrap();
+                std::fs::write(first, b"old").unwrap();
+                std::fs::write(second, if scenario == 1 { b"new" } else { b"old" }).unwrap();
+                let mut previous = BTreeMap::from([
+                    (first.to_string(), ContentHash::from(blake3::hash(b"old"))),
+                    (second.to_string(), ContentHash::from(blake3::hash(b"old"))),
+                ]);
+                if scenario == 2 {
+                    previous.remove(second);
+                }
+                let cache = Arc::new(SnapshotCache {
+                    previous: (scenario != 3).then_some(previous),
+                });
+                let graph = JobGraph::build(vec![
+                    make_job_with_strategy(
+                        "A",
+                        "rA",
+                        vec![],
+                        vec![first, second],
+                        ErrorStrategy::Ignore,
+                    ),
+                    make_job("B", "rB", vec![first, second], vec!["consumer"]),
+                ])
+                .unwrap();
+                let executor = Arc::new(MockExecutor::with_results(BTreeMap::from([(
+                    "A".into(),
+                    exit_code,
+                )])));
+                let result = run_scheduler_with_cache(
+                    &graph,
+                    executor,
+                    &SchedulerConfig::default(),
+                    &EventBus::new(),
+                    &default_ctx(),
+                    Some(cache),
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+                .await
+                .unwrap();
+                assert_eq!(result.failed, 0);
+                assert_eq!(
+                    result.skipped,
+                    usize::from(scenario == 0),
+                    "exit={exit_code}, scenario={scenario}"
+                );
+                assert_eq!(result.succeeded, if scenario == 0 { 1 } else { 2 });
+            }
+        }
+    }
+
     // -- B4: cancel/completion race ------------------------------------------
 
     fn completion_msg_for(graph: &JobGraph, id: &str, exit_code: i32) -> CompletionMsg {
@@ -7033,6 +7276,7 @@ mod tests {
         CompletionMsg {
             job_id: job_id.clone(),
             job: graph.get_job(&job_id).unwrap().clone(),
+            previous_output_hashes: None,
             result: JobResult {
                 job_id,
                 exit_code,

@@ -23,7 +23,7 @@ use ox_core::model::{ConcreteJob, ContentHash, Event, ExecutionBlock, GateId, Jo
 use ox_core::resolver::{self, ResolveRequest};
 use ox_core::scheduler::{self, FailedJobDetail, SchedulerConfig};
 use ox_core::traits::benchmark::{self, BenchmarkSink};
-use ox_core::traits::cache::CacheCheck;
+use ox_core::traits::cache::{CacheCheck, OutputHashes};
 use ox_core::traits::executor::{ExecContext, Executor, JobResult};
 use ox_exec_local::executor::LocalExecutor;
 use ox_exec_ray::{RayConfig, RayExecutor};
@@ -701,6 +701,30 @@ impl CacheCheck for SchedulerCache {
                 self.note_provenance(job, prov).await;
             }
             hit
+        })
+    }
+
+    fn recorded_output_hashes<'a>(
+        &'a self,
+        job: &'a ConcreteJob,
+    ) -> Pin<Box<dyn Future<Output = Option<OutputHashes>> + Send + 'a>> {
+        Box::pin(async move {
+            if job.outputs.is_empty()
+                || job
+                    .outputs
+                    .iter()
+                    .any(|o| !matches!(o.reference, OutputRef::File(_)))
+            {
+                return None;
+            }
+            let mut store = self.store.lock().await;
+            if store.validation() == CacheValidation::Mtime {
+                return None;
+            }
+            let components = job_cache_key_with_components(job, Some(&mut *store))?;
+            store
+                .get(&components.cache_key)
+                .map(|entry| entry.output_hashes)
         })
     }
 
