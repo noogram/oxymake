@@ -6,7 +6,7 @@
 //! This ensures that any change in inputs, code, or environment produces a
 //! different key.
 //!
-//! # Key format v5 (injective framing)
+//! # Key format v7 (injective framing)
 //!
 //! Every field is framed via [`ox_core::hashing`] (length-prefixed tag +
 //! presence byte + length-prefixed value), so the encoding is injective:
@@ -30,7 +30,7 @@ use std::path::{Component, Path, PathBuf};
 /// Bump this whenever the set of hashed ingredients or their encoding
 /// changes: old cache entries then become unreachable (clean invalidation)
 /// instead of being wrongly reused under the new semantics.
-pub const CACHE_KEY_FORMAT_VERSION: &str = "oxymake-cache-key-v6";
+pub const CACHE_KEY_FORMAT_VERSION: &str = "oxymake-cache-key-v7";
 
 /// Express an in-workflow path relative to the workflow root before it enters
 /// a cache key.
@@ -93,7 +93,7 @@ fn lexical_normalize(path: &Path) -> PathBuf {
     normalized
 }
 
-/// All ingredients of a cache key (format v6).
+/// All ingredients of a cache key (format v7).
 #[derive(Debug, Clone)]
 pub struct CacheKeySpec<'a> {
     /// Serialized execution block (command, inline code, script path +
@@ -195,12 +195,23 @@ pub fn current_platform() -> String {
 /// spec string is unchanged. When the reference is not a readable file
 /// (e.g. a named conda environment), only the literal reference is hashed.
 ///
-/// **Documented divergence**: container image references (`docker:`,
-/// `apptainer:`) are hashed as written — a mutable tag like
-/// `python:3.12-slim` is *not* resolved to a digest, so re-tagged images
-/// do not invalidate the cache. Pin images by digest
-/// (`python@sha256:…`) when this matters. See the paper's limitations
-/// section.
+/// For uv environments, the bytes of every `.python-version` in the process
+/// working directory (the workflow root, where `uv run` starts its discovery)
+/// and in each of its ancestors are also hashed. This is deliberately a
+/// superset of the pin uv selects: which one it reads depends on the command,
+/// the uv version and the project or workspace layout, so the key does not
+/// re-implement that choice. A pin uv ignores can cost a re-run, never a stale
+/// output. Key computation reads the filesystem only and never spawns uv.
+///
+/// **Documented divergences**:
+///
+/// - `UV_PYTHON` and changes to the set of installed interpreters are not
+///   represented in uv environment hashes. Use a checked-in `.python-version`
+///   when interpreter selection must invalidate outputs.
+/// - Container image references (`docker:`, `apptainer:`) are hashed as written
+///   — a mutable tag like `python:3.12-slim` is *not* resolved to a digest, so
+///   re-tagged images do not invalidate the cache. Pin images by digest
+///   (`python@sha256:…`) when this matters. See the paper's limitations section.
 pub fn env_spec_content_hash(env: &EnvSpec) -> String {
     let mut hasher = Hasher::new();
     match env {
@@ -247,6 +258,10 @@ pub fn env_spec_content_hash(env: &EnvSpec) -> String {
                 })
                 .and_then(|lock| std::fs::read(lock).ok());
             update_opt_field(&mut hasher, "env.uv.lock_content", lock_content.as_deref());
+            // Issue #18: the interpreter pin selects what the rule runs under.
+            if let Ok(cwd) = std::env::current_dir() {
+                hash_python_version_pins(&mut hasher, &cwd);
+            }
         }
         EnvSpec::Conda { env } => {
             update_field(&mut hasher, "env.conda.spec", env.as_bytes());
@@ -266,6 +281,23 @@ pub fn env_spec_content_hash(env: &EnvSpec) -> String {
         }
     }
     hasher.finalize().to_hex().to_string()
+}
+
+/// Hash every `.python-version` in `start` and its ancestors, framed by its
+/// distance from `start` so a pin moving between directories changes the key.
+/// The distance, not the absolute path, is hashed: the key stays independent
+/// of where the workflow is checked out.
+fn hash_python_version_pins(hasher: &mut Hasher, start: &Path) {
+    for (depth, directory) in start.ancestors().enumerate() {
+        if let Ok(content) = std::fs::read(directory.join(".python-version")) {
+            update_field(
+                hasher,
+                "env.uv.python_version.depth",
+                depth.to_string().as_bytes(),
+            );
+            update_field(hasher, "env.uv.python_version.content", &content);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -556,7 +588,7 @@ mod tests {
         });
         assert_eq!(
             key.as_str(),
-            "ca08d6640469e7ecb8d6c0c36eaad3ccf8fa967a5d746ab4ddf55bb3aeba0c85",
+            "7eb7b98391844dd195a6c5b0c9368ff1e4f5f043f8b144185192e3895426a83c",
             "cache key format drifted — bump CACHE_KEY_FORMAT_VERSION and update the golden value"
         );
     }
@@ -579,7 +611,7 @@ mod tests {
         });
         assert_eq!(
             key.as_str(),
-            "f61b4cac173e039d50a1d959d5d5599711750bf570d492e89ec90ca8232443ef"
+            "4b498f88d78d84eb09c5084e3558a35d84992631e4f6329844d0cc851da85389"
         );
     }
 
@@ -640,6 +672,62 @@ mod tests {
         std::fs::write(dir.path().join("uv.lock"), "version = 2\n").unwrap();
         let h3 = env_spec_content_hash(&env);
         assert_ne!(h2, h3, "uv.lock content must enter the env hash");
+    }
+
+    fn pins_hash(start: &Path) -> String {
+        let mut hasher = Hasher::new();
+        hash_python_version_pins(&mut hasher, start);
+        hasher.finalize().to_hex().to_string()
+    }
+
+    #[test]
+    fn python_version_pin_in_workflow_root_changes_hash() {
+        // Regression (#18): `uv run` selects the interpreter from
+        // `.python-version`, but the pin was absent from the cache key.
+        let dir = tempfile::tempdir().unwrap();
+        let pin = dir.path().join(".python-version");
+        std::fs::write(&pin, "3.11\n").unwrap();
+        let h1 = pins_hash(dir.path());
+        std::fs::write(&pin, "3.13\n").unwrap();
+        assert_ne!(h1, pins_hash(dir.path()));
+    }
+
+    #[test]
+    fn python_version_pin_above_workflow_root_changes_hash() {
+        // uv 0.5.9 reads the workspace-root pin for a member, and a
+        // requirements-only run inherits a pin from any ancestor of its
+        // working directory: both live above the workflow root.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("workspace/packages/member");
+        std::fs::create_dir_all(&root).unwrap();
+        let pin = dir.path().join("workspace/.python-version");
+        std::fs::write(&pin, "3.11\n").unwrap();
+        let h1 = pins_hash(&root);
+        std::fs::write(&pin, "3.13\n").unwrap();
+        assert_ne!(h1, pins_hash(&root));
+    }
+
+    #[test]
+    fn python_version_pin_below_workflow_root_is_not_hashed() {
+        // uv starts from the working directory; a pin beside a spec file in
+        // a subdirectory is never read by `uv run`.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("envs")).unwrap();
+        let h1 = pins_hash(dir.path());
+        std::fs::write(dir.path().join("envs/.python-version"), "3.12\n").unwrap();
+        assert_eq!(h1, pins_hash(dir.path()));
+    }
+
+    #[test]
+    fn python_version_pin_moving_between_levels_changes_hash() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("root");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join(".python-version"), "3.12\n").unwrap();
+        let h1 = pins_hash(&root);
+        std::fs::remove_file(root.join(".python-version")).unwrap();
+        std::fs::write(dir.path().join(".python-version"), "3.12\n").unwrap();
+        assert_ne!(h1, pins_hash(&root));
     }
 
     #[test]
