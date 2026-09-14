@@ -395,7 +395,10 @@ impl CacheStore {
     /// detected, the stale cache entry is removed so the job will re-execute.
     ///
     /// Returns a [`CacheHitStatus`] that distinguishes between a clean miss,
-    /// a missing output file, and a content hash mismatch.
+    /// a missing output file, and a content hash mismatch. Missing outputs retain
+    /// the entry's last successful hashes for rebuild comparison, but invalidate
+    /// metadata trust persistently: a restored output must pass content validation
+    /// before the entry can be reused in mtime+hash mode.
     ///
     /// Uses an mtime+size fast path: when a file's modification time and size
     /// match the values recorded at cache time, the stored content hash is
@@ -439,7 +442,22 @@ impl CacheStore {
             };
 
             if !path.exists() {
-                self.remove_entry(cache_key);
+                // Missing materialization is still a cache miss, but retain the
+                // last successful hashes for comparison after a rebuild (#19).
+                // Planning also calls this method, so the snapshot must survive
+                // across separate plan/run invocations and failed rebuilds.
+                // A negative size cannot match filesystem metadata. Mark every
+                // output in the retained entry, including missing outputs after
+                // this one that this check has not reached. Keep the marker until
+                // a successful record replaces it.
+                self.conn
+                    .execute(
+                        "UPDATE output_records SET size = -1 WHERE cache_key = ?1",
+                        params![cache_key.as_str()],
+                    )
+                    .map_err(|e| {
+                        CacheError::Manifest(format!("sqlite invalidate metadata: {e}"))
+                    })?;
                 return Ok(CacheHitStatus::OutputMissing { path: key });
             }
 
@@ -530,11 +548,6 @@ impl CacheStore {
     ///
     /// Hashes each output file and stores its content hash and mtime/size
     /// metadata under the given cache key.
-    #[tracing::instrument(
-        name = "cache.record",
-        skip_all,
-        fields(cache_key = %cache_key.as_str(), output_count = outputs.len()),
-    )]
     pub fn record(
         &mut self,
         cache_key: ContentHash,
@@ -542,15 +555,52 @@ impl CacheStore {
         provenance: Option<&ox_core::model::ArtifactProvenance>,
         platform_scope: PlatformScope,
     ) -> Result<(), CacheError> {
+        self.record_with_hashes(
+            cache_key,
+            outputs,
+            provenance,
+            platform_scope,
+            &BTreeMap::new(),
+        )
+    }
+
+    /// Record completed disk outputs, reusing hashes computed after execution.
+    ///
+    /// Supplied hashes must describe the current disk bytes, keyed by path.
+    /// Outputs absent from `hashes` are hashed here. Metadata, provenance and
+    /// platform attribution are recorded exactly as by [`Self::record`].
+    #[tracing::instrument(
+        name = "cache.record",
+        skip_all,
+        fields(cache_key = %cache_key.as_str(), output_count = outputs.len()),
+    )]
+    pub fn record_with_hashes(
+        &mut self,
+        cache_key: ContentHash,
+        outputs: &[&Path],
+        provenance: Option<&ox_core::model::ArtifactProvenance>,
+        platform_scope: PlatformScope,
+        hashes: &BTreeMap<String, ContentHash>,
+    ) -> Result<(), CacheError> {
         tracing::debug!(
             target: "ox.cache",
             counter = "cache.record",
             "record"
         );
+        let outputs = outputs
+            .iter()
+            .map(|path| {
+                let hash = match hashes.get(path.to_string_lossy().as_ref()) {
+                    Some(hash) => hash.clone(),
+                    None => hash::hash_file(path)?,
+                };
+                Ok((*path, hash))
+            })
+            .collect::<Result<Vec<_>, CacheError>>()?;
         let platform = crate::key::current_platform();
         self.record_with_platform(
             cache_key,
-            outputs,
+            &outputs,
             provenance,
             &platform,
             platform_scope,
@@ -570,9 +620,13 @@ impl CacheStore {
         origin_platform: &str,
         platform_scope: PlatformScope,
     ) -> Result<(), CacheError> {
+        let outputs = outputs
+            .iter()
+            .map(|path| Ok((*path, hash::hash_file(path)?)))
+            .collect::<Result<Vec<_>, CacheError>>()?;
         self.record_with_platform(
             cache_key,
-            outputs,
+            &outputs,
             Some(provenance),
             origin_platform,
             platform_scope,
@@ -583,7 +637,7 @@ impl CacheStore {
     fn record_with_platform(
         &mut self,
         cache_key: ContentHash,
-        outputs: &[&Path],
+        outputs: &[(&Path, ContentHash)],
         provenance: Option<&ox_core::model::ArtifactProvenance>,
         platform: &str,
         platform_scope: PlatformScope,
@@ -633,9 +687,8 @@ impl CacheStore {
         )
         .map_err(|e| CacheError::Manifest(format!("sqlite delete: {e}")))?;
 
-        for path in outputs {
+        for (path, h) in outputs {
             let key = path.to_string_lossy().to_string();
-            let h = hash::hash_file(path)?;
             let (mt, sz) = hash::file_meta(path)?;
             tx.execute(
                 "INSERT INTO output_records (cache_key, path, content_hash, mtime_secs, size)
@@ -1422,7 +1475,7 @@ mod tests {
     }
 
     #[test]
-    fn check_cached_output_missing_invalidates_entry() {
+    fn check_cached_output_missing_retains_hashes_for_rebuild() {
         let dir = tempfile::tempdir().unwrap();
         let oxdir = dir.path().join(".oxymake");
         let mut store = make_store(&oxdir);
@@ -1443,8 +1496,140 @@ mod tests {
             matches!(status, CacheHitStatus::OutputMissing { .. }),
             "expected OutputMissing, got {status:?}",
         );
-        // Self-healing: stale entry should be removed.
-        assert_eq!(store.len(), 0);
+        assert_eq!(store.len(), 1, "keep the last successful output hashes");
+        let path_key = out.to_string_lossy().to_string();
+        assert_eq!(
+            store.get(&key).unwrap().output_hashes[&path_key],
+            ContentHash::from(blake3::hash(b"data"))
+        );
+        assert!(!store.is_cached(&key, &[out.as_path()]).unwrap());
+
+        // An identical restoration can reuse the record; different bytes still
+        // invalidate it through the normal content check.
+        std::fs::write(&out, b"data").unwrap();
+        assert_eq!(
+            store.check_cached(&key, &[out.as_path()]).unwrap(),
+            CacheHitStatus::Hit
+        );
+        std::fs::write(&out, b"different").unwrap();
+        assert!(matches!(
+            store.check_cached(&key, &[out.as_path()]).unwrap(),
+            CacheHitStatus::Mismatch { .. }
+        ));
+    }
+
+    #[test]
+    fn missing_output_disables_metadata_trust_across_reopen() {
+        for corrupt in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let oxdir = dir.path().join(".oxymake");
+            let mut store = make_store(&oxdir);
+            let out = dir.path().join("out.txt");
+            std::fs::write(&out, b"AAAA\n").unwrap();
+            let mtime = std::fs::metadata(&out).unwrap().modified().unwrap();
+            let other = dir.path().join("other.txt");
+            std::fs::write(&other, b"AAAA\n").unwrap();
+            let other_mtime = std::fs::metadata(&other).unwrap().modified().unwrap();
+            let key = ch("restoration");
+            store
+                .record(key.clone(), &[&out, &other], None, PlatformScope::Exact)
+                .unwrap();
+            std::fs::remove_file(&out).unwrap();
+            std::fs::remove_file(&other).unwrap();
+            assert!(matches!(
+                store.check_cached(&key, &[&out, &other]).unwrap(),
+                CacheHitStatus::OutputMissing { .. }
+            ));
+            drop(store);
+            std::fs::write(&out, b"AAAA\n").unwrap();
+            std::fs::write(&other, if corrupt { b"BBBB\n" } else { b"AAAA\n" }).unwrap();
+            std::fs::File::options()
+                .write(true)
+                .open(&other)
+                .unwrap()
+                .set_modified(other_mtime)
+                .unwrap();
+            std::fs::File::options()
+                .write(true)
+                .open(&out)
+                .unwrap()
+                .set_modified(mtime)
+                .unwrap();
+            let mut store = make_store(&oxdir);
+            let status = store.check_cached(&key, &[&out, &other]).unwrap();
+            if corrupt {
+                assert!(
+                    matches!(status, CacheHitStatus::Mismatch { .. }),
+                    "{status:?}"
+                );
+            } else {
+                assert_eq!(status, CacheHitStatus::Hit);
+            }
+        }
+    }
+
+    #[test]
+    fn precomputed_hashes_preserve_record_metadata_and_hash_missing_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = make_store(&dir.path().join(".oxymake"));
+        let first = dir.path().join("first");
+        let second = dir.path().join("second");
+        std::fs::write(&first, b"one").unwrap();
+        std::fs::write(&second, b"two").unwrap();
+        let provenance = ox_core::model::ArtifactProvenance {
+            input_hashes: vec![(ch("input").to_string(), "source.txt".into())],
+            job_spec_hash: ch("spec").to_string(),
+            reproducibility: ox_core::model::ReproducibilityClass::Deterministic,
+        };
+        let key = ch("precomputed");
+        // Deliberately supply only one output: the other must still be recorded.
+        let hashes = BTreeMap::from([(
+            first.to_string_lossy().to_string(),
+            ContentHash::from(blake3::hash(b"one")),
+        )]);
+        let reads_before = hash::HASH_FILE_CALLS.with(|calls| calls.get());
+        store
+            .record_with_hashes(
+                key.clone(),
+                &[&first, &second],
+                Some(&provenance),
+                PlatformScope::Any,
+                &hashes,
+            )
+            .unwrap();
+        assert_eq!(
+            hash::HASH_FILE_CALLS.with(|calls| calls.get()) - reads_before,
+            1,
+            "only the output without a supplied hash should be read"
+        );
+        let entry = store.get(&key).unwrap();
+        assert_eq!(
+            entry.output_hashes[&second.to_string_lossy().to_string()],
+            ContentHash::from(blake3::hash(b"two"))
+        );
+        assert_eq!(
+            entry.output_hashes[&first.to_string_lossy().to_string()],
+            hashes[&first.to_string_lossy().to_string()]
+        );
+        assert_eq!(
+            entry.output_mtimes[&first.to_string_lossy().to_string()],
+            hash::file_meta(&first).unwrap()
+        );
+        assert_eq!(
+            entry.output_mtimes[&second.to_string_lossy().to_string()],
+            hash::file_meta(&second).unwrap()
+        );
+        assert_eq!(entry.provenance.unwrap(), provenance);
+        assert_eq!(
+            entry.platform.as_deref(),
+            Some(crate::key::current_platform().as_str())
+        );
+        assert_eq!(entry.platform_scope, Some(PlatformScope::Any));
+        assert!(!entry.adopted);
+        assert!(matches!(
+            store.check_cached(&key, &[&first, &second]).unwrap(),
+            CacheHitStatus::Hit
+        ));
     }
 
     #[test]

@@ -20,6 +20,26 @@ once.
   This covers the pin uv selects in every project and workspace layout; a
   change to a pin uv ignores costs one re-run. `UV_PYTHON` overrides and
   changes to installed interpreters remain outside the cache key (issue #18).
+- **A job rebuilt with the bytes it produced before no longer re-runs its
+  consumers.** When a job re-runs under an unchanged cache key (a deleted
+  output, `--forcerun`, a failure then a restored recipe) and its outputs match
+  the hashes recorded under that key, consumers go through their normal cache
+  check instead of being forced. A changed output, a changed producer key,
+  `--no-cache` and `mtime` validation still force consumers. `ox plan` cannot
+  predict rebuilt bytes, so it now reports an upper bound of what `ox run`
+  executes (issue #19).
+- A cache entry kept for an output that went missing is verified by content
+  hash before reuse, even if a restored file has the old size and modification
+  time; and a job that runs reports its own reason (`output_missing`, `stale`,
+  cache miss) instead of `upstream_rebuilt` when its upstream was rebuilt
+  identically (issue #19).
+
+### Changed
+- `ox-core`: `CacheCheck` gains defaulted `recorded_output_hashes`,
+  `check_with_reason` and `record_with_hashes` methods and an `OutputHashes`
+  type; `ox-cache`: `CacheStore::record_with_hashes` accepts precomputed output
+  hashes, and `check_cached` keeps the entry when an output is missing.
+  Existing implementations keep the previous conservative behaviour (issue #19).
 
 ## [0.4.0] - 2026-09-14
 

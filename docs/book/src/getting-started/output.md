@@ -56,7 +56,7 @@ Completed: 2 succeeded, 0 failed, 1 skipped, 0 cancelled (0.4s)
 
 ## Plan Output
 
-Use `ox plan` to see what would run without executing:
+Use `ox plan` to see what may run without executing:
 
 ```bash
 ox plan
@@ -73,6 +73,12 @@ Targets: results/summary.json
 The header reports the totals (`N rules, N jobs, N source files`), followed by
 the requested targets and the concrete jobs, each shown as
 `[job-id] rule=<rule> -> [outputs]`.
+
+The plan is an upper bound of what `ox run` executes with the same tree and
+cache settings. A planned `upstream rebuilt` job may be skipped at runtime if
+its producer rebuilds bytes matching hashes recorded under the same cache key
+and the consumer's normal cache check passes. A producer whose cache key changed
+still forces its consumers, even with identical bytes.
 
 ## JSON Output (Agent Mode)
 

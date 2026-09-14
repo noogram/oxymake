@@ -13,7 +13,7 @@ use super::run::{
     restore_remote_outputs,
 };
 
-/// The jobs satisfied by cache and the reason every other job must execute.
+/// The jobs satisfied by cache and the reason every other job may execute.
 pub struct ExecutionPlan {
     pub skip_jobs: HashSet<JobId>,
     pub run_reasons: HashMap<JobId, RunReason>,
@@ -25,10 +25,12 @@ pub struct ExecutionPlan {
 /// Determine which jobs would execute for the current filesystem and cache.
 ///
 /// This is the single selection pass used by both `ox plan` and `ox run`.
-/// Invariant: for any state of the tree, plan's job count equals the number of
-/// jobs run would execute with the same cache settings.
-/// When a job is stale, every downstream job is also selected because its
-/// input will be rebuilt even if its current output has a valid cache entry.
+/// Invariant: with the same tree and cache settings, plan reports an upper
+/// bound of what run executes. A stale job selects its downstream consumers
+/// as UpstreamRebuilt because planning cannot know the produced bytes. At
+/// runtime, bytes matching hashes recorded under the same cache key let consumers
+/// pass their normal cache check. A changed producer key still forces consumers,
+/// even when the produced bytes are identical.
 pub fn determine_execution(
     job_graph: &JobGraph,
     cache_enabled: bool,

@@ -86,11 +86,21 @@ the exit code stays `1`, since a job did fail.
 Show the execution plan without running anything.
 
 Planning resolves the complete dependency graph, applies the same cache and
-staleness analysis as `ox run`, and displays only the jobs that would execute.
+staleness analysis as `ox run`, and displays the jobs that may execute.
 Existing generated outputs are not treated as source files, so a missing
 intermediate includes its producer and downstream rebuilds; a warm cache
 reports zero jobs. Job lines (and the JSON `reason` field) explain selections
 such as `output missing` and `upstream rebuilt`.
+
+With the same filesystem and cache settings, **plan reports an upper bound of
+what run executes**. Planning cannot know the bytes a rebuilt job will produce,
+so it conservatively selects downstream jobs with `upstream rebuilt`. At runtime,
+if all rebuilt outputs match content hashes recorded under the same cache key,
+consumers receive their normal cache check and may be skipped. A producer whose
+cache key changed still forces its consumers, even when its bytes are identical.
+Changed outputs still
+invalidate consumers transitively. Missing recorded hashes, non-cacheable rules,
+`--no-cache`, and `cache.validation = "mtime"` retain conservative rebuilding.
 
 ```bash
 ox plan                     # Show what would run (optimized)

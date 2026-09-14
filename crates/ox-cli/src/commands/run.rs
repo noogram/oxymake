@@ -19,11 +19,13 @@ use ox_core::disk_writer::spawn_disk_writer_confined;
 use ox_core::event::EventBus;
 use ox_core::hashing::{hash_kv_map, update_field, update_opt_field};
 use ox_core::job_graph::JobGraph;
-use ox_core::model::{ConcreteJob, ContentHash, Event, ExecutionBlock, GateId, JobId, OutputRef};
+use ox_core::model::{
+    ConcreteJob, ContentHash, Event, ExecutionBlock, GateId, JobId, OutputRef, RunReason,
+};
 use ox_core::resolver::{self, ResolveRequest};
 use ox_core::scheduler::{self, FailedJobDetail, SchedulerConfig};
 use ox_core::traits::benchmark::{self, BenchmarkSink};
-use ox_core::traits::cache::CacheCheck;
+use ox_core::traits::cache::{CacheCheck, OutputHashes};
 use ox_core::traits::executor::{ExecContext, Executor, JobResult};
 use ox_exec_local::executor::LocalExecutor;
 use ox_exec_ray::{RayConfig, RayExecutor};
@@ -640,15 +642,31 @@ fn record_fully_cached_run(
     let _ = db.end_run(run_id, 0, 0, ids.len());
 }
 
+fn cache_status_reason(status: CacheHitStatus) -> Result<(), RunReason> {
+    match status {
+        CacheHitStatus::Hit => Ok(()),
+        CacheHitStatus::Miss => Err(RunReason::CacheMiss),
+        CacheHitStatus::OutputMissing { path } => Err(RunReason::OutputMissing { path }),
+        CacheHitStatus::Mismatch { path } => Err(RunReason::OutputStale { path }),
+    }
+}
+
 impl CacheCheck for SchedulerCache {
     fn is_cached<'a>(
         &'a self,
         job: &'a ConcreteJob,
     ) -> Pin<Box<dyn Future<Output = bool> + Send + 'a>> {
+        Box::pin(async move { self.check_with_reason(job).await.is_ok() })
+    }
+
+    fn check_with_reason<'a>(
+        &'a self,
+        job: &'a ConcreteJob,
+    ) -> Pin<Box<dyn Future<Output = Result<(), RunReason>> + Send + 'a>> {
         Box::pin(async move {
             let output_paths = output_file_paths(job);
             if output_paths.is_empty() {
-                return false;
+                return Err(RunReason::NotCacheable);
             }
             let output_refs: Vec<&Path> = output_paths.iter().map(|p| p.as_path()).collect();
 
@@ -659,8 +677,8 @@ impl CacheCheck for SchedulerCache {
                 let input_paths = input_file_paths(job);
                 let input_refs: Vec<&Path> = input_paths.iter().map(|p| p.as_path()).collect();
                 return match CacheStore::check_mtime_stateless(&input_refs, &output_refs) {
-                    Ok(status) => status.is_hit(),
-                    Err(_) => false,
+                    Ok(status) => cache_status_reason(status),
+                    Err(_) => Err(RunReason::CacheMiss),
                 };
             }
 
@@ -669,7 +687,7 @@ impl CacheCheck for SchedulerCache {
             // what the decision was keyed on (#12).
             let components = match job_cache_key_with_components(job, Some(&mut *store)) {
                 Some(c) => c,
-                None => return false,
+                None => return Err(RunReason::NotCacheable),
             };
             let cache_key = components.cache_key.clone();
             if let Some(remote) = &self.remote {
@@ -681,7 +699,7 @@ impl CacheCheck for SchedulerCache {
                         job_provenance(job, &components, entry.as_ref().map(|e| &e.output_hashes));
                     drop(store);
                     self.note_provenance(job, prov).await;
-                    return true;
+                    return Ok(());
                 }
             }
             let hit = match store.check_cached(&cache_key, &output_refs) {
@@ -689,11 +707,11 @@ impl CacheCheck for SchedulerCache {
                     if let CacheHitStatus::Mismatch { ref path } = status {
                         eprintln!("cache: output hash mismatch for {}, re-executing", path,);
                     }
-                    status.is_hit()
+                    cache_status_reason(status)
                 }
-                Err(_) => false,
+                Err(_) => Err(RunReason::CacheMiss),
             };
-            if hit {
+            if hit.is_ok() {
                 let entry = store.get(&cache_key);
                 let prov =
                     job_provenance(job, &components, entry.as_ref().map(|e| &e.output_hashes));
@@ -704,7 +722,39 @@ impl CacheCheck for SchedulerCache {
         })
     }
 
+    fn recorded_output_hashes<'a>(
+        &'a self,
+        job: &'a ConcreteJob,
+    ) -> Pin<Box<dyn Future<Output = Option<OutputHashes>> + Send + 'a>> {
+        Box::pin(async move {
+            if job.outputs.is_empty()
+                || job
+                    .outputs
+                    .iter()
+                    .any(|o| !matches!(o.reference, OutputRef::File(_)))
+            {
+                return None;
+            }
+            let mut store = self.store.lock().await;
+            if store.validation() == CacheValidation::Mtime {
+                return None;
+            }
+            let components = job_cache_key_with_components(job, Some(&mut *store))?;
+            store
+                .get(&components.cache_key)
+                .map(|entry| entry.output_hashes)
+        })
+    }
+
     fn record<'a>(&'a self, job: &'a ConcreteJob) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
+        Box::pin(async move { self.record_with_hashes(job, &OutputHashes::new()).await })
+    }
+
+    fn record_with_hashes<'a>(
+        &'a self,
+        job: &'a ConcreteJob,
+        hashes: &'a OutputHashes,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
         Box::pin(async move {
             let output_paths = output_file_paths(job);
             if output_paths.is_empty() {
@@ -730,11 +780,12 @@ impl CacheCheck for SchedulerCache {
 
             let cache_key = components.cache_key.clone();
             let output_refs: Vec<&Path> = output_paths.iter().map(|p| p.as_path()).collect();
-            if let Err(e) = store.record(
+            if let Err(e) = store.record_with_hashes(
                 cache_key.clone(),
                 &output_refs,
                 Some(&provenance),
                 job.platform_scope,
+                hashes,
             ) {
                 eprintln!("warning: failed to cache job {}: {e}", job.id.as_str());
                 return;
@@ -746,14 +797,12 @@ impl CacheCheck for SchedulerCache {
 
             if let Some(remote) = &self.remote {
                 for output in &output_paths {
-                    let Ok(hash) = hash_file(output) else {
-                        eprintln!(
-                            "warning: failed to hash output for remote cache: {}",
-                            output.display()
-                        );
+                    let Some(hash) = entry.as_ref().and_then(|entry| {
+                        entry.output_hashes.get(output.to_string_lossy().as_ref())
+                    }) else {
                         continue;
                     };
-                    if let Err(e) = remote.store(&hash, output).await {
+                    if let Err(e) = remote.store(hash, output).await {
                         eprintln!(
                             "warning: remote cache store for {} failed: {e}",
                             output.display()

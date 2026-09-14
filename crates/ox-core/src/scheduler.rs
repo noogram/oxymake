@@ -93,7 +93,7 @@ use crate::event::EventBus;
 use crate::job_graph::{JobGraph, output_ref_key};
 use crate::model::*;
 use crate::traits::benchmark::BenchmarkSink;
-use crate::traits::cache::CacheCheck;
+use crate::traits::cache::{CacheCheck, OutputHashes};
 use crate::traits::claim::{ClaimOutcome, JobClaim, PeerJobState};
 use crate::traits::executor::{ExecContext, Executor, JobResult, JobStatus};
 use crate::traits::gate::{GateCheck, GateStatus};
@@ -603,6 +603,9 @@ pub async fn run_scheduler_with_claims<E: Executor + 'static>(
     // parallel execution, bounded by the semaphore.
     let mut join_set: JoinSet<Result<CompletionMsg, OxError>> = JoinSet::new();
     let mut in_flight = HashSet::<JobId>::new();
+    // Self-healing cache checks can remove stale entries before a job obtains
+    // a slot or resource budget. Preserve the observed cause across deferrals.
+    let mut dispatch_reasons = HashMap::<JobId, RunReason>::new();
     let mut terminate_requested = false;
     // The shutdown signal must stay observable while the run is already
     // winding down after a failure (`terminate_requested` set, in-flight
@@ -651,7 +654,7 @@ pub async fn run_scheduler_with_claims<E: Executor + 'static>(
                 // Performed *outside* the state lock so we never hold the
                 // mutex across the cache I/O. The force/skip resolution
                 // happens inside the consolidated dispatch lock below.
-                let cached = if let Some(ref cache) = cache {
+                let cache_check = if let Some(ref cache) = cache {
                     // H7: the async disk writer may still be flushing this
                     // job's input files (outputs of upstream jobs). Hashing
                     // them mid-write yields a torn hash and a
@@ -671,10 +674,18 @@ pub async fn run_scheduler_with_claims<E: Executor + 'static>(
                             writer.wait_for_paths(&input_paths).await;
                         }
                     }
-                    cache.is_cached(&job).await
+                    cache.check_with_reason(&job).await
                 } else {
-                    false
+                    Err(RunReason::CacheDisabled)
                 };
+                let cached = cache_check.is_ok();
+                if let Err(reason) = &cache_check {
+                    dispatch_reasons
+                        .entry(job_id.clone())
+                        .or_insert_with(|| reason.clone());
+                } else {
+                    dispatch_reasons.remove(job_id);
+                }
 
                 // Cooperative claim (ADR-012): ask the shared state whether a
                 // peer session already owns this job. A lost claim is the
@@ -696,6 +707,9 @@ pub async fn run_scheduler_with_claims<E: Executor + 'static>(
                                 }
                             };
                             if parked {
+                                // The peer may change outputs before we reclaim
+                                // this job, making our earlier reason obsolete.
+                                dispatch_reasons.remove(job_id);
                                 peer_waits.park(job_id.clone(), owner, event_bus);
                             }
                             continue;
@@ -801,10 +815,14 @@ pub async fn run_scheduler_with_claims<E: Executor + 'static>(
 
                 // Determine the run reason: if this job was force-rerun
                 // due to an upstream rebuild, that takes priority.
+                let observed_reason = dispatch_reasons.remove(job_id);
                 let reason = if force {
                     Some(RunReason::UpstreamRebuilt)
                 } else {
-                    config.run_reasons.get(job_id).cloned()
+                    match config.run_reasons.get(job_id) {
+                        Some(RunReason::UpstreamRebuilt) => observed_reason,
+                        reason => reason.cloned(),
+                    }
                 };
 
                 event_bus.emit(Event::JobStarted {
@@ -819,6 +837,13 @@ pub async fn run_scheduler_with_claims<E: Executor + 'static>(
                     "dispatch"
                 );
 
+                // Snapshot before prepare/execute can remove or overwrite outputs.
+                // Never compare against the newly recorded result at completion.
+                let previous_output_hashes = match &cache {
+                    Some(cache) => cache.recorded_output_hashes(&job).await,
+                    None => None,
+                };
+
                 // Spawn execution task with the pre-acquired permit.
                 in_flight.insert(job_id.clone());
                 let exec = executor.clone();
@@ -826,6 +851,7 @@ pub async fn run_scheduler_with_claims<E: Executor + 'static>(
                 ctx_clone.input_data = input_data;
                 let job_clone = job.clone();
                 let jid = job_id.clone();
+                let capture_outputs = cache.is_some();
 
                 join_set.spawn(async move {
                     let workspace = exec
@@ -879,6 +905,11 @@ pub async fn run_scheduler_with_claims<E: Executor + 'static>(
                                 // jobs need the data from the memory map.
                                 if matches!(output.materialize, MaterializePolicy::Never) {
                                     let key = output_ref_key(&output.reference);
+                                    // An in-process executor may already have supplied
+                                    // the new bytes; a disk copy can belong to an old run.
+                                    if mem_map.contains(&key) {
+                                        continue;
+                                    }
                                     if let OutputRef::File(p) = &output.reference {
                                         if let Ok(data) = tokio::fs::read(p).await {
                                             mem_map.put(key, Arc::from(data));
@@ -889,6 +920,16 @@ pub async fn run_scheduler_with_claims<E: Executor + 'static>(
                         }
                     }
 
+                    // Hash in the job task, not in the scheduler's serial
+                    // completion loop. Capture memory before it is drained.
+                    let output_hashes = if (capture_outputs && result.exit_code == 0)
+                        || (previous_output_hashes.is_some()
+                            && matches!(job_clone.error_strategy, ErrorStrategy::Ignore))
+                    {
+                        hash_completed_outputs(&job_clone, ctx_clone.memory_map.as_ref()).await
+                    } else {
+                        CompletedOutputHashes::default()
+                    };
                     drop(permit);
                     drop(resource_guard);
 
@@ -896,6 +937,8 @@ pub async fn run_scheduler_with_claims<E: Executor + 'static>(
                         job_id: jid,
                         job: job_clone,
                         result,
+                        previous_output_hashes,
+                        output_hashes,
                     })
                 });
             }
@@ -1056,7 +1099,7 @@ pub async fn run_scheduler_with_claims<E: Executor + 'static>(
                             // recorded (it is derived from a failed upstream).
                             if committed && msg.result.exit_code == 0 {
                                 if let Some(ref cache) = cache {
-                                    cache.record(&msg.job).await;
+                                    cache.record_with_hashes(&msg.job, &msg.output_hashes.disk).await;
                                 }
                                 if let Some(ref bench_path) = msg.job.benchmark {
                                     if let Some(ref sink) = benchmark_sink {
@@ -1340,9 +1383,9 @@ struct Frontier {
     /// O(pending × deps) full rescan with O(completed_downstream) incremental
     /// updates.
     ready_frontier: HashSet<JobId>,
-    /// Jobs that must bypass the dynamic cache check because an upstream job
-    /// was re-executed in this run. This ensures transitive cache invalidation:
-    /// if any ancestor ran, all descendants must also run (ox-jxdw).
+    /// Jobs forced explicitly or by an upstream output change (or unknown
+    /// comparison). Identical rebuilds leave consumers to the dynamic cache
+    /// check; changed outputs still invalidate transitively (ox-jxdw).
     force_rerun: HashSet<JobId>,
     /// Per-output materialization tracking (Stage 2: in-memory data transport).
     ///
@@ -1956,6 +1999,78 @@ struct CompletionMsg {
     job_id: JobId,
     job: ConcreteJob,
     result: JobResult,
+    previous_output_hashes: Option<OutputHashes>,
+    output_hashes: CompletedOutputHashes,
+}
+
+/// Produced hashes may come from memory while disk still contains old bytes.
+/// Only hashes actually read from disk can be reused by cache recording.
+#[derive(Default)]
+struct CompletedOutputHashes {
+    produced: OutputHashes,
+    disk: OutputHashes,
+}
+
+async fn hash_completed_outputs(
+    job: &ConcreteJob,
+    memory_map: Option<&crate::memory_map::OutputMemoryMap>,
+) -> CompletedOutputHashes {
+    let outputs: Vec<_> = job
+        .outputs
+        .iter()
+        .map(|output| {
+            let key = output_ref_key(&output.reference);
+            let bytes = memory_map.and_then(|map| map.get(&key));
+            (key, output.reference.clone(), bytes)
+        })
+        .collect();
+    // Read every available output, even after a changed or unknown hash: cache
+    // recording needs the full set. Failed reads are omitted so recording can
+    // retry normally and comparison remains conservative.
+    tokio::task::spawn_blocking(move || {
+        let mut hashes = CompletedOutputHashes::default();
+        for (key, reference, bytes) in outputs {
+            let actual = if let Some(bytes) = bytes {
+                ContentHash::from(blake3::hash(&bytes))
+            } else if let OutputRef::File(path) = reference {
+                let Ok(file) = std::fs::File::open(path) else {
+                    continue;
+                };
+                let mut hasher = blake3::Hasher::new();
+                if hasher.update_reader(file).is_err() {
+                    continue;
+                }
+                let hash = ContentHash::from(hasher.finalize());
+                hashes.disk.insert(key.clone(), hash.clone());
+                hash
+            } else {
+                continue;
+            };
+            hashes.produced.insert(key, actual);
+        }
+        hashes
+    })
+    .await
+    .unwrap_or_default()
+}
+
+/// Unknown or incomplete comparisons conservatively invalidate consumers.
+fn outputs_changed(
+    job: &ConcreteJob,
+    previous: Option<&OutputHashes>,
+    produced: &OutputHashes,
+) -> bool {
+    let Some(previous) = previous else {
+        return true;
+    };
+    job.outputs.is_empty()
+        || job.outputs.iter().any(|output| {
+            let key = output_ref_key(&output.reference);
+            match (previous.get(&key), produced.get(&key)) {
+                (Some(expected), Some(actual)) => expected != actual,
+                _ => true,
+            }
+        })
 }
 
 // ---------------------------------------------------------------------------
@@ -2128,6 +2243,9 @@ async fn poll_peer_waits<E: Executor + ?Sized>(
                 let msg = CompletionMsg {
                     job_id: job_id.clone(),
                     job: job.clone(),
+                    // This session did not observe the peer's pre-run state.
+                    previous_output_hashes: None,
+                    output_hashes: CompletedOutputHashes::default(),
                     result: JobResult {
                         job_id: job_id.clone(),
                         exit_code,
@@ -2416,6 +2534,16 @@ async fn handle_completion<E: Executor + ?Sized>(
         }
     }
 
+    let changed = if exit_code == 0 || matches!(msg.job.error_strategy, ErrorStrategy::Ignore) {
+        outputs_changed(
+            &msg.job,
+            msg.previous_output_hashes.as_ref(),
+            &msg.output_hashes.produced,
+        )
+    } else {
+        true
+    };
+
     if exit_code == 0 {
         // Success.
         let outputs: Vec<String> = msg
@@ -2449,10 +2577,13 @@ async fn handle_completion<E: Executor + ?Sized>(
             s.decrement_input_consumers(&msg.job);
             // Enforce memory budget — evict largest-first (Belady optimal).
             s.enforce_memory_budget();
-            // This job actually executed — mark all downstream as needing
-            // re-execution to ensure transitive cache invalidation (ox-jxdw).
-            for dep in graph.downstream(&msg.job_id) {
-                s.force_rerun.insert(dep.clone());
+            // Preserve transitive invalidation (ox-jxdw) when outputs changed
+            // or comparison is impossible. Identical rebuilds let consumers
+            // go through their normal input-content cache check (#19).
+            if changed {
+                for dep in graph.downstream(&msg.job_id) {
+                    s.force_rerun.insert(dep.clone());
+                }
             }
             s.promote_downstream(&msg.job_id, graph);
             writes
@@ -2503,8 +2634,10 @@ async fn handle_completion<E: Executor + ?Sized>(
                     );
                     s.decrement_input_consumers(&msg.job);
                     s.enforce_memory_budget();
-                    for dep in graph.downstream(&msg.job_id) {
-                        s.force_rerun.insert(dep.clone());
+                    if changed {
+                        for dep in graph.downstream(&msg.job_id) {
+                            s.force_rerun.insert(dep.clone());
+                        }
                     }
                     s.promote_downstream(&msg.job_id, graph);
                     writes
@@ -7026,6 +7159,257 @@ mod tests {
         assert_eq!(s.len(), 4);
     }
 
+    // -- Content-aware invalidation (#19) ------------------------------------
+
+    #[tokio::test]
+    async fn output_comparison_prefers_produced_memory_bytes_over_stale_disk() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("output");
+        let key = path.to_str().unwrap();
+        let job = make_job("A", "rA", vec![], vec![key]);
+        let previous = BTreeMap::from([(key.to_string(), ContentHash::from(blake3::hash(b"old")))]);
+        let map = crate::memory_map::OutputMemoryMap::new();
+        std::fs::write(&path, b"old").unwrap();
+        map.put(key.to_string(), Arc::from(&b"new"[..]));
+        assert!(
+            hash_completed_outputs(&job, Some(&map))
+                .await
+                .disk
+                .is_empty(),
+            "produced memory bytes must not be recorded as the current disk bytes"
+        );
+        assert!(outputs_changed(
+            &job,
+            Some(&previous),
+            &hash_completed_outputs(&job, Some(&map)).await.produced
+        ));
+
+        // Identical produced bytes also compare correctly while the disk file
+        // is missing: persistence has not happened yet.
+        std::fs::remove_file(&path).unwrap();
+        map.put(key.to_string(), Arc::from(&b"old"[..]));
+        assert!(!outputs_changed(
+            &job,
+            Some(&previous),
+            &hash_completed_outputs(&job, Some(&map)).await.produced
+        ));
+        assert!(
+            map.contains(key),
+            "comparison must not drain produced bytes"
+        );
+        map.remove(key);
+        assert!(outputs_changed(
+            &job,
+            Some(&previous),
+            &hash_completed_outputs(&job, Some(&map)).await.produced
+        ));
+    }
+
+    #[tokio::test]
+    async fn memory_only_output_keeps_executor_bytes_for_invalidation() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("output");
+        let key = path.to_str().unwrap();
+        std::fs::write(&path, b"old").unwrap();
+        let mut producer = make_job("A", "rA", vec![], vec![key]);
+        producer.outputs[0].materialize = MaterializePolicy::Never;
+        let graph = JobGraph::build(vec![
+            producer,
+            make_job("B", "rB", vec![key], vec!["consumer"]),
+        ])
+        .unwrap();
+        let map = crate::memory_map::OutputMemoryMap::new();
+        // The mock executor leaves these produced bytes untouched, while a
+        // previous disk copy still exists. Never-policy population must keep them.
+        map.put(key.to_string(), Arc::from(&b"new"[..]));
+        let ctx = ExecContext {
+            memory_map: Some(map),
+            ..default_ctx()
+        };
+        let cache = Arc::new(SnapshotCache {
+            previous: Some(BTreeMap::from([(
+                key.to_string(),
+                ContentHash::from(blake3::hash(b"old")),
+            )])),
+        });
+        let result = run_scheduler_with_cache(
+            &graph,
+            Arc::new(MockExecutor::new()),
+            &SchedulerConfig::default(),
+            &EventBus::new(),
+            &ctx,
+            Some(cache),
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!((result.succeeded, result.skipped), (2, 0));
+    }
+
+    #[derive(Default)]
+    struct HashRecordingCache {
+        hashes: std::sync::Mutex<Option<OutputHashes>>,
+    }
+
+    impl CacheCheck for HashRecordingCache {
+        fn is_cached<'a>(
+            &'a self,
+            _job: &'a ConcreteJob,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send + 'a>> {
+            Box::pin(async { false })
+        }
+        fn record<'a>(
+            &'a self,
+            _job: &'a ConcreteJob,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
+            Box::pin(async {})
+        }
+        fn record_with_hashes<'a>(
+            &'a self,
+            _job: &'a ConcreteJob,
+            hashes: &'a OutputHashes,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
+            Box::pin(async move {
+                *self.hashes.lock().unwrap() = Some(hashes.clone());
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn completion_passes_all_disk_hashes_to_cache_recording() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = dir.path().join("first");
+        let second = dir.path().join("second");
+        std::fs::write(&first, b"one").unwrap();
+        std::fs::write(&second, b"two").unwrap();
+        let graph = JobGraph::build(vec![make_job(
+            "A",
+            "rA",
+            vec![],
+            vec![first.to_str().unwrap(), second.to_str().unwrap()],
+        )])
+        .unwrap();
+        let cache = Arc::new(HashRecordingCache::default());
+        run_scheduler_with_cache(
+            &graph,
+            Arc::new(MockExecutor::new()),
+            &SchedulerConfig::default(),
+            &EventBus::new(),
+            &default_ctx(),
+            Some(cache.clone()),
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        let expected = BTreeMap::from([
+            (
+                first.to_str().unwrap().to_string(),
+                ContentHash::from(blake3::hash(b"one")),
+            ),
+            (
+                second.to_str().unwrap().to_string(),
+                ContentHash::from(blake3::hash(b"two")),
+            ),
+        ]);
+        assert_eq!(*cache.hashes.lock().unwrap(), Some(expected));
+    }
+
+    struct SnapshotCache {
+        previous: Option<OutputHashes>,
+    }
+
+    impl CacheCheck for SnapshotCache {
+        fn is_cached<'a>(
+            &'a self,
+            job: &'a ConcreteJob,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send + 'a>> {
+            Box::pin(async move { job.id.as_str() == "B" })
+        }
+
+        fn recorded_output_hashes<'a>(
+            &'a self,
+            _job: &'a ConcreteJob,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<OutputHashes>> + Send + 'a>>
+        {
+            Box::pin(async { self.previous.clone() })
+        }
+
+        fn record<'a>(
+            &'a self,
+            _job: &'a ConcreteJob,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>> {
+            Box::pin(async {})
+        }
+    }
+
+    #[tokio::test]
+    async fn success_and_ignored_failure_compare_all_outputs_before_invalidating() {
+        for exit_code in [0, 1] {
+            // Identical, one changed output, incomplete snapshot, no snapshot.
+            for scenario in 0..4 {
+                let dir = tempfile::tempdir().unwrap();
+                let first = dir.path().join("first");
+                let second = dir.path().join("second");
+                let first = first.to_str().unwrap();
+                let second = second.to_str().unwrap();
+                std::fs::write(first, b"old").unwrap();
+                std::fs::write(second, if scenario == 1 { b"new" } else { b"old" }).unwrap();
+                let mut previous = BTreeMap::from([
+                    (first.to_string(), ContentHash::from(blake3::hash(b"old"))),
+                    (second.to_string(), ContentHash::from(blake3::hash(b"old"))),
+                ]);
+                if scenario == 2 {
+                    previous.remove(second);
+                }
+                let cache = Arc::new(SnapshotCache {
+                    previous: (scenario != 3).then_some(previous),
+                });
+                let graph = JobGraph::build(vec![
+                    make_job_with_strategy(
+                        "A",
+                        "rA",
+                        vec![],
+                        vec![first, second],
+                        ErrorStrategy::Ignore,
+                    ),
+                    make_job("B", "rB", vec![first, second], vec!["consumer"]),
+                ])
+                .unwrap();
+                let executor = Arc::new(MockExecutor::with_results(BTreeMap::from([(
+                    "A".into(),
+                    exit_code,
+                )])));
+                let result = run_scheduler_with_cache(
+                    &graph,
+                    executor,
+                    &SchedulerConfig::default(),
+                    &EventBus::new(),
+                    &default_ctx(),
+                    Some(cache),
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+                .await
+                .unwrap();
+                assert_eq!(result.failed, 0);
+                assert_eq!(
+                    result.skipped,
+                    usize::from(scenario == 0),
+                    "exit={exit_code}, scenario={scenario}"
+                );
+                assert_eq!(result.succeeded, if scenario == 0 { 1 } else { 2 });
+            }
+        }
+    }
+
     // -- B4: cancel/completion race ------------------------------------------
 
     fn completion_msg_for(graph: &JobGraph, id: &str, exit_code: i32) -> CompletionMsg {
@@ -7033,6 +7417,8 @@ mod tests {
         CompletionMsg {
             job_id: job_id.clone(),
             job: graph.get_job(&job_id).unwrap().clone(),
+            previous_output_hashes: None,
+            output_hashes: CompletedOutputHashes::default(),
             result: JobResult {
                 job_id,
                 exit_code,
@@ -7794,6 +8180,74 @@ mod tests {
                 .iter()
                 .any(|e| matches!(e, Event::JobStarted { job_id, .. } if job_id.as_str() == "A"))
         );
+    }
+
+    #[tokio::test]
+    async fn reclaimed_job_reports_fresh_cache_reason_after_peer_attempt() {
+        struct PeerChangedOutputCache(AtomicUsize);
+        impl CacheCheck for PeerChangedOutputCache {
+            fn is_cached<'a>(
+                &'a self,
+                _job: &'a ConcreteJob,
+            ) -> Pin<Box<dyn Future<Output = bool> + Send + 'a>> {
+                Box::pin(async { false })
+            }
+            fn check_with_reason<'a>(
+                &'a self,
+                _job: &'a ConcreteJob,
+            ) -> Pin<Box<dyn Future<Output = Result<(), RunReason>> + Send + 'a>> {
+                let first = self.0.fetch_add(1, Ordering::SeqCst) == 0;
+                Box::pin(async move {
+                    Err(if first {
+                        RunReason::OutputMissing {
+                            path: "a.txt".into(),
+                        }
+                    } else {
+                        RunReason::OutputStale {
+                            path: "a.txt".into(),
+                        }
+                    })
+                })
+            }
+            fn record<'a>(
+                &'a self,
+                _job: &'a ConcreteJob,
+            ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
+                Box::pin(async {})
+            }
+        }
+        let graph = JobGraph::build(vec![make_job("A", "rA", vec![], vec!["a.txt"])]).unwrap();
+        let bus = EventBus::new();
+        let mut rx = bus.subscribe();
+        let claimer = Arc::new(ScriptedClaimer::new().script(
+            "A",
+            vec![lost(), ClaimOutcome::Won],
+            vec![PeerJobState::Unclaimed],
+        ));
+        let mut config = SchedulerConfig::default();
+        config
+            .run_reasons
+            .insert(JobId::from("A"), RunReason::UpstreamRebuilt);
+        let cache = Arc::new(PeerChangedOutputCache(AtomicUsize::new(0)));
+        run_scheduler_with_claims(
+            &graph,
+            Arc::new(MockExecutor::new()),
+            &config,
+            &bus,
+            &default_ctx(),
+            Some(cache.clone()),
+            None,
+            None,
+            None,
+            None,
+            Some(claimer),
+        )
+        .await
+        .unwrap();
+        assert_eq!(cache.0.load(Ordering::SeqCst), 2);
+        assert!(drain(&mut rx).iter().any(|event| matches!(event,
+            Event::JobStarted { reason: Some(RunReason::OutputStale { path }), .. } if path == "a.txt")),
+            "a peer attempt must discard the pre-claim missing-output reason");
     }
 
     /// The wait observes the shutdown signal: a session parked behind a peer
