@@ -35,8 +35,8 @@ includes:
   count as inputs, so editing `script.py` invalidates the cache
 - **Params hash** -- any parameters passed via `--set` or `[config]`
 - **Environment content hash** -- the *content* of the referenced spec file
-  (`requirements.txt`, conda YAML, nix expression), or the container image
-  reference for Docker/Apptainer
+  (`requirements.txt`, conda YAML, nix expression), the `.python-version` uv
+  selects, or the container image reference for Docker/Apptainer
 - **Shell executable** -- the same command under `/bin/bash` and `/bin/zsh`
   can behave differently
 - **Platform** -- OS and architecture (a Linux build is not reusable on macOS)
@@ -45,10 +45,12 @@ A rule may explicitly set `cache_platform = "any"` when its outputs are valid
 across operating systems and architectures. The default is `"exact"`. This is
 a user assertion: OxyMake records it for audit but cannot prove it.
 
-Two exclusions to know about: `call`-mode function bodies are tracked only
-if you declare the module as an input, and mutable container tags are
-hashed as written (pin images by digest -- `python@sha256:...` -- if you
-need re-pushed tags to invalidate the cache).
+Three exclusions to know about: `call`-mode function bodies are tracked only
+if you declare the module as an input; `UV_PYTHON` and changes to the installed
+interpreter set do not enter uv environment hashes (use a checked-in
+`.python-version` when this matters); and mutable container tags are hashed as
+written (pin images by digest -- `python@sha256:...` -- if you need re-pushed
+tags to invalidate the cache).
 
 ## Why Not Timestamps?
 
