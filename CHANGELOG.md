@@ -7,27 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+**Upgrading invalidates your cache.** A uv environment now contributes the
+bytes of the `.python-version` files uv can select to the cache key, so the key format
+moves from v6 to v7: the first run after this upgrade recomputes everything,
+once.
+
 ### Fixed
-- Rebuilding an intermediate with output content matching hashes recorded under
-  the same cache key no longer forces cached consumers to execute. A changed
-  producer key still forces consumers, even with identical bytes. Missing files retain their last successful hashes
-  for comparison after rebuilding. Changed or unknown output hashes still propagate
-  invalidation, including ignored failures; mtime-only and disabled caching keep
-  conservative rebuilding. `ox plan` reports an upper bound of runtime work,
-  since it cannot predict rebuilt bytes (#19).
-- Outputs restored after being observed missing are content-verified before a
-  retained cache entry is reused, even with the old size and modification time.
-  When an identical upstream rebuild leaves a consumer needing execution for its
-  own cache miss or missing/stale output, runtime reasons report that cause (#19).
+
+- **Changing a uv environment's `.python-version` now invalidates its
+  outputs.** `uv run` starts from the workflow root, so OxyMake hashes every
+  `.python-version` there and in each parent directory, without invoking uv.
+  This covers the pin uv selects in every project and workspace layout; a
+  change to a pin uv ignores costs one re-run. `UV_PYTHON` overrides and
+  changes to installed interpreters remain outside the cache key (issue #18).
+- **A job rebuilt with the bytes it produced before no longer re-runs its
+  consumers.** When a job re-runs under an unchanged cache key (a deleted
+  output, `--forcerun`, a failure then a restored recipe) and its outputs match
+  the hashes recorded under that key, consumers go through their normal cache
+  check instead of being forced. A changed output, a changed producer key,
+  `--no-cache` and `mtime` validation still force consumers. `ox plan` cannot
+  predict rebuilt bytes, so it now reports an upper bound of what `ox run`
+  executes (issue #19).
+- A cache entry kept for an output that went missing is verified by content
+  hash before reuse, even if a restored file has the old size and modification
+  time; and a job that runs reports its own reason (`output_missing`, `stale`,
+  cache miss) instead of `upstream_rebuilt` when its upstream was rebuilt
+  identically (issue #19).
 
 ### Changed
-- `CacheCheck` gains an optional `recorded_output_hashes` hook and an
-  `OutputHashes` snapshot type for comparing outputs
-  across execution; existing implementations default to conservative invalidation.
-  Defaulted `check_with_reason` and `record_with_hashes` hooks preserve dispatch
-  miss reasons and reuse completed disk hashes for cache recording and remote
-  upload. `CacheStore::record_with_hashes` accepts those precomputed hashes.
-  Output hashing runs in job tasks instead of the serial completion loop (#19).
+- `ox-core`: `CacheCheck` gains defaulted `recorded_output_hashes`,
+  `check_with_reason` and `record_with_hashes` methods and an `OutputHashes`
+  type; `ox-cache`: `CacheStore::record_with_hashes` accepts precomputed output
+  hashes, and `check_cached` keeps the entry when an output is missing.
+  Existing implementations keep the previous conservative behaviour (issue #19).
 
 ## [0.4.0] - 2026-09-14
 
