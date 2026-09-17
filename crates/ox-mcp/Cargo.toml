@@ -9,6 +9,7 @@ repository.workspace = true
 description = "MCP (Model Context Protocol) server for OxyMake"
 
 [dependencies]
+ox-api = { path = "../ox-api" }
 ox-core = { path = "../ox-core" }
 ox-format = { path = "../ox-format" }
 ox-state = { path = "../ox-state" }

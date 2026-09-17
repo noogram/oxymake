@@ -1088,8 +1088,8 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
         existing_files,
     };
 
-    let mut resolve_result =
-        common::resolve(&workflow.rules, &request).context("failed to resolve targets")?;
+    let mut resolve_result = common::resolve(&file_path, &workflow.rules, &request)
+        .context("failed to resolve targets")?;
 
     // Filter by --rule if specified.
     if let Some(rule_filter) = &args.rule {

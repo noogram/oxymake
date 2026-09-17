@@ -141,8 +141,8 @@ fn cancel_by_names(db: &ox_state::db::StateDb, args: &CancelArgs) -> Result<Vec<
         config,
         existing_files,
     };
-    let resolve_result =
-        common::resolve(&workflow.rules, &request).context("failed to resolve targets")?;
+    let resolve_result = common::resolve(&file_path, &workflow.rules, &request)
+        .context("failed to resolve targets")?;
     let job_graph = JobGraph::build(resolve_result.jobs).context("failed to build JobGraph")?;
 
     // Resolve each name → JobId, collect IDs + downstream closure.

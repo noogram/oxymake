@@ -49,8 +49,8 @@ pub fn cmd_explain(args: ExplainArgs) -> Result<()> {
         existing_files,
     };
 
-    let resolve_result =
-        common::resolve(&workflow.rules, &request).context("failed to resolve targets")?;
+    let resolve_result = common::resolve(&file_path, &workflow.rules, &request)
+        .context("failed to resolve targets")?;
 
     let job_graph = JobGraph::build(resolve_result.jobs).context("failed to build JobGraph")?;
 

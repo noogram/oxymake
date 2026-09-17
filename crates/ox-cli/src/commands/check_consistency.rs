@@ -266,7 +266,7 @@ pub fn cmd_check_consistency(args: CheckConsistencyArgs) -> Result<()> {
                 existing_files,
             };
 
-            match common::resolve(&workflow.rules, &request) {
+            match common::resolve(&file_path, &workflow.rules, &request) {
                 Ok(resolve_result) => {
                     invariants.push(Invariant {
                         name: "resolve",

@@ -120,6 +120,21 @@ pub fn command() -> clap::Command {
     Cli::command()
 }
 
+// The command process enters the workflow directory before starting any workers.
+// Library/MCP resolution never changes process cwd: it receives an explicit base.
+fn enter_workflow_directory(file: &mut String) -> std::io::Result<()> {
+    let path = std::path::Path::new(file);
+    if path
+        .parent()
+        .is_some_and(|parent| !parent.as_os_str().is_empty() && parent != std::path::Path::new("."))
+    {
+        let absolute = std::path::absolute(path)?;
+        std::env::set_current_dir(absolute.parent().expect("absolute file has a parent"))?;
+        *file = absolute.to_string_lossy().into_owned();
+    }
+    Ok(())
+}
+
 /// Run the OxyMake CLI, parsing arguments from the environment.
 ///
 /// Returns a process exit code: 0 on success, 1 on error
@@ -129,8 +144,24 @@ pub fn run() -> i32 {
     let theme = Theme::from_env(Some(cli.color), &std::io::stderr());
 
     let result = match cli.command {
-        Commands::Run(args) => commands::cmd_run(*args, &theme),
-        Commands::Plan(args) => commands::cmd_plan(args, &theme),
+        Commands::Run(mut args) => (|| {
+            // User-selected report/cache destinations are invocation-relative;
+            // workflow paths, cache checks and execution share the file's root.
+            if let Some(report) = &mut args.report_json {
+                *report = std::path::absolute(&*report)?
+                    .to_string_lossy()
+                    .into_owned();
+            }
+            if let Some(remote) = &mut args.cache_remote {
+                *remote = std::path::absolute(&*remote)?;
+            }
+            enter_workflow_directory(&mut args.file)?;
+            commands::cmd_run(*args, &theme)
+        })(),
+        Commands::Plan(mut args) => (|| {
+            enter_workflow_directory(&mut args.file)?;
+            commands::cmd_plan(args, &theme)
+        })(),
         Commands::Status(args) => commands::cmd_status(args, &theme),
         Commands::Cancel(args) => commands::cmd_cancel(args),
         Commands::Invalidate(args) => commands::cmd_invalidate(args),

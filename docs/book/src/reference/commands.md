@@ -42,6 +42,10 @@ ox run --no-cache               # Ignore the cache, re-run everything
   (forces `hash` validation; see below)
 - `--executor EXEC` -- Choose executor: `local` (default), `slurm`, `ray`
 
+With `-f ../Oxymakefile.toml`, `run` and `plan` use the Oxymakefile directory
+for workflow paths, `.oxymake`, cache checks and execution. Explicit
+`--report-json` and `--cache-remote` paths remain relative to the invoking directory.
+
 **Concurrent sessions.** Several `ox run` may share a workspace: each job
 is claimed in `.oxymake/state.db` before it is dispatched, so a job is
 executed by one session and the others wait for its result (see

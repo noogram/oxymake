@@ -3,7 +3,7 @@
 //! Each tool maps to an existing ox command, translating between MCP JSON
 //! parameters and the Rust API.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use anyhow::{Context, Result};
 use serde_json::json;
@@ -303,14 +303,14 @@ fn handle_plan(args: &serde_json::Value, workdir: &Path) -> Result<ToolCallResul
         })));
     }
 
-    let existing_files = discover_files(&file);
+    let existing_files = ox_api::resolution::discover_source_files(&file, &workflow, &config, true);
     let request = ox_core::resolver::ResolveRequest {
         targets: targets.clone(),
         config,
         existing_files,
     };
 
-    let resolve_result = ox_core::resolver::resolve(&workflow.rules, &request)
+    let resolve_result = ox_api::resolution::resolve(&file, &workflow.rules, &request)
         .context("failed to resolve targets")?;
 
     let job_graph = ox_core::job_graph::JobGraph::build(resolve_result.jobs)
@@ -545,14 +545,14 @@ fn handle_explain(args: &serde_json::Value, workdir: &Path) -> Result<ToolCallRe
     let workflow = ox_format::parse::parse_workflow(&content, &file)?;
 
     let config = build_config(&workflow);
-    let existing_files = discover_files(&file);
+    let existing_files = ox_api::resolution::discover_source_files(&file, &workflow, &config, true);
     let request = ox_core::resolver::ResolveRequest {
         targets: vec![target.to_string()],
         config,
         existing_files,
     };
 
-    let resolve_result = ox_core::resolver::resolve(&workflow.rules, &request)?;
+    let resolve_result = ox_api::resolution::resolve(&file, &workflow.rules, &request)?;
     let job_graph = ox_core::job_graph::JobGraph::build(resolve_result.jobs)?;
     let topo = job_graph.topological_order().unwrap_or_default();
 
@@ -700,48 +700,11 @@ fn resolve_targets_from_workflow(
     ox_format::targets::resolve_targets(workflow, user_targets)
 }
 
-fn discover_files(oxymakefile_path: &Path) -> Vec<PathBuf> {
-    let base_dir = oxymakefile_path
-        .parent()
-        .filter(|p| !p.as_os_str().is_empty())
-        .unwrap_or_else(|| Path::new("."));
-
-    let mut files = Vec::new();
-    walk_dir(base_dir, base_dir, &mut files, 5);
-    files
-}
-
-fn walk_dir(dir: &Path, base: &Path, files: &mut Vec<PathBuf>, depth: usize) {
-    if depth == 0 {
-        return;
-    }
-    let entries = match std::fs::read_dir(dir) {
-        Ok(e) => e,
-        Err(_) => return,
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            let name = entry.file_name();
-            let name_str = name.to_string_lossy();
-            if name_str.starts_with('.') || name_str == "target" || name_str == "node_modules" {
-                continue;
-            }
-            walk_dir(&path, base, files, depth - 1);
-        } else if path.is_file() {
-            if let Ok(rel) = path.strip_prefix(base) {
-                let rel_str = rel.to_string_lossy();
-                let clean = rel_str.strip_prefix("./").unwrap_or(&rel_str);
-                files.push(PathBuf::from(clean));
-            }
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::io::Write;
+    use std::path::PathBuf;
 
     // -- tool_catalog tests --
 
@@ -1144,6 +1107,58 @@ shell = "echo"
         assert_eq!(v["error"]["code"], "OXYMAKEFILE_NOT_FOUND");
     }
 
+    #[test]
+    fn wildcard_final_keeps_missing_intermediate_in_plan_and_explain() {
+        let dir = tempfile::tempdir().unwrap();
+        for path in [
+            "in/s1.txt",
+            "mid/s1.txt",
+            "in/s2.txt",
+            "final/s1.txt",
+            "final/s2.txt",
+        ] {
+            let path = dir.path().join(path);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, "data\n").unwrap();
+        }
+        std::fs::write(
+            dir.path().join("Oxymakefile.toml"),
+            r#"
+[rule.mid]
+input = ["in/{s}.txt"]
+output = ["mid/{s}.txt"]
+shell = "cat {input} > {output}"
+[rule.final]
+input = ["mid/{s}.txt"]
+output = ["final/{s}.txt"]
+shell = "cat {input} > {output}"
+"#,
+        )
+        .unwrap();
+        let plan = handle_plan(
+            &json!({"targets": ["final/s1.txt", "final/s2.txt"]}),
+            dir.path(),
+        )
+        .unwrap();
+        let plan: serde_json::Value = serde_json::from_str(&plan.content[0].text).unwrap();
+        assert_eq!(plan["total_nodes"], 4, "{plan}");
+        let explain = handle_explain(&json!({"target": "final/s2.txt"}), dir.path()).unwrap();
+        let explain: serde_json::Value = serde_json::from_str(&explain.content[0].text).unwrap();
+        assert_eq!(explain["total_steps"], 2, "{explain}");
+    }
+
+    #[test]
+    fn repeated_plan_observes_deleted_source_in_subdirectory() {
+        let dir = workdir_with_oxymakefile();
+        std::fs::create_dir_all(dir.path().join("src")).unwrap();
+        let source = dir.path().join("src/main.rs");
+        std::fs::write(&source, "fn main() {}").unwrap();
+        handle_plan(&json!({"targets": ["target/main"]}), dir.path()).unwrap();
+        std::fs::remove_file(source).unwrap();
+        let error = handle_plan(&json!({"targets": ["target/main"]}), dir.path()).unwrap_err();
+        assert!(format!("{error:#}").contains("src/main.rs"));
+    }
+
     // -- handle_plan tests --
 
     #[test]
@@ -1490,7 +1505,7 @@ shell = "echo done > final.txt"
         std::fs::create_dir_all(dir.path().join("src")).unwrap();
         std::fs::write(dir.path().join("src/main.rs"), "").unwrap();
 
-        let files = discover_files(&dir.path().join("Oxymakefile.toml"));
+        let files = ox_api::discover::discover_existing_files(&dir.path().join("Oxymakefile.toml"));
         let file_strs: Vec<String> = files.iter().map(|p| p.display().to_string()).collect();
         assert!(file_strs.iter().any(|f| f.contains("data.csv")));
         assert!(file_strs.iter().any(|f| f.contains("main.rs")));
@@ -1505,7 +1520,7 @@ shell = "echo done > final.txt"
         std::fs::create_dir_all(dir.path().join("target")).unwrap();
         std::fs::write(dir.path().join("target/binary"), "").unwrap();
 
-        let files = discover_files(&dir.path().join("Oxymakefile.toml"));
+        let files = ox_api::discover::discover_existing_files(&dir.path().join("Oxymakefile.toml"));
         let file_strs: Vec<String> = files.iter().map(|p| p.display().to_string()).collect();
         assert!(!file_strs.iter().any(|f| f.contains("secret")));
         assert!(!file_strs.iter().any(|f| f.contains("binary")));

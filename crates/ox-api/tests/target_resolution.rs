@@ -76,3 +76,33 @@ shell = "cp data/{sample}.csv {config.results_dir}/{sample}.txt"
         "config refs in user-provided targets must resolve like the CLI"
     );
 }
+
+#[test]
+fn existing_wildcard_final_retains_deleted_intermediate() {
+    let dir = tempfile::tempdir().unwrap();
+    for path in ["in/s1.txt", "final/s1.txt"] {
+        let path = dir.path().join(path);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, "a\n").unwrap();
+    }
+    let file = dir.path().join("Oxymakefile.toml");
+    std::fs::write(
+        &file,
+        r#"
+[rule.mid]
+input = ["in/{s}.txt"]
+output = ["mid/{s}.txt"]
+shell = "cat {input} > {output}"
+[rule.final]
+input = ["mid/{s}.txt"]
+output = ["final/{s}.txt"]
+shell = "cat {input} > {output}"
+"#,
+    )
+    .unwrap();
+    let session = SessionBuilder::new(file)
+        .targets(["final/s1.txt"])
+        .build()
+        .unwrap();
+    assert_eq!(session.job_graph.job_count(), 2);
+}
