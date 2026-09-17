@@ -7,26 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-09-17
+
+Three cache and resolution defects found while using 0.4.0: a uv interpreter
+pin that changed nothing, work re-run for no reason, and a deleted wildcard
+intermediate that was never rebuilt.
+
 **Upgrading invalidates your cache.** A uv environment now contributes the
-bytes of the `.python-version` files uv can select to the cache key, so the key format
-moves from v6 to v7: the first run after this upgrade recomputes everything,
-once.
+bytes of the `.python-version` files uv can select to the cache key, so the
+key format moves from v6 to v7: the first run after this upgrade recomputes
+everything, once.
+
+**Two behaviour changes to know about** (both detailed under Changed): an
+existing file matching a wildcard rule output is owned by that rule, and
+`ox run --no-cache` no longer accepts an imported adopted output as a source.
+
+Highlights:
+- **Changing `.python-version` invalidates the outputs it produced** (issue #18).
+- **A job rebuilt with the bytes it produced before no longer re-runs its
+  consumers** (issue #19).
+- **A deleted wildcard intermediate is rebuilt** even when the final targets
+  still exist, on the CLI, the Rust API and MCP (issue #22).
 
 ### Fixed
-
-- **Deleted intermediates in wildcard workflows are rebuilt even when final
-  targets still exist.** CLI, Rust API and MCP planning share output-aware source
-  discovery, including explicit targets outside config lists. Plans retain the
-  full transitive rebuild graph and remain an upper bound of execution (issue #22).
-- Hand-maintained files matching wildcard outputs may remain sources when their
-  own producer lacks a sample input. Missing shared configuration and failures
-  deeper in the graph remain errors, with or without a cache. Known cached outputs
-  require their inputs or verified cache adoption. Source fallback and provenance
-  checks use the Oxymakefile directory, including with `-f` from a subdirectory;
-  CLI plan and run also use that directory for cache checks and execution. Repeated
-  MCP requests see additions and deletions inside subdirectories (issue #22).
-- Source discovery prefilters output patterns by literal prefix in one scan and
-  filters paths in place, reducing planning overhead on large trees (issue #22).
 - **Changing a uv environment's `.python-version` now invalidates its
   outputs.** `uv run` starts from the workflow root, so OxyMake hashes every
   `.python-version` there and in each parent directory, without invoking uv.
@@ -46,6 +49,19 @@ once.
   time; and a job that runs reports its own reason (`output_missing`, `stale`,
   cache miss) instead of `upstream_rebuilt` when its upstream was rebuilt
   identically (issue #19).
+- **A deleted intermediate of a wildcard rule is rebuilt when the final
+  targets still exist.** The targets were counted as source files, so
+  resolution never walked back through the rules and `ox plan` reported zero
+  jobs. Rule outputs are now recognised by matching each existing file against
+  the compiled output patterns, so an explicit target may use a wildcard value
+  absent from the config lists. A hand-maintained file stays a source when its
+  own producer cannot resolve its inputs; a missing source deeper in the graph
+  is still an error, with or without a cache. The CLI, the Rust API and
+  `ox serve --mcp` share one implementation, so `ox_plan` and `ox_explain`
+  answer like the CLI (issue #22).
+- Source discovery prefilters output patterns by literal prefix in a single
+  scan, which keeps planning on large trees close to its previous cost
+  (issue #22).
 
 ### Changed
 - An existing file matching a wildcard rule output is owned by that rule when
@@ -55,14 +71,14 @@ once.
   its original inputs are missing; it previously accepted that output as a
   source. Restore the inputs or omit `--no-cache` to use verified adoption
   (issue #22).
-- `ox-core`: `resolve_with_source_fallback` lets callers disallow the existing-file
-  fallback for known generated outputs while preserving explicit source leaves.
-  This is an unstable Rust API (issue #22).
 - `ox-core`: `CacheCheck` gains defaulted `recorded_output_hashes`,
   `check_with_reason` and `record_with_hashes` methods and an `OutputHashes`
-  type; `ox-cache`: `CacheStore::record_with_hashes` accepts precomputed output
-  hashes, and `check_cached` keeps the entry when an output is missing.
-  Existing implementations keep the previous conservative behaviour (issue #19).
+  type; `resolve_with_source_fallback` lets a caller refuse the existing-file
+  fallback for a known generated output. `ox-cache`:
+  `CacheStore::record_with_hashes` accepts precomputed output hashes, and
+  `check_cached` keeps the entry when an output is missing. Existing
+  implementations keep the previous conservative behaviour. Unstable Rust API
+  (issues #19, #22).
 
 ## [0.4.0] - 2026-09-14
 
