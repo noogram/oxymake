@@ -14,6 +14,11 @@ once.
 
 ### Fixed
 
+- **Deleted intermediates in wildcard workflows are rebuilt even when final
+  targets still exist.** Generated outputs inferred from explicit targets are
+  no longer mistaken for source files, so `ox plan` includes the full transitive
+  rebuild graph and remains an upper bound of `ox run`. Verified adopted outputs
+  still allow continuation without the original source inputs (issue #22).
 - **Changing a uv environment's `.python-version` now invalidates its
   outputs.** `uv run` starts from the workflow root, so OxyMake hashes every
   `.python-version` there and in each parent directory, without invoking uv.

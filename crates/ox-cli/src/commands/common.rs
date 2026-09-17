@@ -8,6 +8,7 @@ use anyhow::{Context, Result};
 use ox_cache::{CacheStore, CacheValidation, hash_file};
 use ox_core::model::ResourceValue;
 use ox_core::resolver::Config;
+use ox_core::wildcard::{CompiledPattern, Pattern};
 use ox_format::parse::{ConfigValue, Profile, Workflow};
 
 /// Read and parse an Oxymakefile from disk.
@@ -218,15 +219,34 @@ pub fn discover_source_files(
     config: &Config,
     honour_adopted: bool,
 ) -> Vec<PathBuf> {
-    let rule_outputs: HashSet<PathBuf> = workflow
+    // Match actual paths as the resolver does: explicit targets can supply
+    // wildcard values absent from config lists, so expand_pattern cannot
+    // enumerate all generated outputs. Compile once, including constraints.
+    let output_patterns: Vec<CompiledPattern> = workflow
         .rules
         .iter()
-        .flat_map(|rule| &rule.outputs)
-        .flat_map(|output| {
-            let mut expanded = Vec::new();
-            expand_pattern(output.pattern.as_str(), config, &mut expanded);
-            expanded.into_iter().map(PathBuf::from)
+        .flat_map(|rule| {
+            rule.outputs.iter().filter_map(|output| {
+                let expanded = ox_format::targets::substitute_config_refs(
+                    output.pattern.as_str(),
+                    &config.scalars,
+                );
+                // Invalid patterns are reported by validation/resolution.
+                let pattern = Pattern::parse(&expanded).ok()?;
+                CompiledPattern::new(pattern, &rule.wildcard_constraints).ok()
+            })
         })
+        .collect();
+    let mut files = ox_api::discover::discover_existing_files(oxymakefile_path);
+    let rule_outputs: HashSet<PathBuf> = files
+        .iter()
+        .filter(|path| {
+            let path = path.to_string_lossy();
+            output_patterns
+                .iter()
+                .any(|pattern| pattern.resolve(&path).is_some())
+        })
+        .cloned()
         .collect();
 
     let adopted_leaves: HashSet<PathBuf> = if honour_adopted {
@@ -264,7 +284,6 @@ pub fn discover_source_files(
         HashSet::new()
     };
 
-    let mut files = ox_api::discover::discover_existing_files(oxymakefile_path);
     files.retain(|path| !rule_outputs.contains(path) || adopted_leaves.contains(path));
     files
 }
@@ -272,6 +291,70 @@ pub fn discover_source_files(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn discovery_excludes_wildcard_outputs_without_config_lists() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("Oxymakefile.toml");
+        let spec = r#"
+[rule.mid]
+input = ["in/{sample}.txt"]
+output = ["mid/{sample}.txt"]
+shell = "cat {input} > {output}"
+[rule.final]
+input = ["mid/{sample}.txt"]
+output = ["final/{sample}.txt"]
+shell = "cat {input} > {output}"
+"#;
+        std::fs::write(&file, spec).unwrap();
+        for path in [
+            "in/s1.txt",
+            "in/s2.txt",
+            "mid/s1.txt",
+            "final/s1.txt",
+            "final/s2.txt",
+        ] {
+            let path = dir.path().join(path);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, "data").unwrap();
+        }
+        let workflow = load_workflow(&file).unwrap();
+        let sources = discover_source_files(&file, &workflow, &Config::default(), false);
+        eprintln!("discovery seam: {sources:?}");
+        assert!(sources.contains(&PathBuf::from("in/s1.txt")));
+        assert!(sources.contains(&PathBuf::from("in/s2.txt")));
+        assert!(!sources.contains(&PathBuf::from("mid/s1.txt")));
+        assert!(!sources.contains(&PathBuf::from("final/s1.txt")));
+        assert!(!sources.contains(&PathBuf::from("final/s2.txt")));
+    }
+
+    #[test]
+    fn discovery_respects_output_constraints_and_repeated_wildcards() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("Oxymakefile.toml");
+        std::fs::write(
+            &file,
+            r#"
+[config]
+prefix = "result"
+[rule.build]
+output = ["{config.prefix}-{sample}-{sample}.txt"]
+shell = "echo built > {output}"
+[rule.build.wildcard_constraints]
+sample = "s[0-9]+"
+"#,
+        )
+        .unwrap();
+        for name in ["result-s1-s1.txt", "result-s1-s2.txt", "result-raw-raw.txt"] {
+            std::fs::write(dir.path().join(name), "data").unwrap();
+        }
+        let workflow = load_workflow(&file).unwrap();
+        let config = workflow_config(&workflow);
+        let sources = discover_source_files(&file, &workflow, &config, false);
+        assert!(!sources.contains(&PathBuf::from("result-s1-s1.txt")));
+        assert!(sources.contains(&PathBuf::from("result-s1-s2.txt")));
+        assert!(sources.contains(&PathBuf::from("result-raw-raw.txt")));
+    }
 
     #[test]
     fn apply_overrides_scalar() {
