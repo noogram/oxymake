@@ -1957,6 +1957,7 @@ dependencies = [
  "ox-format",
  "ox-plan",
  "ox-state",
+ "regex",
  "tempfile",
  "thiserror 2.0.18",
 ]
@@ -2175,6 +2176,7 @@ name = "ox-mcp"
 version = "0.4.0"
 dependencies = [
  "anyhow",
+ "ox-api",
  "ox-cache",
  "ox-core",
  "ox-format",

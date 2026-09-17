@@ -208,6 +208,11 @@ fn adopted_wildcard_leaf_remains_a_source_only_while_verified_and_inputs_missing
     )
     .unwrap();
     ox(base, &["cache-import", "adoption.json"]);
+    let adopted_session = ox_api::SessionBuilder::new(base.join("Oxymakefile.toml"))
+        .targets(["final/s2.txt"])
+        .build()
+        .unwrap();
+    assert_eq!(adopted_session.job_graph.job_count(), 1);
     assert_eq!(plan(base, &["final/s2.txt"])["job_count"], 1);
     succeeded(&run(base, &["final/s2.txt"]), 1);
     assert_eq!(plan(base, &["final/s2.txt"])["job_count"], 0);
@@ -220,6 +225,12 @@ fn adopted_wildcard_leaf_remains_a_source_only_while_verified_and_inputs_missing
     ] {
         if args[0] == "plan" {
             fs::write(base.join("mid/s2.txt"), "tampered\n").unwrap();
+            assert!(
+                ox_api::SessionBuilder::new(base.join("Oxymakefile.toml"))
+                    .targets(["final/s2.txt"])
+                    .build()
+                    .is_err()
+            );
         }
         Command::cargo_bin("ox")
             .unwrap()
@@ -358,11 +369,26 @@ fn source_fallback_discards_speculative_jobs_and_allows_later_targets() {
 input = ["in/s1.txt"]
 output = ["scratch/{x}.csv"]
 shell = "mkdir -p scratch && cat {input} > {output}"
+"#;
+    // Preserve the original nested fixture too: its raw producer's missing
+    // source is now a hard error, rather than authorizing an ancestor fallback.
+    let raw_rule = r#"
 [rule.raw]
 input = ["absent/{x}.csv"]
 output = ["raw/{x}.csv"]
 shell = "mkdir -p raw && cat {input} > {output}"
 "#;
+    fs::write(&file, format!("{spec}{raw_rule}")).unwrap();
+    Command::cargo_bin("ox")
+        .unwrap()
+        .current_dir(dir.path())
+        .args(["plan", "result.txt"])
+        .timeout(Duration::from_secs(30))
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("absent/manual.csv"));
+    // With a directly unavailable raw input, all original rollback assertions
+    // still apply, including resolving an abandoned scratch job as a later target.
     fs::write(file, spec).unwrap();
     assert_manual_source(&dir, "data/manual.csv");
     assert!(!dir.path().join("scratch/manual.csv").exists());
@@ -386,4 +412,147 @@ fn unavailable_cache_cannot_authorize_source_fallback() {
         .assert()
         .failure()
         .stderr(predicates::str::contains("raw/manual.csv"));
+}
+
+#[test]
+fn missing_shared_config_is_an_error_with_and_without_cache() {
+    let spec = WORKFLOW
+        .replace(
+            "input = [\"mid/{sample}.txt\"]",
+            "input = [\"mid/{sample}.txt\", \"cfg/settings.txt\"]",
+        )
+        .replace("tr a-z A-Z < {input}", "cat {input} | tr a-z A-Z");
+    let dir = fixture(&spec);
+    let base = dir.path();
+    fs::create_dir(base.join("cfg")).unwrap();
+    fs::write(base.join("cfg/settings.txt"), "settings\n").unwrap();
+    ox(base, &["run", "final/s1.txt"]);
+    fs::write(base.join("in/s1.txt"), "changed\n").unwrap();
+    fs::remove_file(base.join("cfg/settings.txt")).unwrap();
+    for remove_cache in [false, true] {
+        if remove_cache {
+            fs::remove_dir_all(base.join(".oxymake")).unwrap();
+        }
+        for command in ["plan", "run"] {
+            Command::cargo_bin("ox")
+                .unwrap()
+                .current_dir(base)
+                .args([command, "final/s1.txt"])
+                .timeout(Duration::from_secs(30))
+                .assert()
+                .failure()
+                .stderr(predicates::str::contains("cfg/settings.txt"));
+        }
+        assert_eq!(
+            fs::read_to_string(base.join("final/s1.txt")).unwrap(),
+            "A\nSETTINGS\n"
+        );
+    }
+}
+
+#[test]
+fn deeper_missing_source_is_not_a_manual_final_with_or_without_cache() {
+    let dir = fixture(WORKFLOW);
+    let base = dir.path();
+    ox(base, &["run", "final/s1.txt"]);
+    fs::remove_file(base.join("mid/s1.txt")).unwrap();
+    fs::remove_file(base.join("in/s1.txt")).unwrap();
+    for remove_cache in [false, true] {
+        if remove_cache {
+            fs::remove_dir_all(base.join(".oxymake")).unwrap();
+        }
+        Command::cargo_bin("ox")
+            .unwrap()
+            .current_dir(base)
+            .args(["plan", "final/s1.txt"])
+            .timeout(Duration::from_secs(30))
+            .assert()
+            .failure()
+            .stderr(predicates::str::contains("in/s1.txt"));
+    }
+}
+
+#[test]
+fn manual_target_fallback_uses_workflow_directory() {
+    let dir = fixture(WORKFLOW);
+    let base = dir.path();
+    fs::remove_dir_all(base.join("in")).unwrap();
+    fs::create_dir(base.join("mid")).unwrap();
+    fs::write(base.join("mid/s1.txt"), "manual\n").unwrap();
+    fs::create_dir(base.join("sub")).unwrap();
+    for args in [
+        vec!["plan", "-f", "../Oxymakefile.toml", "mid/s1.txt", "--json"],
+        vec!["run", "-f", "../Oxymakefile.toml", "mid/s1.txt", "--json"],
+    ] {
+        let output = ox(&base.join("sub"), &args);
+        if args[0] == "plan" {
+            assert_eq!(
+                serde_json::from_str::<Value>(&output).unwrap()["job_count"],
+                0
+            );
+        }
+    }
+    assert!(!base.join("sub/mid").exists());
+}
+
+#[test]
+fn cached_target_cannot_become_manual_from_subdirectory() {
+    let dir = fixture(WORKFLOW);
+    let base = dir.path();
+    ox(base, &["run", "mid/s1.txt"]);
+    fs::remove_file(base.join("in/s1.txt")).unwrap();
+    fs::create_dir(base.join("sub")).unwrap();
+    fs::create_dir(base.join("sub/mid")).unwrap();
+    fs::write(base.join("sub/mid/s1.txt"), "decoy\n").unwrap();
+    Command::cargo_bin("ox")
+        .unwrap()
+        .current_dir(base.join("sub"))
+        .args(["plan", "-f", "../Oxymakefile.toml", "mid/s1.txt"])
+        .timeout(Duration::from_secs(30))
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("in/s1.txt"));
+}
+
+#[test]
+fn cached_workflow_plan_and_run_from_subdirectory_are_noops() {
+    let dir = fixture(WORKFLOW);
+    let base = dir.path();
+    succeeded(&run(base, &["final/s1.txt"]), 2);
+    fs::create_dir(base.join("sub")).unwrap();
+    let output = ox(
+        &base.join("sub"),
+        &[
+            "plan",
+            "-f",
+            "../Oxymakefile.toml",
+            "final/s1.txt",
+            "--json",
+        ],
+    );
+    assert_eq!(
+        serde_json::from_str::<Value>(&output).unwrap()["job_count"],
+        0
+    );
+    let output = ox(
+        &base.join("sub"),
+        &["run", "-f", "../Oxymakefile.toml", "final/s1.txt", "--json"],
+    );
+    let events: Vec<Value> = output
+        .lines()
+        .filter_map(|line| serde_json::from_str(line).ok())
+        .collect();
+    succeeded(&events, 0);
+    assert!(!base.join("sub/mid").exists());
+    // A real rebuild also executes against the same workflow root.
+    fs::write(base.join("in/s1.txt"), "changed\n").unwrap();
+    ox(
+        &base.join("sub"),
+        &["run", "-f", "../Oxymakefile.toml", "final/s1.txt"],
+    );
+    assert_eq!(
+        fs::read_to_string(base.join("final/s1.txt")).unwrap(),
+        "CHANGED\n"
+    );
+    assert!(!base.join("sub/mid").exists());
 }

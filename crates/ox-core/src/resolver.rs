@@ -286,6 +286,7 @@ struct CompiledConstraint {
 /// Tracks the state of the backward-chaining resolution process.
 struct ResolveState<'a> {
     rules: &'a [Rule],
+    base_dir: &'a Path,
     config: &'a Config,
     existing: HashSet<PathBuf>,
     /// Jobs accumulated in dependency order.
@@ -316,6 +317,7 @@ impl<'a> ResolveState<'a> {
         rules: &'a [Rule],
         config: &'a Config,
         existing_files: &[PathBuf],
+        base_dir: &'a Path,
         allow_source_fallback: &'a dyn Fn(&Path) -> bool,
     ) -> Result<Self, DagError> {
         let producer_index = ProducerIndex::build(rules, &config.scalars)?;
@@ -370,6 +372,7 @@ impl<'a> ResolveState<'a> {
 
         Ok(Self {
             rules,
+            base_dir,
             config,
             existing: existing_files.iter().cloned().collect(),
             jobs: Vec::new(),
@@ -432,7 +435,7 @@ impl<'a> ResolveState<'a> {
                     // No rule produces this target.  Check if it exists on disk
                     // as a source file (like Make and Snakemake do).
                     let path = std::path::Path::new(target);
-                    if path.exists() {
+                    if self.base_dir.join(path).exists() {
                         self.add_source(PathBuf::from(target));
                         self.resolving.remove(target);
                         return Ok(());
@@ -465,7 +468,7 @@ impl<'a> ResolveState<'a> {
             let pat = &self.parsed_input_patterns[rule_idx][input_idx];
             match pat.interpolate(&wildcards) {
                 Ok(concrete_path) => {
-                    concrete_inputs.push((concrete_path, input_pat));
+                    concrete_inputs.push((concrete_path, input_pat, pat.has_wildcards()));
                 }
                 Err(WildcardError::UnresolvableWildcard { .. }) => {
                     // Input has wildcards not resolved by the output match.
@@ -503,7 +506,7 @@ impl<'a> ResolveState<'a> {
                             validate_constraints_compiled(&merged, compiled_constraints)?;
                         }
                         let concrete_path = pat.interpolate(&merged)?;
-                        concrete_inputs.push((concrete_path, input_pat));
+                        concrete_inputs.push((concrete_path, input_pat, pat.has_wildcards()));
                     }
                 }
                 Err(e) => return Err(e.into()),
@@ -515,37 +518,49 @@ impl<'a> ResolveState<'a> {
         let jobs_checkpoint = self.jobs.len();
         let produced_checkpoint = self.produced_log.len();
         let sources_checkpoint = self.source_log.len();
-        for (input_path, _) in &concrete_inputs {
+        let mut use_source_fallback = false;
+        for (input_path, _, has_wildcards) in &concrete_inputs {
             if let Err(error) = self.resolve_target(input_path) {
-                // Clear the failed child and this frame before propagating.
                 self.resolving.remove(input_path);
-                self.resolving.remove(target);
+                // Only an unavailable input of this producer can justify a
+                // manual leaf. Never swallow a failure in a child's producer.
+                // Fixed inputs of wildcard rules (e.g. shared configuration)
+                // remain mandatory for every instance.
                 if matches!(
-                    error,
-                    DagError::Wildcard(WildcardError::MissingSource { .. })
-                ) && target_path.is_file()
+                    &error,
+                    DagError::Wildcard(WildcardError::MissingSource { path }) if path == input_path
+                ) && (wildcards.is_empty() || *has_wildcards)
+                    && self.base_dir.join(&target_path).is_file()
                     && (self.allow_source_fallback)(&target_path)
                 {
-                    // Inputs resolved earlier in this attempt belong to an
-                    // abandoned producer, not to the final dependency graph.
-                    self.jobs.truncate(jobs_checkpoint);
-                    for path in self.produced_log.drain(produced_checkpoint..) {
-                        self.produced.remove(&path);
-                    }
-                    for path in self.source_log.drain(sources_checkpoint..) {
-                        self.sources.remove(&path);
-                    }
-                    self.add_source(target_path);
-                    return Ok(());
+                    // Inspect the remaining inputs before accepting the leaf:
+                    // a later deeper failure or cycle must still be an error.
+                    use_source_fallback = true;
+                } else {
+                    self.resolving.remove(target);
+                    return Err(error);
                 }
-                return Err(error);
             }
+        }
+        if use_source_fallback {
+            // Inputs resolved in this attempt belong to an abandoned producer,
+            // not to the final dependency graph.
+            self.jobs.truncate(jobs_checkpoint);
+            for path in self.produced_log.drain(produced_checkpoint..) {
+                self.produced.remove(&path);
+            }
+            for path in self.source_log.drain(sources_checkpoint..) {
+                self.sources.remove(&path);
+            }
+            self.resolving.remove(target);
+            self.add_source(target_path);
+            return Ok(());
         }
 
         // Build resolved inputs.
         let resolved_inputs: Vec<ResolvedInput> = concrete_inputs
             .iter()
-            .map(|(path, ip)| ResolvedInput {
+            .map(|(path, ip, _)| ResolvedInput {
                 reference: OutputRef::File(PathBuf::from(path)),
                 name: ip.name.clone(),
                 format: ip.format.clone(),
@@ -572,7 +587,7 @@ impl<'a> ResolveState<'a> {
         // Collect concrete input/output paths (with names) for interpolation.
         let named_inputs: Vec<NamedPath> = concrete_inputs
             .iter()
-            .map(|(path, ip)| (path.clone(), ip.name.clone()))
+            .map(|(path, ip, _)| (path.clone(), ip.name.clone()))
             .collect();
         let named_outputs: Vec<NamedPath> = resolved_outputs
             .iter()
@@ -760,8 +775,9 @@ pub fn resolve(rules: &[Rule], request: &ResolveRequest) -> Result<ResolveResult
 
 /// Resolve with a policy for existing files whose producer has missing sources.
 ///
-/// The policy is called only after input resolution fails with a missing source
-/// and the target is a regular file on disk. Return `false` for known generated
+/// The policy is called only for a missing input of the target's own producer
+/// when the target is a regular file. Missing sources in deeper producers and
+/// fixed inputs of wildcard producers (shared configuration) remain errors. Return `false` for known generated
 /// outputs that must retain their producer's provenance requirements. Explicit
 /// `existing_files` remain source leaves regardless of this policy (for example,
 /// outputs already verified by cache adoption). Other resolution errors, including
@@ -771,10 +787,24 @@ pub fn resolve_with_source_fallback(
     request: &ResolveRequest,
     allow_source_fallback: &dyn Fn(&Path) -> bool,
 ) -> Result<ResolveResult, DagError> {
+    resolve_with_source_fallback_at(rules, request, Path::new("."), allow_source_fallback)
+}
+
+/// Resolve relative filesystem paths against `base_dir`, without changing cwd.
+///
+/// Targets, sources, job paths and policy arguments keep their workflow-relative
+/// spelling. The fallback policy follows [`resolve_with_source_fallback`].
+pub fn resolve_with_source_fallback_at(
+    rules: &[Rule],
+    request: &ResolveRequest,
+    base_dir: &Path,
+    allow_source_fallback: &dyn Fn(&Path) -> bool,
+) -> Result<ResolveResult, DagError> {
     let mut state = ResolveState::new(
         rules,
         &request.config,
         &request.existing_files,
+        base_dir,
         allow_source_fallback,
     )?;
 
@@ -1482,6 +1512,43 @@ fn validate_constraints(
 mod tests {
     use super::*;
     use serial_test::serial;
+
+    #[test]
+    fn direct_missing_input_cannot_hide_a_later_deeper_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = |name: &str| dir.path().join(name).to_str().unwrap().to_owned();
+        let target = path("final");
+        let mid = path("mid");
+        let direct = path("direct");
+        let deeper = path("deeper");
+        std::fs::write(&target, "old").unwrap();
+        let rules = [
+            make_rule("mid", &[&deeper], &[&mid]),
+            make_rule("final", &[&direct, &mid], &[&target]),
+        ];
+        let error = resolve(&rules, &make_request(&[&target], &[])).unwrap_err();
+        assert!(
+            matches!(error, DagError::Wildcard(WildcardError::MissingSource { path }) if path == deeper)
+        );
+    }
+
+    #[test]
+    fn source_fallback_never_hides_a_deeper_missing_source() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = |name: &str| dir.path().join(name).to_str().unwrap().to_owned();
+        let target = path("final");
+        let mid = path("mid");
+        let missing = path("missing");
+        std::fs::write(&target, "old").unwrap();
+        let rules = [
+            make_rule("mid", &[&missing], &[&mid]),
+            make_rule("final", &[&mid], &[&target]),
+        ];
+        let error = resolve(&rules, &make_request(&[&target], &[])).unwrap_err();
+        assert!(
+            matches!(error, DagError::Wildcard(WildcardError::MissingSource { path }) if path == missing)
+        );
+    }
 
     #[test]
     fn source_fallback_rolls_back_sources_and_preserves_prior_targets() {

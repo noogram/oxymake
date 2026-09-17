@@ -15,6 +15,7 @@ ox-state = { path = "../ox-state" }
 ox-cache = { path = "../ox-cache" }
 ox-plan = { path = "../ox-plan" }
 thiserror.workspace = true
+regex.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

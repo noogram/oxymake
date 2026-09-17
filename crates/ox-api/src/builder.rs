@@ -119,8 +119,9 @@ impl SessionBuilder {
                 .collect()
         };
 
-        // 6. Discover existing source files (cached).
-        let existing_files = crate::discover::discover_existing_files(&self.file_path);
+        // 6. Discover source files with the shared output/provenance policy.
+        let existing_files =
+            crate::resolution::discover_source_files(&self.file_path, &workflow, &config, true);
 
         // 7. Resolve to concrete jobs.
         let request = ResolveRequest {
@@ -128,7 +129,7 @@ impl SessionBuilder {
             config: config.clone(),
             existing_files,
         };
-        let result = ox_core::resolver::resolve(&workflow.rules, &request)?;
+        let result = crate::resolution::resolve(&self.file_path, &workflow.rules, &request)?;
 
         // 8. Build job graph.
         let job_graph = JobGraph::build(result.jobs)?;

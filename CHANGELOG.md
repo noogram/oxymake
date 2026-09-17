@@ -14,18 +14,19 @@ once.
 
 ### Fixed
 
-- Existing hand-maintained files matching wildcard output patterns remain sources
-  when the producer's inputs cannot be found. Known cached outputs still require
-  their producer's inputs or verified cache adoption; deleted intermediates still
-  rebuild (issue #22).
-- Source discovery prefilters output patterns by literal prefix in a single pass
-  and filters paths in place, reducing planning overhead on large trees (issue #22).
-
 - **Deleted intermediates in wildcard workflows are rebuilt even when final
-  targets still exist.** Generated outputs inferred from explicit targets are
-  no longer mistaken for source files, so `ox plan` includes the full transitive
-  rebuild graph and remains an upper bound of `ox run`. Verified adopted outputs
-  still allow continuation without the original source inputs (issue #22).
+  targets still exist.** CLI, Rust API and MCP planning share output-aware source
+  discovery, including explicit targets outside config lists. Plans retain the
+  full transitive rebuild graph and remain an upper bound of execution (issue #22).
+- Hand-maintained files matching wildcard outputs may remain sources when their
+  own producer lacks a sample input. Missing shared configuration and failures
+  deeper in the graph remain errors, with or without a cache. Known cached outputs
+  require their inputs or verified cache adoption. Source fallback and provenance
+  checks use the Oxymakefile directory, including with `-f` from a subdirectory;
+  CLI plan and run also use that directory for cache checks and execution. Repeated
+  MCP requests see additions and deletions inside subdirectories (issue #22).
+- Source discovery prefilters output patterns by literal prefix in one scan and
+  filters paths in place, reducing planning overhead on large trees (issue #22).
 - **Changing a uv environment's `.python-version` now invalidates its
   outputs.** `uv run` starts from the workflow root, so OxyMake hashes every
   `.python-version` there and in each parent directory, without invoking uv.
