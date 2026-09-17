@@ -55,7 +55,7 @@ just --list     # all available recipes
 
 ```bash
 ox --version
-# ox 0.4.0
+# ox 0.5.0
 
 ox init
 # Initialized OxyMake project in .
