@@ -14,6 +14,13 @@ once.
 
 ### Fixed
 
+- Existing hand-maintained files matching wildcard output patterns remain sources
+  when the producer's inputs cannot be found. Known cached outputs still require
+  their producer's inputs or verified cache adoption; deleted intermediates still
+  rebuild (issue #22).
+- Source discovery prefilters output patterns by literal prefix in a single pass
+  and filters paths in place, reducing planning overhead on large trees (issue #22).
+
 - **Deleted intermediates in wildcard workflows are rebuilt even when final
   targets still exist.** Generated outputs inferred from explicit targets are
   no longer mistaken for source files, so `ox plan` includes the full transitive
@@ -40,6 +47,16 @@ once.
   identically (issue #19).
 
 ### Changed
+- An existing file matching a wildcard rule output is owned by that rule when
+  its inputs resolve: `ox run` can regenerate and overwrite even a hand-written
+  file. Use `wildcard_constraints` to exclude hand-maintained names (issue #22).
+- `ox run --no-cache` now errors on an imported adopted wildcard output when
+  its original inputs are missing; it previously accepted that output as a
+  source. Restore the inputs or omit `--no-cache` to use verified adoption
+  (issue #22).
+- `ox-core`: `resolve_with_source_fallback` lets callers disallow the existing-file
+  fallback for known generated outputs while preserving explicit source leaves.
+  This is an unstable Rust API (issue #22).
 - `ox-core`: `CacheCheck` gains defaulted `recorded_output_hashes`,
   `check_with_reason` and `record_with_hashes` methods and an `OutputHashes`
   type; `ox-cache`: `CacheStore::record_with_hashes` accepts precomputed output

@@ -126,7 +126,7 @@ pub fn cmd_plan(args: PlanArgs, theme: &ox_render::Theme) -> Result<()> {
         existing_files,
     };
 
-    let resolve_result = resolver::resolve(&workflow.rules, &request).map_err(|e| {
+    let resolve_result = common::resolve(&workflow.rules, &request).map_err(|e| {
         let missing = match &e {
             DagError::Wildcard(WildcardError::NoProducer { path }) => Some(path.clone()),
             _ => None,

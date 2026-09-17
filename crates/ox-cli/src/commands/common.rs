@@ -1,6 +1,6 @@
 //! Shared utilities used across multiple commands.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -8,7 +8,7 @@ use anyhow::{Context, Result};
 use ox_cache::{CacheStore, CacheValidation, hash_file};
 use ox_core::model::ResourceValue;
 use ox_core::resolver::Config;
-use ox_core::wildcard::{CompiledPattern, Pattern};
+use ox_core::wildcard::{CompiledPattern, Pattern, Segment};
 use ox_format::parse::{ConfigValue, Profile, Workflow};
 
 /// Read and parse an Oxymakefile from disk.
@@ -237,55 +237,73 @@ pub fn discover_source_files(
             })
         })
         .collect();
+    // A single scan finds candidate literal prefixes. Only those candidates
+    // need full matching (including repeated-wildcard equality). Patterns
+    // beginning with a wildcard have an empty prefix and remain candidates.
+    let prefixes = regex::RegexSet::new(output_patterns.iter().map(|pattern| {
+        let prefix = match pattern.pattern().segments().first() {
+            Some(Segment::Literal(prefix)) => prefix.as_str(),
+            _ => "",
+        };
+        format!("^{}", regex::escape(prefix))
+    }))
+    .ok();
+    let cache = honour_adopted
+        .then(|| CacheStore::open(Path::new(".oxymake")).ok())
+        .flatten();
     let mut files = ox_api::discover::discover_existing_files(oxymakefile_path);
-    let rule_outputs: HashSet<PathBuf> = files
-        .iter()
-        .filter(|path| {
-            let path = path.to_string_lossy();
-            output_patterns
+    files.retain(|path| {
+        let text = path.to_string_lossy();
+        let is_output = match &prefixes {
+            Some(prefixes) if !prefixes.is_match(&text) => false,
+            Some(prefixes) => prefixes
+                .matches(&text)
                 .iter()
-                .any(|pattern| pattern.resolve(&path).is_some())
-        })
-        .cloned()
-        .collect();
-
-    let adopted_leaves: HashSet<PathBuf> = if honour_adopted {
-        CacheStore::open(Path::new(".oxymake"))
-            .ok()
-            .map(|cache| {
-                rule_outputs
-                    .iter()
-                    .filter(|path| {
-                        let Some(entry) = cache.entry_for_output(path) else {
-                            return false;
-                        };
-                        let Some(provenance) = &entry.provenance else {
-                            return false;
-                        };
-                        if !entry.adopted {
-                            return false;
-                        }
-                        if !provenance
-                            .input_hashes
-                            .iter()
-                            .any(|(input, _)| !Path::new(input).exists())
-                        {
-                            return false;
-                        }
-                        entry.output_hashes.iter().all(|(output, expected)| {
-                            hash_file(Path::new(output)).is_ok_and(|actual| actual == *expected)
-                        })
-                    })
-                    .cloned()
-                    .collect()
+                .any(|index| output_patterns[index].resolve(&text).is_some()),
+            // A very large set can exceed the regex compiler's size limit.
+            // Preserve correctness rather than silently accepting outputs.
+            None => output_patterns
+                .iter()
+                .any(|pattern| pattern.resolve(&text).is_some()),
+        };
+        if !is_output {
+            return true;
+        }
+        let Some(entry) = cache
+            .as_ref()
+            .and_then(|cache| cache.entry_for_output(path))
+        else {
+            return false;
+        };
+        let Some(provenance) = &entry.provenance else {
+            return false;
+        };
+        entry.adopted
+            && provenance
+                .input_hashes
+                .iter()
+                .any(|(input, _)| !Path::new(input).exists())
+            && entry.output_hashes.iter().all(|(output, expected)| {
+                hash_file(Path::new(output)).is_ok_and(|actual| actual == *expected)
             })
-            .unwrap_or_default()
-    } else {
-        HashSet::new()
-    };
-
-    files.retain(|path| !rule_outputs.contains(path) || adopted_leaves.contains(path));
+    });
     files
+}
+
+/// Keep cache provenance authoritative when resolving hand-maintained files.
+/// Verified adopted leaves have already been admitted by discovery; all other
+/// cached outputs must resolve their producer, even when its inputs are missing.
+pub fn resolve(
+    rules: &[ox_core::model::Rule],
+    request: &ox_core::resolver::ResolveRequest,
+) -> Result<ox_core::resolver::ResolveResult, ox_core::error::DagError> {
+    let cache = CacheStore::open(Path::new(".oxymake")).ok();
+    ox_core::resolver::resolve_with_source_fallback(rules, request, &|path| {
+        // An unavailable cache cannot prove that the output is unrecorded.
+        cache
+            .as_ref()
+            .is_some_and(|cache| cache.entry_for_output(path).is_none())
+    })
 }
 
 #[cfg(test)]
@@ -353,6 +371,40 @@ sample = "s[0-9]+"
         assert!(!sources.contains(&PathBuf::from("result-s1-s1.txt")));
         assert!(sources.contains(&PathBuf::from("result-s1-s2.txt")));
         assert!(sources.contains(&PathBuf::from("result-raw-raw.txt")));
+    }
+
+    #[test]
+    fn discovery_prefilter_handles_leading_wildcards_and_literal_metacharacters() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("Oxymakefile.toml");
+        std::fs::write(
+            &file,
+            r#"
+[rule.leading]
+output = ["{dir}/data.csv"]
+shell = "echo generated > {output}"
+[rule.literal]
+output = ["data.v1/{x}.csv"]
+shell = "echo generated > {output}"
+"#,
+        )
+        .unwrap();
+        for path in [
+            "cfg/data.csv",
+            "cfg/notes.csv",
+            "data.v1/manual.csv",
+            "dataXv1/manual.csv",
+        ] {
+            let path = dir.path().join(path);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, "data").unwrap();
+        }
+        let workflow = load_workflow(&file).unwrap();
+        let sources = discover_source_files(&file, &workflow, &Config::default(), false);
+        assert!(!sources.contains(&PathBuf::from("cfg/data.csv")));
+        assert!(!sources.contains(&PathBuf::from("data.v1/manual.csv")));
+        assert!(sources.contains(&PathBuf::from("cfg/notes.csv")));
+        assert!(sources.contains(&PathBuf::from("dataXv1/manual.csv")));
     }
 
     #[test]

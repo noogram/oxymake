@@ -283,6 +283,12 @@ exists and has been used in anger.
 - Add new traits.
 - Reorganize the module path of a trait.
 
+The resolver Rust API is also **unstable**. `ox_core::resolver::resolve` permits
+existing files as source fallbacks when producer inputs are missing;
+`resolve_with_source_fallback` accepts a predicate so callers can require
+provenance for known generated outputs. Explicit `ResolveRequest::existing_files`
+remain source leaves in both APIs.
+
 ---
 
 ## 6. Environment variables (`OX_*`)
