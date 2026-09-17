@@ -50,7 +50,7 @@ pub fn cmd_explain(args: ExplainArgs) -> Result<()> {
     };
 
     let resolve_result =
-        resolver::resolve(&workflow.rules, &request).context("failed to resolve targets")?;
+        common::resolve(&workflow.rules, &request).context("failed to resolve targets")?;
 
     let job_graph = JobGraph::build(resolve_result.jobs).context("failed to build JobGraph")?;
 

@@ -67,7 +67,7 @@ pub fn cmd_query(args: QueryArgs) -> Result<()> {
     };
 
     let resolve_result =
-        resolver::resolve(&workflow.rules, &request).context("failed to resolve targets")?;
+        common::resolve(&workflow.rules, &request).context("failed to resolve targets")?;
     let job_graph = JobGraph::build(resolve_result.jobs).context("failed to build JobGraph")?;
 
     let result = execute_query(&expr, &job_graph)?;

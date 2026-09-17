@@ -167,7 +167,7 @@ pub fn cmd_test(args: TestArgs) -> Result<()> {
                 existing_files,
             };
 
-            match resolver::resolve(&workflow.rules, &request) {
+            match common::resolve(&workflow.rules, &request) {
                 Ok(resolve_result) => {
                     checks.push(Check {
                         name: "resolve",

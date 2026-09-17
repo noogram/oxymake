@@ -242,3 +242,148 @@ fn adopted_wildcard_leaf_remains_a_source_only_while_verified_and_inputs_missing
         "CHANGED\n"
     );
 }
+
+fn manual_fixture(input: &str, output: &str, source: &str, extra: &str) -> TempDir {
+    let spec = format!(
+        r#"ox_version = "0.1"
+[config]
+outdir = "data"
+[rule.generate]
+input = ["{input}"]
+output = ["{output}"]
+shell = "mkdir -p data && cat {{input}} > {{output}}"
+{extra}
+[rule.consume]
+input = ["{source}"]
+output = ["result.txt"]
+shell = "cat {{input}} > {{output}}"
+"#
+    );
+    let dir = fixture(&spec);
+    let path = dir.path().join(source);
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(path, "hand maintained\n").unwrap();
+    dir
+}
+
+fn assert_manual_source(dir: &TempDir, source: &str) {
+    let planned = plan(dir.path(), &["result.txt"]);
+    assert_eq!(planned["job_count"], 1, "{planned}");
+    succeeded(&run(dir.path(), &["result.txt"]), 1);
+    for path in [source, "result.txt"] {
+        assert_eq!(
+            fs::read_to_string(dir.path().join(path)).unwrap(),
+            "hand maintained\n"
+        );
+    }
+}
+
+#[test]
+fn handwritten_file_matching_wildcard_output_is_a_source() {
+    let dir = manual_fixture("raw/{x}.csv", "data/{x}.csv", "data/manual.csv", "");
+    assert_manual_source(&dir, "data/manual.csv");
+}
+
+#[test]
+fn handwritten_file_matching_leading_wildcard_output_is_a_source() {
+    let dir = manual_fixture("raw/{dir}.csv", "{dir}/data.csv", "cfg/data.csv", "");
+    assert_manual_source(&dir, "cfg/data.csv");
+}
+
+#[test]
+fn handwritten_file_matching_config_directory_output_is_a_source() {
+    let dir = manual_fixture(
+        "raw/{x}.csv",
+        "{config.outdir}/{x}.csv",
+        "data/manual.csv",
+        "",
+    );
+    assert_manual_source(&dir, "data/manual.csv");
+}
+
+#[test]
+fn producible_wildcard_output_overwrites_handwritten_file() {
+    let dir = manual_fixture("raw/{x}.csv", "data/{x}.csv", "data/manual.csv", "");
+    fs::create_dir(dir.path().join("raw")).unwrap();
+    fs::write(dir.path().join("raw/manual.csv"), "generated\n").unwrap();
+    assert_eq!(plan(dir.path(), &["result.txt"])["job_count"], 2);
+    succeeded(&run(dir.path(), &["result.txt"]), 2);
+    for path in ["data/manual.csv", "result.txt"] {
+        assert_eq!(
+            fs::read_to_string(dir.path().join(path)).unwrap(),
+            "generated\n"
+        );
+    }
+}
+
+#[test]
+fn wildcard_constraint_keeps_handwritten_file_a_source_even_with_raw_input() {
+    let dir = manual_fixture(
+        "raw/{x}.csv",
+        "data/{x}.csv",
+        "data/manual.csv",
+        "[rule.generate.wildcard_constraints]\nx = \"sample[0-9]+\"",
+    );
+    fs::create_dir(dir.path().join("raw")).unwrap();
+    fs::write(dir.path().join("raw/manual.csv"), "generated\n").unwrap();
+    assert_manual_source(&dir, "data/manual.csv");
+}
+
+#[test]
+fn source_fallback_does_not_hide_missing_intermediate_with_existing_final() {
+    let dir = fixture(WORKFLOW);
+    fs::create_dir(dir.path().join("final")).unwrap();
+    fs::write(dir.path().join("final/s2.txt"), "old handwritten final\n").unwrap();
+    assert_eq!(plan(dir.path(), &["final/s2.txt"])["job_count"], 2);
+    succeeded(&run(dir.path(), &["final/s2.txt", "-j", "2"]), 2);
+    assert_eq!(
+        fs::read_to_string(dir.path().join("mid/s2.txt")).unwrap(),
+        "b\n"
+    );
+    assert_eq!(
+        fs::read_to_string(dir.path().join("final/s2.txt")).unwrap(),
+        "B\n"
+    );
+}
+
+#[test]
+fn source_fallback_discards_speculative_jobs_and_allows_later_targets() {
+    let dir = manual_fixture("raw/{x}.csv", "data/{x}.csv", "data/manual.csv", "");
+    let file = dir.path().join("Oxymakefile.toml");
+    let spec = fs::read_to_string(&file).unwrap().replace(
+        "input = [\"raw/{x}.csv\"]",
+        "input = [\"scratch/{x}.csv\", \"raw/{x}.csv\"]",
+    ) + r#"
+[rule.scratch]
+input = ["in/s1.txt"]
+output = ["scratch/{x}.csv"]
+shell = "mkdir -p scratch && cat {input} > {output}"
+[rule.raw]
+input = ["absent/{x}.csv"]
+output = ["raw/{x}.csv"]
+shell = "mkdir -p raw && cat {input} > {output}"
+"#;
+    fs::write(file, spec).unwrap();
+    assert_manual_source(&dir, "data/manual.csv");
+    assert!(!dir.path().join("scratch/manual.csv").exists());
+    // The abandoned producer must not leave scratch marked as already produced.
+    assert_eq!(
+        plan(dir.path(), &["result.txt", "scratch/manual.csv"])["job_count"],
+        1
+    );
+}
+
+#[test]
+fn unavailable_cache_cannot_authorize_source_fallback() {
+    let dir = manual_fixture("raw/{x}.csv", "data/{x}.csv", "data/manual.csv", "");
+    // Without a readable cache we cannot establish that this file is unrecorded.
+    fs::write(dir.path().join(".oxymake"), "not a cache directory").unwrap();
+    Command::cargo_bin("ox")
+        .unwrap()
+        .current_dir(dir.path())
+        .args(["query", "deps(result.txt)"])
+        .timeout(Duration::from_secs(30))
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("raw/manual.csv"));
+}
