@@ -320,7 +320,6 @@ shell = "cat {input} > {output}"
         }
         let workflow = load_workflow(&file).unwrap();
         let sources = discover_source_files(&file, &workflow, &Config::default(), false);
-        eprintln!("discovery seam: {sources:?}");
         assert!(sources.contains(&PathBuf::from("in/s1.txt")));
         assert!(sources.contains(&PathBuf::from("in/s2.txt")));
         assert!(!sources.contains(&PathBuf::from("mid/s1.txt")));
