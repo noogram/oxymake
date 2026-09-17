@@ -37,6 +37,7 @@
 pub mod builder;
 pub mod discover;
 pub mod error;
+pub mod resolution;
 pub mod run;
 
 // ── Convenience re-exports ──────────────────────────────────────────────

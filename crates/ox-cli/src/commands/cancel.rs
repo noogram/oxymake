@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use ox_core::job_graph::JobGraph;
 use ox_core::model::{JobId, OutputRef};
-use ox_core::resolver::{self, ResolveRequest};
+use ox_core::resolver::ResolveRequest;
 
 use super::common;
 
@@ -141,8 +141,8 @@ fn cancel_by_names(db: &ox_state::db::StateDb, args: &CancelArgs) -> Result<Vec<
         config,
         existing_files,
     };
-    let resolve_result =
-        resolver::resolve(&workflow.rules, &request).context("failed to resolve targets")?;
+    let resolve_result = common::resolve(&file_path, &workflow.rules, &request)
+        .context("failed to resolve targets")?;
     let job_graph = JobGraph::build(resolve_result.jobs).context("failed to build JobGraph")?;
 
     // Resolve each name → JobId, collect IDs + downstream closure.

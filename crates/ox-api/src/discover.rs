@@ -69,6 +69,15 @@ pub fn discover_existing_files(oxymakefile_path: &Path) -> Vec<PathBuf> {
     files
 }
 
+/// Fresh snapshot for resolution in long-lived callers such as MCP. A root
+/// directory mtime cannot detect additions or removals inside subdirectories.
+pub(crate) fn discover_existing_files_fresh(oxymakefile_path: &Path) -> Vec<PathBuf> {
+    let base = crate::resolution::workflow_directory(oxymakefile_path);
+    let mut files = Vec::new();
+    walk_dir(base, base, &mut files, MAX_DEPTH);
+    files
+}
+
 /// Force-invalidate the cache for all directories.
 pub fn invalidate() {
     let mut guard = CACHE.lock().unwrap_or_else(|e| e.into_inner());

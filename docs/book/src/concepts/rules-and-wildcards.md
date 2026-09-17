@@ -95,6 +95,45 @@ output = ["results/{sample}.txt"]
 sample = "[A-Z][a-z0-9_]*"    # regex: starts with uppercase letter
 ```
 
+### Existing files and rule ownership
+
+An existing file that matches a wildcard output belongs to that rule when its
+inputs can be resolved. For example, with `raw/{x}.csv` → `data/{x}.csv`, if both
+`raw/manual.csv` and a hand-written `data/manual.csv` exist, `ox run` can regenerate
+and overwrite `data/manual.csv`, just as with make pattern rules.
+
+If `raw/manual.csv` is missing and has no producer, an existing hand-maintained
+`data/manual.csv` is instead treated as a source. The same applies to leading
+wildcards (`{dir}/data.csv`) and config-derived directories
+(`{config.outdir}/{x}.csv`). Missing intermediate outputs are still rebuilt when
+their source inputs are available. Cycles, ambiguous producers, and invalid
+configuration remain errors. A missing source inside another producer is also
+an error; an existing final output cannot hide a broken dependency chain. Fixed
+inputs of wildcard rules, such as `cfg/settings.txt`, are required for every
+instance even when sample-specific inputs are missing.
+
+Use `wildcard_constraints` to reserve hand-maintained names, even when matching
+raw inputs exist. For example, this rule only owns numbered samples, leaving
+`data/manual.csv` as a source:
+
+```toml
+[rule.prepare]
+input = ["raw/{x}.csv"]
+output = ["data/{x}.csv"]
+shell = "cp {input} {output}"
+
+[rule.prepare.wildcard_constraints]
+x = "sample[0-9]+"
+```
+
+Outputs recorded in the cache retain their provenance requirements. If their
+original inputs are missing, only verified `cache-import` adoption permits them
+as leaves. `ox run --no-cache` disables that shortcut and errors until the inputs
+are restored. A modified adopted output also requires its producer's inputs.
+An absent cache permits unrecorded manual files, while a corrupt or unreadable
+cache denies that fallback. CLI, MCP and the Rust API share these rules and check
+source existence and cache provenance relative to the Oxymakefile directory.
+
 ### Conditional guards
 
 Rules can apply only to certain wildcard values:

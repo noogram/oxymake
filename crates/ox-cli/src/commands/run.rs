@@ -22,7 +22,7 @@ use ox_core::job_graph::JobGraph;
 use ox_core::model::{
     ConcreteJob, ContentHash, Event, ExecutionBlock, GateId, JobId, OutputRef, RunReason,
 };
-use ox_core::resolver::{self, ResolveRequest};
+use ox_core::resolver::ResolveRequest;
 use ox_core::scheduler::{self, FailedJobDetail, SchedulerConfig};
 use ox_core::traits::benchmark::{self, BenchmarkSink};
 use ox_core::traits::cache::{CacheCheck, OutputHashes};
@@ -1088,8 +1088,8 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
         existing_files,
     };
 
-    let mut resolve_result =
-        resolver::resolve(&workflow.rules, &request).context("failed to resolve targets")?;
+    let mut resolve_result = common::resolve(&file_path, &workflow.rules, &request)
+        .context("failed to resolve targets")?;
 
     // Filter by --rule if specified.
     if let Some(rule_filter) = &args.rule {

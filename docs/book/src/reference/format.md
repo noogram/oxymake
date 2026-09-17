@@ -247,3 +247,27 @@ does.
 - [CLI Commands](./commands.md) -- how to run workflows
 - [Expression Language](./expressions.md) -- guard and expression syntax
 - [Configuration](./configuration.md) -- project-level settings
+
+## Existing wildcard outputs
+
+Output-pattern matches take precedence over disk existence when their inputs
+resolve. An existing hand-maintained file may remain a source when an input of
+its own producer is missing. Fixed inputs of wildcard producers (such as shared
+configuration) and missing sources deeper in the graph remain errors. Known
+cached outputs require resolvable inputs or verified adoption. Use
+`wildcard_constraints` to exclude hand-maintained names from rule ownership.
+See [Existing files and rule ownership](../concepts/rules-and-wildcards.md#existing-files-and-rule-ownership).
+
+Rust callers can use `ox_core::resolver::resolve_with_source_fallback` to supply
+an `&dyn Fn(&std::path::Path) -> bool` policy for that fallback. Returning `false`
+keeps a known generated output from becoming a source after missing-input
+resolution. `resolve` allows the fallback by default. Explicit
+`ResolveRequest::existing_files` are always leaves; other errors are propagated.
+
+`resolve_with_source_fallback_at` also accepts a filesystem base directory, keeping
+relative path checks independent of process cwd. CLI, MCP and `SessionBuilder`
+use `ox_api::resolution::discover_source_files` and `ox_api::resolution::resolve`
+to apply the same output filtering and cache-provenance policy relative to the
+Oxymakefile directory (`workflow_directory`). An absent cache is an empty store
+and permits unrecorded manual sources; a cache that cannot be opened denies
+fallback because provenance cannot be checked.
