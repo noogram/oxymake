@@ -65,7 +65,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - Ray native-DAG driver submissions now use an absolute path under the
   Oxymakefile's `.oxymake/runs/` directory, including with `ox run -f PATH`.
-  The Ray cluster must share that working directory with OxyMake (issue #30).
+  Paths are shell-quoted, including spaces, apostrophes and shell metacharacters,
+  and symlinks are resolved. Staging failures report the affected path and IO
+  error. The Ray cluster must share that working directory with OxyMake
+  (issue #30).
 - `ox run --executor slurm --follow` now persists terminal job state and
   accounting for `ox history`. Memory uses the maximum `sacct` MaxRSS across
   job steps, with allocation status retained. Zero or missing MaxRSS stays
