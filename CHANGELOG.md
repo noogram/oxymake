@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `ox run --resource-budget KEY=VALUE` now opts the local executor into
+  per-run resource admission. It accepts repeatable, comma-separated portable
+  resource capacities (for example `cpu=6,mem_gb=32`) without changing `-j` or
+  `--memory-budget`; Ray and SLURM reject the local-only flag (issue #25).
 - Ray DAG submission now checks each task's complete CPU, GPU and custom
   request against live node total capacity before submission. The Ray-only
   `--ray-allow-pending` flag allows waiting for future nodes. Inspection fails

@@ -23,6 +23,7 @@ Execute the workflow, ensuring requested outputs exist.
 ox run                          # Build default targets
 ox run results/report.html      # Build a specific target
 ox run -j 8                     # Parallel execution (8 jobs)
+ox run -j 8 --resource-budget cpu=6,mem_gb=32
 ox run --rule stats             # Only run jobs from a rule (exact or /regex/)
 ox run --json                   # Structured NDJSON output
 ox run --note "experiment v2"   # Annotate the run
@@ -31,6 +32,10 @@ ox run --no-cache               # Ignore the cache, re-run everything
 
 **Options:**
 - `-j N`, `--jobs N` -- Maximum concurrent jobs (default: 1)
+- `--resource-budget KEY=VALUE` -- Per-run local admission capacity; repeat
+  the flag or separate pairs with commas, for example `cpu=6,mem_gb=32`.
+  Uses the portable [resource aliases and units](format.md#resources), and is
+  only available with `--executor local`.
 - `--rule RULE` -- Only run jobs from this rule (exact name or `/regex/`)
 - `-k`, `--keep-going` -- Continue independent jobs after a failure
 - `-n`, `--dry-run` -- Show what would run without executing
@@ -45,6 +50,17 @@ ox run --no-cache               # Ignore the cache, re-run everything
   check and allow waiting for a future node. Resource values and names are
   still validated. Using this flag with another executor is a usage error. It
   can also be enabled with `ray_allow_pending = true` in a selected profile.
+
+`-j N` and `--resource-budget` control different limits. `-j N` limits the
+number of concurrently running jobs. `--resource-budget` limits the declared
+resources those admitted jobs may hold; it does not change the job count, so a
+rule with no resource declaration still uses one `-j` slot but reserves no
+resource tokens. `--memory-budget` is separate again: it controls how much
+completed output OxyMake keeps in memory, not whether a job may start.
+
+A resource budget belongs to one `ox run` process. Two concurrent runs each
+receive their configured capacity; OxyMake makes no host-wide capacity or
+cross-process resource-arbitration promise.
 
 Ray checks each active task's CPU (default 1), GPU and custom request against
 one live node's **total** capacity before submitting the DAG. Busy capable

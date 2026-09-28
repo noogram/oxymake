@@ -1,6 +1,6 @@
 //! Implementation of the `ox run` command.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
@@ -20,9 +20,11 @@ use ox_core::event::EventBus;
 use ox_core::hashing::{hash_kv_map, update_field, update_opt_field};
 use ox_core::job_graph::JobGraph;
 use ox_core::model::{
-    ConcreteJob, ContentHash, Event, ExecutionBlock, GateId, JobId, OutputRef, RunReason,
+    ConcreteJob, ContentHash, Event, ExecutionBlock, GateId, JobId, OutputRef, ResourceValue,
+    RunReason,
 };
 use ox_core::resolver::ResolveRequest;
+use ox_core::resource::{TOKEN_SCALE, TokenAmount, normalize_resources};
 use ox_core::scheduler::{self, FailedJobDetail, SchedulerConfig};
 use ox_core::traits::benchmark::{self, BenchmarkSink};
 use ox_core::traits::cache::{CacheCheck, OutputHashes};
@@ -94,6 +96,15 @@ pub struct RunArgs {
         value_parser = clap::builder::RangedU64ValueParser::<usize>::new().range(1..)
     )]
     pub jobs: usize,
+
+    /// Per-run local resource capacity for job admission (repeatable; comma-separated).
+    ///
+    /// Uses the portable resource names and units, for example
+    /// `--resource-budget cpu=6,mem_gb=32 --resource-budget metal=1`.
+    /// This limits resources held by admitted jobs; it does not detect host
+    /// capacity or coordinate with other `ox run` processes.
+    #[arg(long, value_name = "KEY=VALUE", value_delimiter = ',')]
+    pub resource_budget: Vec<String>,
 
     /// Filter by rule name (exact or /regex/)
     #[arg(long)]
@@ -1025,9 +1036,90 @@ fn validate_ray_flags(args: &RunArgs) -> Result<()> {
     Ok(())
 }
 
+fn validate_resource_budget_flags(args: &RunArgs) -> Result<()> {
+    if !args.resource_budget.is_empty() && args.executor != "local" {
+        return Err(clap::Error::raw(
+            clap::error::ErrorKind::ArgumentConflict,
+            "--resource-budget is only supported with --executor local; Ray and SLURM map rule resources to their own backends",
+        )
+        .into());
+    }
+    Ok(())
+}
+
+/// Parse CLI capacities through the same checked resource normalization used
+/// for rule declarations and executor adapters.
+///
+/// `SchedulerConfig` expresses token capacities as whole counts, while C0
+/// permits fractional *demands*. Memory has already been converted to bytes
+/// by the normalizer before it reaches the scheduler.
+fn parse_resource_budget(entries: &[String]) -> Result<BTreeMap<String, u64>> {
+    let mut raw = BTreeMap::new();
+    for entry in entries {
+        let (key, value) = entry.split_once('=').ok_or_else(|| {
+            anyhow::anyhow!("invalid --resource-budget entry {entry:?}: expected KEY=VALUE")
+        })?;
+        if key.is_empty() || value.is_empty() {
+            bail!("invalid --resource-budget entry {entry:?}: expected KEY=VALUE");
+        }
+        if raw
+            .insert(key.to_owned(), ResourceValue::Str(value.to_owned()))
+            .is_some()
+        {
+            bail!(
+                "invalid --resource-budget entry {entry:?}: resource {key:?} is declared more than once"
+            );
+        }
+    }
+
+    let normalized = normalize_resources(&raw).map_err(|error| {
+        let entry = match &error {
+            ox_core::resource::ResourceError::Duplicate { second_key, .. } => raw
+                .iter()
+                .find(|(key, _)| *key == second_key)
+                .map(|(key, value)| format!("{key}={value}")),
+            ox_core::resource::ResourceError::InvalidValue { key, .. } => raw
+                .get_key_value(key)
+                .map(|(key, value)| format!("{key}={value}")),
+            ox_core::resource::ResourceError::EmptyName => None,
+        };
+        match entry {
+            Some(entry) => anyhow::anyhow!("invalid --resource-budget entry {entry:?}: {error}"),
+            None => anyhow::anyhow!("invalid --resource-budget: {error}"),
+        }
+    })?;
+
+    let mut capacity = BTreeMap::new();
+    if let Some(cpu) = normalized.cpu {
+        capacity.insert("cpu".into(), whole_token_capacity("cpu", cpu)?);
+    }
+    if let Some(gpu) = normalized.gpu {
+        capacity.insert("gpu".into(), whole_token_capacity("gpu", gpu)?);
+    }
+    if let Some(memory_bytes) = normalized.memory_bytes {
+        capacity.insert("memory".into(), memory_bytes);
+    }
+    for (name, amount) in normalized.custom {
+        capacity.insert(
+            format!("custom:{name}"),
+            whole_token_capacity(&format!("custom:{name}"), amount)?,
+        );
+    }
+    Ok(capacity)
+}
+
+fn whole_token_capacity(resource: &str, amount: TokenAmount) -> Result<u64> {
+    let scaled = amount.ten_thousandths();
+    if scaled % TOKEN_SCALE != 0 {
+        bail!("resource budget capacity for {resource} must be a whole token");
+    }
+    Ok(scaled / TOKEN_SCALE)
+}
+
 pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
     if args.profile.is_none() {
         validate_ray_flags(&args)?;
+        validate_resource_budget_flags(&args)?;
     }
     let mut timer = PhaseTimer::new(args.timings);
     let file_path = PathBuf::from(&args.file);
@@ -1052,6 +1144,8 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
     }
 
     validate_ray_flags(&args)?;
+    validate_resource_budget_flags(&args)?;
+    let resource_budget = parse_resource_budget(&args.resource_budget)?;
 
     // Apply global config for open_dashboard (lowest precedence).
     if !args.open_dashboard {
@@ -1564,6 +1658,7 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
         skip_jobs,
         force_rerun,
         run_reasons,
+        resource_budget,
         memory_budget_bytes,
         critical_path_jobs,
         ..Default::default()
@@ -2870,5 +2965,43 @@ mod cache_key_tests {
                 .any(|(p, _)| p == &normalized_script),
             "script path must appear among provenance inputs"
         );
+    }
+}
+
+#[cfg(test)]
+mod resource_budget_tests {
+    use std::collections::BTreeMap;
+
+    use super::parse_resource_budget;
+
+    #[test]
+    fn resource_budget_uses_the_portable_alias_and_unit_contract() {
+        let from_gib = parse_resource_budget(&["mem_gb=1".into()]).unwrap();
+        let from_mib = parse_resource_budget(&["mem_mb=1024".into()]).unwrap();
+        let from_bytes = parse_resource_budget(&["memory=1GiB".into()]).unwrap();
+
+        let expected = BTreeMap::from([("memory".into(), 1_u64 << 30)]);
+        assert_eq!(from_gib, expected);
+        assert_eq!(from_mib, expected);
+        assert_eq!(from_bytes, expected);
+    }
+
+    #[test]
+    fn resource_budget_rejects_duplicate_aliases_across_flags() {
+        let err = parse_resource_budget(&["cpu=6".into(), "cpus=6".into()]).unwrap_err();
+        assert!(err.to_string().contains("cpu"));
+        assert!(err.to_string().contains("more than once"));
+    }
+
+    #[test]
+    fn resource_budget_names_the_malformed_entry() {
+        let err = parse_resource_budget(&["memory=1XB".into()]).unwrap_err();
+        assert!(err.to_string().contains("memory=1XB"));
+    }
+
+    #[test]
+    fn resource_budget_requires_whole_token_capacities() {
+        let err = parse_resource_budget(&["cpu=0.5".into()]).unwrap_err();
+        assert!(err.to_string().contains("whole token"));
     }
 }
