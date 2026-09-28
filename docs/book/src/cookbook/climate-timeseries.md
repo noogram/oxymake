@@ -307,8 +307,8 @@ Drill into a specific run:
 ox history --run-id run-a1b2c3
 ```
 
-This shows per-job wall time, peak memory, and exit codes -- useful for
-identifying bottlenecks as your network grows.
+This shows per-job wall time and exit codes -- useful for identifying
+bottlenecks as your network grows.
 
 ## Scaling the Network
 

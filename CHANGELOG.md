@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Local benchmark TSV files no longer publish per-job memory and CPU figures
+  derived from process-wide child counters. Those values could belong to other
+  concurrent or earlier jobs, so `max_rss` and `cpu_time` are now `-` until a
+  per-job measurement exists; measured `max_rss` values use MiB (issue #24).
+
 ## [0.5.0] - 2026-09-17
 
 Three cache and resolution defects found while using 0.4.0: a uv interpreter

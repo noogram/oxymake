@@ -4394,6 +4394,8 @@ mod tests {
 
         let fields: Vec<&str> = lines[1].split('\t').collect();
         assert_eq!(fields.len(), 4, "data row should have 4 columns");
+        assert_eq!(fields[2], "-", "unmeasured max_rss should stay absent");
+        assert_eq!(fields[3], "-", "unmeasured cpu_time should stay absent");
 
         // Wall-clock seconds should be parseable as f64.
         let _wall_secs: f64 = fields[0].parse().expect("wall secs should be a number");
