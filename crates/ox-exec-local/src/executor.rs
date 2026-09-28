@@ -1035,7 +1035,7 @@ impl Executor for LocalExecutor {
                             let dispatch_result = pool.dispatch(&env_key, &payload, timeout).await;
                             self.warm_running.lock().remove(job.id.as_str());
                             match dispatch_result {
-                                Ok(()) => {
+                                Ok(usage) => {
                                     // Completed before any cancel took effect —
                                     // drop a stale cancel marker if one raced in.
                                     self.warm_cancelled.lock().remove(job.id.as_str());
@@ -1043,14 +1043,12 @@ impl Executor for LocalExecutor {
                                     for temp in &mem_temp_files {
                                         let _ = tokio::fs::remove_file(temp).await;
                                     }
-                                    // A shared warm template cannot attribute RSS/CPU
-                                    // to one dispatch; only cold children use wait4.
                                     return Ok(JobResult {
                                         job_id: job.id.clone(),
                                         exit_code: 0,
                                         duration: dispatch_start.elapsed(),
-                                        peak_memory_bytes: None,
-                                        cpu_time: None,
+                                        peak_memory_bytes: usage.peak_memory_bytes,
+                                        cpu_time: usage.cpu_time,
                                         log_path: None,
                                         stderr_tail: None,
                                     });
@@ -1452,7 +1450,10 @@ mod tests {
             )
             .await;
         assert!(
-            matches!(result, Err(crate::worker_pool::WorkerError::PythonError(_))),
+            matches!(
+                result,
+                Err(crate::worker_pool::WorkerError::PythonError { .. })
+            ),
             "warm worker must be evicted after cancel, got: {result:?}"
         );
     }

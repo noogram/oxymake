@@ -374,8 +374,9 @@ pub enum WarmWorkerMode {
 /// The script imports all required libraries, registers codec readers/writers,
 /// then enters a dispatch loop. The `mode` parameter controls whether each
 /// dispatch forks a child (state isolation) or runs in-process (JIT persistence).
-/// Neither mode reports per-dispatch RSS or CPU: the shared template owns
-/// dispatch execution/reaping, outside the cold-launch `wait4` collector.
+/// Fork mode reports the child usage returned by `os.wait4`. Persistent mode
+/// reports no usage: one process serves every dispatch, so it has no honest
+/// per-dispatch RSS peak or independently attributable CPU interval.
 pub(crate) fn generate_warmup_script_with_mode(
     job: &ConcreteJob,
     mode: WarmWorkerMode,
@@ -598,15 +599,34 @@ fn generate_fork_dispatch_loop(script: &mut String) {
     writeln!(script, "        try:").unwrap();
     writeln!(script, "            data = os.read(r_fd, 4_000_000)").unwrap();
     writeln!(script, "            os.close(r_fd)").unwrap();
-    writeln!(script, "            os.waitpid(pid, 0)").unwrap();
     writeln!(
         script,
-        "            if data: sys.stdout.write(data.decode())"
+        "            _, wait_status, usage = os.wait4(pid, 0)"
+    )
+    .unwrap();
+    writeln!(script, "            if data:").unwrap();
+    writeln!(
+        script,
+        "                response = json.loads(data.decode())"
+    )
+    .unwrap();
+    writeln!(script, "            else:").unwrap();
+    writeln!(
+        script,
+        "                response = {{'status':'error','msg':'no output'}}"
+    )
+    .unwrap();
+    writeln!(script, "            if os.WIFSIGNALED(wait_status):").unwrap();
+    writeln!(script, "                response = {{'status':'error','msg':f'child killed by signal {{os.WTERMSIG(wait_status)}}'}}").unwrap();
+    writeln!(script, "            response['peak_rss'] = usage.ru_maxrss").unwrap();
+    writeln!(
+        script,
+        "            response['cpu_time_seconds'] = usage.ru_utime + usage.ru_stime"
     )
     .unwrap();
     writeln!(
         script,
-        "            else: sys.stdout.write('{{\"status\":\"error\",\"msg\":\"no output\"}}\\n')"
+        "            sys.stdout.write(json.dumps(response) + '\\n')"
     )
     .unwrap();
     writeln!(script, "        except Exception as e:").unwrap();

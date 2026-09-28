@@ -15,7 +15,8 @@ The fork-after-import pattern gives:
 Protocol (JSON-line on stdin/stdout):
   → {"status": "ready"}                          (worker → parent)
   ← {"cmd": "exec", "module": "...", ...}        (parent → worker)
-  → {"status": "ok"} | {"status": "error", ...}  (worker → parent)
+  → {"status": "ok", "peak_rss": ..., "cpu_time_seconds": ...}
+    or {"status": "error", ...}                    (worker → parent)
   ← {"cmd": "shutdown"}                          (parent → worker)
 """
 import importlib
@@ -135,22 +136,26 @@ for raw_line in sys.stdin:
         try:
             data = os.read(r_fd, 4_000_000)  # 4MB max response
             os.close(r_fd)
-            _, status = os.waitpid(pid, 0)
+            _, status, usage = os.wait4(pid, 0)
 
             if data:
-                sys.stdout.write(data.decode())
+                response = json.loads(data.decode())
             elif os.WIFSIGNALED(status):
                 sig = os.WTERMSIG(status)
-                sys.stdout.write(json.dumps({
+                response = {
                     "status": "error",
                     "msg": f"child killed by signal {sig}",
-                }) + "\n")
+                }
             else:
                 exit_code = os.WEXITSTATUS(status)
-                sys.stdout.write(json.dumps({
+                response = {
                     "status": "error",
                     "msg": f"child exited with code {exit_code} but no output",
-                }) + "\n")
+                }
+
+            response["peak_rss"] = usage.ru_maxrss
+            response["cpu_time_seconds"] = usage.ru_utime + usage.ru_stime
+            sys.stdout.write(json.dumps(response) + "\n")
         except Exception as e:
             sys.stdout.write(json.dumps({
                 "status": "error",

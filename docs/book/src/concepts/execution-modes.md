@@ -132,6 +132,18 @@ def train(features: pl.DataFrame, config: dict) -> Model:
 
 The input keys (`features`, `config`) map to function parameter names.
 
+### Warm workers and resource observations
+
+`ox run --warm-workers fork` retains an imported Python template but forks a
+new child for each `call` dispatch. The template reaps that child with
+`os.wait4`, so peak RSS and CPU time belong to that dispatch and can be written
+to its benchmark output; peak RSS also reaches job history on Linux and macOS.
+
+`ox run --warm-workers persistent` executes every dispatch inside one retained
+process. Its RSS is a high-water mark over the worker's whole lifetime, not a
+per-dispatch peak, and CPU intervals are not isolated. OxyMake therefore leaves
+both observations absent rather than reporting a delta or sample as job usage.
+
 ## When to Use Each Mode
 
 | Situation | Recommended mode |
