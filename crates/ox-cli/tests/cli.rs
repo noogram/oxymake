@@ -3015,6 +3015,72 @@ shell = "touch trivial.started; while [ ! -f allocated.ready ]; do sleep 0.01; d
     }
 }
 
+/// Fork-mode warm dispatch usage must cross both publication paths: benchmark
+/// TSV and the SQLite-backed history row. The second dispatch shares the same
+/// retained template but must not inherit the first child's allocation peak.
+#[test]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn warm_fork_usage_reaches_benchmark_and_job_history() {
+    let dir = TempDir::new().unwrap();
+    let base = dir.path();
+    fs::write(
+        base.join("warm_usage.py"),
+        r#"def allocate():
+    allocation = bytearray(64 * 1024 * 1024)
+    for offset in range(0, len(allocation), 4096):
+        allocation[offset] = 1
+    return {"size": len(allocation)}
+
+def trivial(previous):
+    return {"ok": len(previous) > 0}
+"#,
+    )
+    .unwrap();
+    fs::write(
+        base.join("Oxymakefile.toml"),
+        r#"ox_version = "0.1"
+
+[rule.allocate]
+output = ["allocated.json"]
+benchmark = "allocate.tsv"
+call = "warm_usage:allocate"
+
+[rule.trivial]
+input = [{ path = "allocated.json", name = "previous" }]
+output = ["trivial.json"]
+benchmark = "trivial.tsv"
+call = "warm_usage:trivial"
+"#,
+    )
+    .unwrap();
+
+    ox().args(["run", "trivial.json", "--warm-workers", "fork"])
+        .current_dir(base)
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("2 succeeded"));
+
+    let (allocated_rss, allocated_cpu) = local_benchmark_usage(&base.join("allocate.tsv"));
+    let (trivial_rss, trivial_cpu) = local_benchmark_usage(&base.join("trivial.tsv"));
+    assert!(allocated_cpu >= 0.0 && trivial_cpu >= 0.0);
+    assert!(
+        allocated_rss > trivial_rss + 32.0,
+        "warm child peaks were not dispatch-local: allocated={allocated_rss}, trivial={trivial_rss}"
+    );
+
+    let db = ox_state::db::StateDb::open(&base.join(".oxymake/state.db")).unwrap();
+    let run_id = db.list_runs().unwrap()[0].id.clone();
+    let rows = db.job_history_for_run(&run_id).unwrap();
+    for (rule, rss) in [("allocate", allocated_rss), ("trivial", trivial_rss)] {
+        let row = rows.iter().find(|row| row.rule_name == rule).unwrap();
+        let history_mib = row.peak_mem_mb.expect("warm fork history RSS");
+        assert!(
+            (history_mib as f64 - rss).abs() <= 1.01,
+            "history/TSV mismatch for {rule}: history={history_mib}, TSV={rss}"
+        );
+    }
+}
+
 /// Serial cold launches also publish measured RSS and CPU.
 #[test]
 #[cfg(any(target_os = "linux", target_os = "macos"))]

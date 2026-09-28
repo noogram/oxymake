@@ -24,7 +24,9 @@
 //! JSON-line over stdin/stdout:
 //! - Worker sends `{"status": "ready"}` after imports complete
 //! - Parent sends `{"cmd": "exec", "module": "...", ...}` for each dispatch
-//! - Worker sends `{"status": "ok"}` or `{"status": "error", "msg": "..."}`
+//! - Worker sends `{"status": "ok"}` or `{"status": "error", "msg": "..."}`;
+//!   fork mode may add `peak_rss` in platform `ru_maxrss` units and
+//!   `cpu_time_seconds`. Both fields are optional for protocol compatibility.
 //! - Parent sends `{"cmd": "shutdown"}` to terminate
 
 use std::collections::HashMap;
@@ -54,12 +56,30 @@ pub enum WorkerError {
     BadReady(String),
     #[error("dispatch timeout")]
     DispatchTimeout,
-    #[error("python error: {0}")]
-    PythonError(String),
+    #[error("python error: {message}")]
+    PythonError {
+        /// Error reported by the dispatch child or worker template.
+        message: String,
+        /// Usage returned by the child-owning template, when available.
+        usage: DispatchUsage,
+    },
     #[error("worker I/O error: {0}")]
     Io(std::io::Error),
     #[error("invalid response: {0}")]
     InvalidResponse(String),
+}
+
+/// Resource usage attributed to one warm dispatch.
+///
+/// Fork-mode templates report the child reaped for that dispatch. Persistent
+/// templates and older fork templates omit both fields. Missing or malformed
+/// protocol fields stay absent rather than becoming zero.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DispatchUsage {
+    /// Peak resident set size in bytes, when measured for the dispatch child.
+    pub peak_memory_bytes: Option<u64>,
+    /// User plus system CPU time, when measured for the dispatch child.
+    pub cpu_time: Option<Duration>,
 }
 
 /// Pool of warm Python workers, keyed by environment name.
@@ -174,19 +194,25 @@ impl WorkerPool {
         Ok(())
     }
 
-    /// Dispatch a job to a warm worker. Returns Ok(()) if the function
-    /// executed successfully, Err otherwise. On error, the worker may
+    /// Dispatch a job to a warm worker. Returns per-dispatch usage with a
+    /// successful fork-mode reply. Older templates and persistent mode return
+    /// absent usage. On error, the worker may
     /// be in an undefined state — the caller should fall back to cold spawn.
     pub async fn dispatch(
         &self,
         env_key: &str,
         payload: &serde_json::Value,
         timeout: Duration,
-    ) -> Result<(), WorkerError> {
+    ) -> Result<DispatchUsage, WorkerError> {
         let mut workers = self.workers.lock().await;
         let worker = match workers.get_mut(env_key) {
             Some(w) => w,
-            None => return Err(WorkerError::PythonError("no warm worker for env".into())),
+            None => {
+                return Err(WorkerError::PythonError {
+                    message: "no warm worker for env".into(),
+                    usage: DispatchUsage::default(),
+                });
+            }
         };
 
         // Send dispatch command.
@@ -210,14 +236,15 @@ impl WorkerPool {
             }
         };
 
+        let usage = dispatch_usage(&response);
         match response.get("status").and_then(|v| v.as_str()) {
-            Some("ok") => Ok(()),
+            Some("ok") => Ok(usage),
             Some("error") => {
-                let msg = response["msg"]
+                let message = response["msg"]
                     .as_str()
                     .unwrap_or("unknown error")
                     .to_string();
-                Err(WorkerError::PythonError(msg))
+                Err(WorkerError::PythonError { message, usage })
             }
             _ => Err(WorkerError::InvalidResponse(response.to_string())),
         }
@@ -249,6 +276,27 @@ impl WorkerPool {
             // Clean up script file.
             let _ = tokio::fs::remove_file(&worker.script_path).await;
         }
+    }
+}
+
+fn dispatch_usage(response: &serde_json::Value) -> DispatchUsage {
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    let peak_memory_bytes = response
+        .get("peak_rss")
+        .and_then(serde_json::Value::as_i64)
+        .and_then(|raw| crate::process::platform_rss_bytes(i128::from(raw)));
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    let peak_memory_bytes = None;
+
+    let cpu_time = response
+        .get("cpu_time_seconds")
+        .and_then(serde_json::Value::as_f64)
+        .filter(|seconds| seconds.is_finite() && *seconds >= 0.0)
+        .and_then(|seconds| Duration::try_from_secs_f64(seconds).ok());
+
+    DispatchUsage {
+        peak_memory_bytes,
+        cpu_time,
     }
 }
 

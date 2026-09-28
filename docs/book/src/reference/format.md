@@ -274,8 +274,20 @@ Failed and signalled children retain any measurements returned by `wait4` in
 their executor `JobResult`; scheduler publication rules still apply. A timed-out
 child is measured in the lower-level `ProcessResult`, but the executor returns
 a timeout error and drops that result, so no measurement reaches `JobResult`.
-Warm workers, including fork and persistent dispatch modes, and unsupported
-platforms leave RSS and CPU absent because dispatch attribution is unavailable.
+
+With `--warm-workers fork`, the retained Python template owns and reaps one
+child per dispatch using `os.wait4`. That child's RSS and CPU time use the same
+conversion and output paths as a cold child, so successive dispatches through
+one template do not inherit one another's peaks. The optional reply fields are
+backward compatible: an older template omits them and a newer binary records
+them as absent; an older binary ignores fields added by a newer template.
+Malformed or missing usage is absent, never zero.
+
+`--warm-workers persistent` remains unmeasured. One process executes every
+dispatch in-process, so its RSS high-water mark contains prior dispatches and
+its CPU cannot be separated without a quiescence contract. OxyMake does not
+publish a delta or sample as a per-dispatch figure. Unsupported platforms also
+leave RSS and CPU absent.
 
 ### Conditional Guards
 

@@ -48,12 +48,13 @@ pub struct ProcessResult {
     /// On Linux/macOS, `wait4` reports the high-water mark of this child and
     /// its already-reaped descendants, not a simultaneous process-tree total.
     /// Background or daemonised work can escape this observation. Other
-    /// platforms and warm-worker dispatches leave this absent.
+    /// platforms and persistent warm-worker dispatches leave this absent.
     pub peak_memory_bytes: Option<u64>,
     /// CPU time (user + system), if measured for this child.
     ///
     /// Taken from the same `wait4` result as RSS on Linux/macOS. Background
-    /// or daemonised work can escape it. Warm dispatches remain unmeasured.
+    /// or daemonised work can escape it. Persistent warm dispatches remain
+    /// unmeasured; fork-mode warm usage is collected by the owning template.
     pub cpu_time: Option<Duration>,
 }
 
@@ -387,6 +388,8 @@ struct ChildExit {
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use measured_child::ColdChild;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(crate) use measured_child::platform_rss_bytes;
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
 type ColdChild = tokio::process::Child;
 
@@ -565,13 +568,9 @@ mod measured_child {
         }
         // SAFETY: successful wait4 initialized the rusage output above.
         let usage = unsafe { usage.assume_init() };
-        #[cfg(target_os = "macos")]
-        let unit = RssUnit::Bytes;
-        #[cfg(target_os = "linux")]
-        let unit = RssUnit::Kibibytes;
         Ok(Some(ChildExit {
             status: std::process::ExitStatus::from_raw(status),
-            peak_memory_bytes: rss_bytes(usage.ru_maxrss, unit),
+            peak_memory_bytes: platform_rss_bytes(i128::from(usage.ru_maxrss)),
             cpu_time: timeval_duration(usage.ru_utime)
                 .and_then(|user| user.checked_add(timeval_duration(usage.ru_stime)?)),
         }))
@@ -592,6 +591,20 @@ mod measured_child {
             #[cfg(any(target_os = "linux", test))]
             RssUnit::Kibibytes => raw.checked_mul(1024),
         }
+    }
+
+    /// Convert this platform's `ru_maxrss` unit to bytes.
+    ///
+    /// Both the native cold-child collector and Python's `os.wait4` warm-fork
+    /// collector report the same platform-defined raw value, so they must pass
+    /// through this single conversion boundary.
+    pub(crate) fn platform_rss_bytes(raw: i128) -> Option<u64> {
+        let raw = libc::c_long::try_from(raw).ok()?;
+        #[cfg(target_os = "macos")]
+        let unit = RssUnit::Bytes;
+        #[cfg(target_os = "linux")]
+        let unit = RssUnit::Kibibytes;
+        rss_bytes(raw, unit)
     }
 
     fn timeval_duration(value: libc::timeval) -> Option<Duration> {
@@ -687,6 +700,11 @@ mod measured_child {
             assert_eq!(rss_bytes(-1, RssUnit::Kibibytes), None);
             #[cfg(target_pointer_width = "64")]
             assert_eq!(rss_bytes(libc::c_long::MAX, RssUnit::Kibibytes), None);
+
+            #[cfg(target_os = "macos")]
+            assert_eq!(platform_rss_bytes(65_536), Some(65_536));
+            #[cfg(target_os = "linux")]
+            assert_eq!(platform_rss_bytes(65_536), Some(67_108_864));
         }
 
         #[test]
