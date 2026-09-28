@@ -2,8 +2,7 @@
 //!
 //! This module provides [`spawn_shell`], which runs a shell command as an
 //! async child process, captures stdout/stderr to a log file, enforces an
-//! optional timeout, and returns the exit code, wall-clock duration, and
-//! resource usage (peak memory, CPU time) via `getrusage(RUSAGE_CHILDREN)`.
+//! optional timeout, and returns the exit code and wall-clock duration.
 
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -39,54 +38,16 @@ pub struct ProcessResult {
     pub duration: Duration,
     /// Whether the process was killed because it exceeded its timeout.
     pub killed_by_timeout: bool,
-    /// Peak resident set size in bytes (from `getrusage`, if available).
+    /// Peak resident set size in bytes, if measured for this child.
+    ///
+    /// The local executor does not currently have a per-child measurement,
+    /// so cold launches leave this absent.
     pub peak_memory_bytes: Option<u64>,
-    /// CPU time (user + system) from `getrusage`, if available.
+    /// CPU time (user + system), if measured for this child.
+    ///
+    /// The local executor does not currently have a per-child measurement,
+    /// so cold launches leave this absent.
     pub cpu_time: Option<Duration>,
-}
-
-/// Snapshot of `getrusage(RUSAGE_CHILDREN)` relevant fields.
-#[cfg(unix)]
-struct RusageSnapshot {
-    user_time: Duration,
-    system_time: Duration,
-    max_rss_bytes: u64,
-}
-
-/// Read current `RUSAGE_CHILDREN` stats.
-///
-/// Returns `None` if the syscall fails (non-Unix platforms).
-#[cfg(unix)]
-fn snapshot_rusage_children() -> Option<RusageSnapshot> {
-    use std::mem::MaybeUninit;
-    let mut usage = MaybeUninit::<libc::rusage>::uninit();
-    let ret = unsafe { libc::getrusage(libc::RUSAGE_CHILDREN, usage.as_mut_ptr()) };
-    if ret != 0 {
-        return None;
-    }
-    let usage = unsafe { usage.assume_init() };
-
-    let user_time = Duration::new(
-        usage.ru_utime.tv_sec as u64,
-        usage.ru_utime.tv_usec as u32 * 1000,
-    );
-    let system_time = Duration::new(
-        usage.ru_stime.tv_sec as u64,
-        usage.ru_stime.tv_usec as u32 * 1000,
-    );
-
-    // On macOS, ru_maxrss is in bytes. On Linux, it's in kilobytes.
-    let max_rss_bytes = if cfg!(target_os = "macos") {
-        usage.ru_maxrss as u64
-    } else {
-        usage.ru_maxrss as u64 * 1024
-    };
-
-    Some(RusageSnapshot {
-        user_time,
-        system_time,
-        max_rss_bytes,
-    })
 }
 
 /// Arrange for the child to inherit `fds` across `exec`.
@@ -183,10 +144,6 @@ pub async fn spawn_shell_with_callback(
     on_spawn: impl FnOnce(u32),
 ) -> Result<ProcessResult, ExecLocalError> {
     let start = Instant::now();
-
-    // Snapshot RUSAGE_CHILDREN before spawning so we can compute the delta.
-    #[cfg(unix)]
-    let before = snapshot_rusage_children();
 
     let mut cmd = Command::new(shell);
     cmd.arg("-c")
@@ -308,41 +265,12 @@ pub async fn spawn_shell_with_callback(
         .code()
         .unwrap_or(if killed_by_timeout { 137 } else { -1 });
 
-    // Compute resource usage delta from RUSAGE_CHILDREN snapshots.
-    #[cfg(unix)]
-    let (peak_memory_bytes, cpu_time) = {
-        let after = snapshot_rusage_children();
-        match (before, after) {
-            (Some(b), Some(a)) => {
-                let cpu = (a.user_time + a.system_time).checked_sub(b.user_time + b.system_time);
-                // max_rss is a high-water mark, not cumulative — the delta
-                // approach doesn't work for it. Instead, if the after-snapshot
-                // is larger than the before-snapshot, the child raised the
-                // high-water mark and the difference is a lower bound on its
-                // peak RSS. Otherwise, we report the raw after value as a
-                // best-effort estimate (it may include prior children).
-                let peak = if a.max_rss_bytes > b.max_rss_bytes {
-                    Some(a.max_rss_bytes - b.max_rss_bytes)
-                } else {
-                    // Cannot isolate this child's contribution; report raw
-                    // after value as upper bound.
-                    Some(a.max_rss_bytes)
-                };
-                (peak, cpu)
-            }
-            _ => (None, None),
-        }
-    };
-
-    #[cfg(not(unix))]
-    let (peak_memory_bytes, cpu_time) = (None, None);
-
     Ok(ProcessResult {
         exit_code,
         duration,
         killed_by_timeout,
-        peak_memory_bytes,
-        cpu_time,
+        peak_memory_bytes: None,
+        cpu_time: None,
     })
 }
 
@@ -365,9 +293,6 @@ pub async fn spawn_shell_streaming(
     output_tx: mpsc::UnboundedSender<OutputLine>,
 ) -> Result<ProcessResult, ExecLocalError> {
     let start = Instant::now();
-
-    #[cfg(unix)]
-    let before = snapshot_rusage_children();
 
     let mut cmd = Command::new(shell);
     cmd.arg("-c")
@@ -491,31 +416,11 @@ pub async fn spawn_shell_streaming(
         .code()
         .unwrap_or(if killed_by_timeout { 137 } else { -1 });
 
-    #[cfg(unix)]
-    let (peak_memory_bytes, cpu_time) = {
-        let after = snapshot_rusage_children();
-        match (before, after) {
-            (Some(b), Some(a)) => {
-                let cpu = (a.user_time + a.system_time).checked_sub(b.user_time + b.system_time);
-                let peak = if a.max_rss_bytes > b.max_rss_bytes {
-                    Some(a.max_rss_bytes - b.max_rss_bytes)
-                } else {
-                    Some(a.max_rss_bytes)
-                };
-                (peak, cpu)
-            }
-            _ => (None, None),
-        }
-    };
-
-    #[cfg(not(unix))]
-    let (peak_memory_bytes, cpu_time) = (None, None);
-
     Ok(ProcessResult {
         exit_code,
         duration,
         killed_by_timeout,
-        peak_memory_bytes,
-        cpu_time,
+        peak_memory_bytes: None,
+        cpu_time: None,
     })
 }

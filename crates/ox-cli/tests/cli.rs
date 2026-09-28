@@ -16,6 +16,23 @@ fn ox() -> Command {
     Command::cargo_bin("oxymake").expect("binary should exist")
 }
 
+#[cfg(unix)]
+fn assert_local_benchmark_is_unmeasured(path: &std::path::Path) {
+    let contents = fs::read_to_string(path).expect("benchmark file should be readable");
+    let lines: Vec<&str> = contents.lines().collect();
+    assert_eq!(
+        lines.len(),
+        2,
+        "benchmark should contain a header and one row"
+    );
+    assert_eq!(lines[0], "s\th:m:s\tmax_rss\tcpu_time");
+
+    let fields: Vec<&str> = lines[1].split('\t').collect();
+    assert_eq!(fields.len(), 4, "benchmark row should keep four columns");
+    assert_eq!(fields[2], "-", "local max_rss must be unmeasured");
+    assert_eq!(fields[3], "-", "local cpu_time must be unmeasured");
+}
+
 // ---------------------------------------------------------------------------
 // Help and version
 // ---------------------------------------------------------------------------
@@ -2905,6 +2922,72 @@ shell = "echo d > d.txt"
         .assert()
         .success()
         .stdout(predicates::str::contains("4 succeeded"));
+}
+
+/// Process-wide child counters must not let an allocating job lend resource
+/// figures to a trivial neighbour running in the same `-j 2` window.
+#[test]
+#[cfg(unix)]
+fn concurrent_local_benchmarks_leave_resource_columns_unmeasured() {
+    let dir = TempDir::new().unwrap();
+    let base = dir.path();
+
+    fs::write(
+        base.join("Oxymakefile.toml"),
+        r#"ox_version = "0.1"
+
+[rule.all]
+input = ["allocated.txt", "trivial.txt"]
+
+[rule.allocate]
+output = ["allocated.txt"]
+benchmark = "allocate.tsv"
+shell = "while [ ! -f trivial.started ]; do sleep 0.01; done; python3 -c 'import time; x = bytearray(64 * 1024 * 1024); open(\"allocated.ready\", \"w\").close(); time.sleep(0.2); open(\"allocated.txt\", \"w\").write(\"allocated\")'"
+
+[rule.trivial]
+output = ["trivial.txt"]
+benchmark = "trivial.tsv"
+shell = "touch trivial.started; while [ ! -f allocated.ready ]; do sleep 0.01; done; sleep 0.3; printf trivial > trivial.txt"
+"#,
+    )
+    .unwrap();
+
+    ox().args(["run", "-j", "2"])
+        .current_dir(base)
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("2 succeeded"));
+
+    assert_local_benchmark_is_unmeasured(&base.join("trivial.tsv"));
+}
+
+/// Serial execution stays unmeasured too: `RUSAGE_CHILDREN::ru_maxrss` can
+/// retain a high-water mark from earlier children in the same process.
+#[test]
+#[cfg(unix)]
+fn serial_local_benchmark_leaves_resource_columns_unmeasured() {
+    let dir = TempDir::new().unwrap();
+    let base = dir.path();
+
+    fs::write(
+        base.join("Oxymakefile.toml"),
+        r#"ox_version = "0.1"
+
+[rule.serial]
+output = ["serial.txt"]
+benchmark = "serial.tsv"
+shell = "printf serial > serial.txt"
+"#,
+    )
+    .unwrap();
+
+    ox().args(["run", "-j", "1"])
+        .current_dir(base)
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("1 succeeded"));
+
+    assert_local_benchmark_is_unmeasured(&base.join("serial.tsv"));
 }
 
 // ---------------------------------------------------------------------------
