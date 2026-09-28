@@ -153,3 +153,19 @@ fn fractional_gpu_is_valid_in_the_shared_normal_form() {
     let normalized = normalize(&[("gpu", ResourceValue::Float(OrderedFloat(0.5)))]).unwrap();
     assert_eq!(normalized.gpu.unwrap().ten_thousandths(), 5_000);
 }
+
+#[test]
+fn a_broken_exponent_reads_as_malformed_not_as_overflow() {
+    // "1e" has no exponent digits: the value is unreadable, not too large.
+    // The distinction is what the user is told to fix.
+    let declarations = [("memory", ResourceValue::Str("1e".into()))];
+    let rendered = normalize(&declarations).unwrap_err().to_string();
+    assert!(
+        rendered.contains("malformed"),
+        "expected a malformed-value diagnostic, got: {rendered}"
+    );
+    assert!(
+        !rendered.contains("overflow"),
+        "a broken exponent must not be reported as an overflow: {rendered}"
+    );
+}

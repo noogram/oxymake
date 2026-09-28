@@ -306,8 +306,14 @@ fn parse_decimal(input: &str) -> Result<Decimal, ResourceValueErrorKind> {
     let exponent = exponent_parts
         .next()
         .map(|part| {
-            part.parse::<i32>()
-                .map_err(|_| ResourceValueErrorKind::Overflow)
+            // An exponent that does not parse is a malformed value ("1e"),
+            // not a value too large to represent.
+            part.parse::<i32>().map_err(|error| match error.kind() {
+                std::num::IntErrorKind::PosOverflow | std::num::IntErrorKind::NegOverflow => {
+                    ResourceValueErrorKind::Overflow
+                }
+                _ => ResourceValueErrorKind::Malformed,
+            })
         })
         .transpose()?
         .unwrap_or(0);

@@ -33,6 +33,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and job declarations, serialization, and cache keys are unchanged (issue
   #25).
 
+### Changed
+- **A resource declaration that Ray cannot honour is now an error instead of a
+  silent reinterpretation** (issue #25). Under `--executor ray`, these used to
+  run and now stop the run: two spellings of one resource (`cpu` and `cpus`
+  together, even with equal values — previously last-one-wins), a malformed
+  memory value (`memory = "1XB"` previously became 1 byte), a negative or
+  fractional byte count, and `gpu` above 1 with a fraction (`gpu = 1.5`),
+  which Ray itself does not accept. `mem_mb` and `mem_gb` now mean memory
+  rather than a custom resource of that name. Local and SLURM runs are
+  unaffected by this step. Fix the declaration, or name a genuine custom
+  token explicitly with `custom:`.
+
 ## [0.5.0] - 2026-09-17
 
 Three cache and resolution defects found while using 0.4.0: a uv interpreter
