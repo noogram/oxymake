@@ -787,8 +787,11 @@ async fn spawn_shell_success() {
 
     assert_eq!(result.exit_code, 0);
     assert!(!result.killed_by_timeout);
-    assert!(result.peak_memory_bytes.is_none());
-    assert!(result.cpu_time.is_none());
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    {
+        assert!(result.peak_memory_bytes.unwrap() > 0);
+        assert!(result.cpu_time.is_some());
+    }
 
     let contents = std::fs::read_to_string(&log_path).unwrap();
     assert!(contents.contains("direct-spawn"));
@@ -1593,5 +1596,40 @@ async fn resource_budget_rejects_before_output_deletion_or_subprocess() {
         assert!(!dir.path().join("sibling-started").exists());
         assert!(!ctx.log_dir.exists());
         assert!(events.try_recv().is_err());
+    }
+}
+
+/// A warm template serves multiple dispatches: none gets template-wide usage.
+#[tokio::test]
+#[serial]
+async fn warm_dispatch_keeps_usage_unavailable() {
+    use ox_exec_local::call_mode::WarmWorkerMode;
+    use ox_exec_local::worker_pool::WorkerPool;
+    use std::sync::Arc;
+
+    for mode in [WarmWorkerMode::Fork, WarmWorkerMode::Persistent] {
+        let tmp = tempfile::tempdir().unwrap();
+        let pool = Arc::new(WorkerPool::new_with_mode(tmp.path().to_path_buf(), mode));
+        let exec = LocalExecutor::new().with_worker_pool(Arc::clone(&pool));
+        let mut ctx = test_ctx(tmp.path());
+        ctx.project_dir = tmp.path().to_path_buf();
+        let mut job = shell_job("warm-usage", "unused");
+        job.execution = ExecutionBlock::Call {
+            function: "builtins:print".into(),
+            lang: "python".into(),
+        };
+        job.timeout = Some(Duration::from_secs(5));
+        for _ in 0..2 {
+            let ws = exec.prepare_workspace(&job, &ctx).await.unwrap();
+            let result = exec.execute(&job, &ws, &ctx).await.unwrap();
+            assert_eq!(result.exit_code, 0);
+            assert!(
+                result.log_path.is_none(),
+                "must use warm path, not cold fallback"
+            );
+            assert!(result.peak_memory_bytes.is_none());
+            assert!(result.cpu_time.is_none());
+        }
+        pool.shutdown().await;
     }
 }

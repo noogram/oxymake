@@ -240,9 +240,15 @@ rounds up to 1 in history.
 
 `ox run --executor slurm --follow` records the maximum `sacct` MaxRSS across
 that job's steps (`.batch`, `.0`, etc.), retaining allocation status. Zero,
-missing accounting, and squeue fallback leave memory `null`. The local and
-SLURM REST backends currently report no peak-memory observation. Submission
-without `--follow` does not collect this accounting.
+missing accounting, and squeue fallback leave memory `null`. SLURM REST
+currently reports no peak-memory observation. Submission without `--follow`
+does not collect this accounting.
+
+Local cold launches on Linux and macOS record the child's `wait4` RSS in
+history, rounded up to MiB. This includes already-reaped descendants but
+is not a simultaneous process-tree total; background or daemonised work can
+escape it. Local warm-worker dispatches remain `null`. CPU time is measured
+for cold children too, but appears only in benchmark TSV, not history.
 
 The figure belongs to the attempt that finished the job; earlier failed
 attempts are not accumulated. Failures and cancellations leave memory `null`.

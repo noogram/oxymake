@@ -1043,6 +1043,8 @@ impl Executor for LocalExecutor {
                                     for temp in &mem_temp_files {
                                         let _ = tokio::fs::remove_file(temp).await;
                                     }
+                                    // A shared warm template cannot attribute RSS/CPU
+                                    // to one dispatch; only cold children use wait4.
                                     return Ok(JobResult {
                                         job_id: job.id.clone(),
                                         exit_code: 0,
