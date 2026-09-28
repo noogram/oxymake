@@ -19,7 +19,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Local `--warm-workers fork` dispatches now record the forked child's peak RSS
   and user + system CPU time from the template's `os.wait4`, publishing them to
   benchmark TSV and peak RSS to history. Two dispatches through one retained
-  template remain separately attributed. `--warm-workers persistent` stays
+  template remain separately attributed, but each child's RSS high-water mark
+  includes the warm template footprint inherited at fork. Only the memory above
+  that baseline was added by the dispatch; a large NumPy or PyTorch import can
+  dominate a small dispatch's reported peak. `--warm-workers persistent` stays
   unmeasured because one process serves every dispatch and has no per-dispatch
   RSS peak or independently attributable CPU interval (issue #24).
 - `ox-exec-slurm`: the unstable `SlurmExecutor::poll_status_with_record` API
@@ -50,6 +53,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   memory reservations (issue #25).
 
 ### Changed
+- `ox-exec-local`'s unstable `WorkerPool::dispatch` Rust API now returns the new
+  public `DispatchUsage` struct instead of `()`, and
+  `WorkerError::PythonError(String)` is now the struct variant
+  `PythonError { message }`. Successful fork dispatches expose optional child
+  peak RSS and CPU time; callers must continue treating absent values as
+  unmeasured (issue #24).
 - `ox-state`: `StateDb::finalize_job_history` and the unstable `StateBackend`
   method now accept a per-job peak-memory byte map (issue #24).
 - **A resource declaration that Ray cannot honour is now an error instead of a

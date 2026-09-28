@@ -153,7 +153,7 @@ async fn dispatch_on_unknown_env_returns_error_not_hang() {
 
     assert!(
         matches!(result, Err(WorkerError::PythonError { .. })),
-        "expected PythonError(\"no warm worker\"), got: {result:?}"
+        "expected PythonError for missing warm worker, got: {result:?}"
     );
 }
 
@@ -232,52 +232,6 @@ done
         .unwrap();
     assert_eq!(usage.peak_memory_bytes, None);
     assert_eq!(usage.cpu_time, None);
-    pool.shutdown().await;
-}
-
-/// A failed child reply retains any wait4 usage fields the template managed
-/// to collect. A transport failure or killed template may instead have none.
-#[tokio::test]
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-async fn failed_dispatch_reply_preserves_measured_usage() {
-    let dir = TempDir::new().unwrap();
-    let work_dir = dir.path().to_path_buf();
-    let script = "\
-#!/bin/sh
-printf '{\"status\":\"ready\"}\\n'
-while read -r payload; do
-  case \"$payload\" in *shutdown*) exit 0 ;; esac
-  printf '{\"status\":\"error\",\"msg\":\"failed\",\"peak_rss\":64,\"cpu_time_seconds\":0.25}\\n'
-done
-";
-    let script_path = write_executable_script(&work_dir, "failed_worker.sh", script);
-    let dummy = work_dir.join("unused.sh");
-    let argv = vec![
-        "/bin/sh".to_string(),
-        script_path,
-        dummy.to_string_lossy().into_owned(),
-    ];
-    let pool = WorkerPool::new(work_dir);
-    pool.ensure_warm("failed", &argv, "# unused\n")
-        .await
-        .unwrap();
-
-    let error = pool
-        .dispatch(
-            "failed",
-            &serde_json::json!({"cmd": "exec"}),
-            Duration::from_secs(1),
-        )
-        .await
-        .unwrap_err();
-    let WorkerError::PythonError { usage, .. } = error else {
-        panic!("expected PythonError, got {error:?}");
-    };
-    #[cfg(target_os = "macos")]
-    assert_eq!(usage.peak_memory_bytes, Some(64));
-    #[cfg(target_os = "linux")]
-    assert_eq!(usage.peak_memory_bytes, Some(64 * 1024));
-    assert_eq!(usage.cpu_time, Some(Duration::from_millis(250)));
     pool.shutdown().await;
 }
 

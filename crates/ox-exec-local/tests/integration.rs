@@ -1635,8 +1635,9 @@ async fn persistent_warm_dispatch_has_no_per_dispatch_peak_to_report() {
     pool.shutdown().await;
 }
 
-/// Fork dispatches are separate children of one retained template. Each result
-/// must describe its own child rather than inheriting the template's prior peak.
+/// Fork dispatches are separate children of one retained template. In both
+/// execution orders, the larger dispatch must add to the inherited template
+/// baseline without contaminating the neighbouring trivial dispatch.
 #[tokio::test]
 #[serial]
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -1697,23 +1698,56 @@ def sleeping(seconds):
         job
     };
 
+    let trivial_before_job = run("warm-trivial-before", "trivial", &[]);
+    let trivial_before_ws = exec
+        .prepare_workspace(&trivial_before_job, &ctx)
+        .await
+        .unwrap();
+    let trivial_before = exec
+        .execute(&trivial_before_job, &trivial_before_ws, &ctx)
+        .await
+        .unwrap();
     let allocated_job = run("warm-allocate", "allocate", &[("megabytes", "64")]);
     let allocated_ws = exec.prepare_workspace(&allocated_job, &ctx).await.unwrap();
     let allocated = exec
         .execute(&allocated_job, &allocated_ws, &ctx)
         .await
         .unwrap();
-    let trivial_job = run("warm-trivial", "trivial", &[]);
-    let trivial_ws = exec.prepare_workspace(&trivial_job, &ctx).await.unwrap();
-    let trivial = exec.execute(&trivial_job, &trivial_ws, &ctx).await.unwrap();
+    let trivial_after_job = run("warm-trivial-after", "trivial", &[]);
+    let trivial_after_ws = exec
+        .prepare_workspace(&trivial_after_job, &ctx)
+        .await
+        .unwrap();
+    let trivial_after = exec
+        .execute(&trivial_after_job, &trivial_after_ws, &ctx)
+        .await
+        .unwrap();
 
-    assert!(allocated.log_path.is_none() && trivial.log_path.is_none());
-    let allocated_rss = allocated.peak_memory_bytes.expect("allocated child RSS");
-    let trivial_rss = trivial.peak_memory_bytes.expect("trivial child RSS");
     assert!(
-        allocated_rss > trivial_rss + 32 * 1024 * 1024,
-        "trivial dispatch inherited allocator peak: allocated={allocated_rss}, trivial={trivial_rss}"
+        trivial_before.log_path.is_none()
+            && allocated.log_path.is_none()
+            && trivial_after.log_path.is_none()
     );
+    let allocated_rss = allocated.peak_memory_bytes.expect("allocated child RSS");
+    for (order, trivial_rss) in [
+        (
+            "trivial-then-allocate",
+            trivial_before
+                .peak_memory_bytes
+                .expect("leading trivial child RSS"),
+        ),
+        (
+            "allocate-then-trivial",
+            trivial_after
+                .peak_memory_bytes
+                .expect("trailing trivial child RSS"),
+        ),
+    ] {
+        assert!(
+            allocated_rss > trivial_rss + 32 * 1024 * 1024,
+            "{order} attribution failed: allocated={allocated_rss}, trivial={trivial_rss}"
+        );
+    }
 
     let busy_job = run("warm-busy", "busy", &[("seconds", "0.3")]);
     let busy_ws = exec.prepare_workspace(&busy_job, &ctx).await.unwrap();

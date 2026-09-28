@@ -305,6 +305,14 @@ SLURM's `SlurmExecutor::poll_status_with_record` is an **unstable** Rust API.
 It returns allocation status with optional accounting from the same poll;
 squeue fallback has no record. The CLI follow loop uses it to persist history.
 
+The public `ox_exec_local::worker_pool` Rust API is **unstable**.
+`WorkerPool::dispatch` returns `DispatchUsage` rather than `()`, and
+`WorkerError::PythonError` is a struct variant with a named `message` field.
+Successful fork dispatches may report child peak RSS and CPU time; the RSS
+high-water mark includes the warm template footprint inherited at fork.
+Persistent dispatches and missing or malformed protocol fields leave usage
+absent.
+
 Ray's `RayConfig::allow_pending`, driver log API and `RayError::StagingIo`
 staging diagnostic, and the state queries
 for remote submissions, cancellable jobs and current run membership are

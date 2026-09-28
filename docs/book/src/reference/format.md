@@ -278,10 +278,15 @@ a timeout error and drops that result, so no measurement reaches `JobResult`.
 With `--warm-workers fork`, the retained Python template owns and reaps one
 child per dispatch using `os.wait4`. That child's RSS and CPU time use the same
 conversion and output paths as a cold child, so successive dispatches through
-one template do not inherit one another's peaks. The optional reply fields are
-backward compatible: an older template omits them and a newer binary records
-them as absent; an older binary ignores fields added by a newer template.
-Malformed or missing usage is absent, never zero.
+one template do not inherit one another's dispatch-added peaks. The RSS figure
+is nevertheless the child's high-water mark and starts with the template's
+resident footprint inherited at fork. Only memory above that warm baseline was
+added by the dispatch; the reported total is not the memory the dispatch would
+need by itself. A NumPy- or PyTorch-heavy template can therefore dominate the
+reported peak for a small dispatch. CPU time is local to the child. The
+optional reply fields are backward compatible: an older template omits them
+and a newer binary records them as absent; an older binary ignores fields added
+by a newer template. Malformed or missing usage is absent, never zero.
 
 `--warm-workers persistent` remains unmeasured. One process executes every
 dispatch in-process, so its RSS high-water mark contains prior dispatches and
