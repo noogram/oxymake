@@ -60,8 +60,6 @@ pub enum WorkerError {
     PythonError {
         /// Error reported by the dispatch child or worker template.
         message: String,
-        /// Usage returned by the child-owning template, when available.
-        usage: DispatchUsage,
     },
     #[error("worker I/O error: {0}")]
     Io(std::io::Error),
@@ -69,14 +67,16 @@ pub enum WorkerError {
     InvalidResponse(String),
 }
 
-/// Resource usage attributed to one warm dispatch.
+/// Resource usage observed for one warm dispatch.
 ///
-/// Fork-mode templates report the child reaped for that dispatch. Persistent
-/// templates and older fork templates omit both fields. Missing or malformed
-/// protocol fields stay absent rather than becoming zero.
+/// Fork-mode templates report the child reaped for that dispatch. Its peak RSS
+/// includes the warm template footprint inherited at fork, while its CPU time
+/// is local to the child. Persistent templates and older fork templates omit
+/// both fields. Missing or malformed protocol fields stay absent rather than
+/// becoming zero.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct DispatchUsage {
-    /// Peak resident set size in bytes, when measured for the dispatch child.
+    /// Child peak RSS in bytes, including the inherited template baseline.
     pub peak_memory_bytes: Option<u64>,
     /// User plus system CPU time, when measured for the dispatch child.
     pub cpu_time: Option<Duration>,
@@ -210,7 +210,6 @@ impl WorkerPool {
             None => {
                 return Err(WorkerError::PythonError {
                     message: "no warm worker for env".into(),
-                    usage: DispatchUsage::default(),
                 });
             }
         };
@@ -236,15 +235,14 @@ impl WorkerPool {
             }
         };
 
-        let usage = dispatch_usage(&response);
         match response.get("status").and_then(|v| v.as_str()) {
-            Some("ok") => Ok(usage),
+            Some("ok") => Ok(dispatch_usage(&response)),
             Some("error") => {
                 let message = response["msg"]
                     .as_str()
                     .unwrap_or("unknown error")
                     .to_string();
-                Err(WorkerError::PythonError { message, usage })
+                Err(WorkerError::PythonError { message })
             }
             _ => Err(WorkerError::InvalidResponse(response.to_string())),
         }

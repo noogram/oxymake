@@ -136,8 +136,14 @@ The input keys (`features`, `config`) map to function parameter names.
 
 `ox run --warm-workers fork` retains an imported Python template but forks a
 new child for each `call` dispatch. The template reaps that child with
-`os.wait4`, so peak RSS and CPU time belong to that dispatch and can be written
-to its benchmark output; peak RSS also reaches job history on Linux and macOS.
+`os.wait4`, so the child's peak RSS and CPU time can be written to that
+dispatch's benchmark output; peak RSS also reaches job history on Linux and
+macOS. CPU time is local to the child. Peak RSS is the child's high-water mark,
+but it starts with the warm template footprint inherited at fork. Only memory
+above that baseline was added by this dispatch; the reported total is not the
+memory the dispatch would need by itself. For a template that has imported a
+large library such as NumPy or PyTorch, that baseline can dominate a small
+dispatch's reported peak.
 
 `ox run --warm-workers persistent` executes every dispatch inside one retained
 process. Its RSS is a high-water mark over the worker's whole lifetime, not a
