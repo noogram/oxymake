@@ -307,8 +307,12 @@ Drill into a specific run:
 ox history --run-id run-a1b2c3
 ```
 
-This shows per-job wall time and exit codes -- useful for identifying
-bottlenecks as your network grows.
+This shows per-job wall time and exit codes, plus peak RSS in MiB for local
+cold launches on Linux/macOS and SLURM CLI runs with `--follow`. Local RSS
+covers the child and already-reaped descendants; background or daemonised
+work can escape it. Warm-worker dispatches remain unmeasured. See the
+[benchmark reference](../reference/format.md) for CPU time and
+measurement scope.
 
 ## Scaling the Network
 
