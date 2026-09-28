@@ -1,6 +1,6 @@
 //! Implementation of the `ox run` command.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
@@ -20,9 +20,11 @@ use ox_core::event::EventBus;
 use ox_core::hashing::{hash_kv_map, update_field, update_opt_field};
 use ox_core::job_graph::JobGraph;
 use ox_core::model::{
-    ConcreteJob, ContentHash, Event, ExecutionBlock, GateId, JobId, OutputRef, RunReason,
+    ConcreteJob, ContentHash, Event, ExecutionBlock, GateId, JobId, OutputRef, ResourceValue,
+    RunReason,
 };
 use ox_core::resolver::ResolveRequest;
+use ox_core::resource::{TOKEN_SCALE, TokenAmount, normalize_resources};
 use ox_core::scheduler::{self, FailedJobDetail, SchedulerConfig};
 use ox_core::traits::benchmark::{self, BenchmarkSink};
 use ox_core::traits::cache::{CacheCheck, OutputHashes};
@@ -95,6 +97,15 @@ pub struct RunArgs {
     )]
     pub jobs: usize,
 
+    /// Per-run local resource capacity for job admission (repeatable; comma-separated).
+    ///
+    /// Uses the portable resource names and units, for example
+    /// `--resource-budget cpu=6,mem_gb=32 --resource-budget metal=1`.
+    /// This limits resources held by admitted jobs; it does not detect host
+    /// capacity or coordinate with other `ox run` processes.
+    #[arg(long, value_name = "KEY=VALUE", value_delimiter = ',')]
+    pub resource_budget: Vec<String>,
+
     /// Filter by rule name (exact or /regex/)
     #[arg(long)]
     pub rule: Option<String>,
@@ -149,6 +160,10 @@ pub struct RunArgs {
     /// Ray dashboard address (only with --executor ray, default: http://127.0.0.1:8265)
     #[arg(long)]
     pub ray_address: Option<String>,
+
+    /// Allow Ray tasks to wait for nodes with missing capacity (Ray only)
+    #[arg(long)]
+    pub ray_allow_pending: bool,
 
     /// Submit DAG to remote executor and stream progress (only with --executor ray)
     ///
@@ -986,6 +1001,12 @@ fn apply_profile_defaults(args: &mut RunArgs, profile: &ox_format::parse::Profil
             args.open_dashboard = true;
         }
     }
+    // ray_allow_pending: false by default; an explicit true flag wins over false.
+    if !args.ray_allow_pending {
+        if let Some(true) = profile.ray_allow_pending {
+            args.ray_allow_pending = true;
+        }
+    }
     // SLURM options: None by default
     if args.partition.is_none() {
         args.partition.clone_from(&profile.partition);
@@ -1004,7 +1025,118 @@ fn resolve_global_config_open_dashboard() -> Option<bool> {
     table.get("open_dashboard").and_then(|v| v.as_bool())
 }
 
+fn validate_ray_flags(args: &RunArgs) -> Result<()> {
+    if args.ray_allow_pending && args.executor != "ray" {
+        return Err(clap::Error::raw(
+            clap::error::ErrorKind::ArgumentConflict,
+            "--ray-allow-pending requires --executor ray\n",
+        )
+        .into());
+    }
+    Ok(())
+}
+
+fn validate_resource_budget_flags(args: &RunArgs) -> Result<()> {
+    if !args.resource_budget.is_empty() && args.executor != "local" {
+        return Err(clap::Error::raw(
+            clap::error::ErrorKind::ArgumentConflict,
+            "--resource-budget applies to the local executor only; Ray and SLURM map a rule's declared resources onto their own backend requests\n",
+        )
+        .into());
+    }
+    Ok(())
+}
+
+fn budget_usage_error(message: String) -> anyhow::Error {
+    clap::Error::raw(
+        clap::error::ErrorKind::ValueValidation,
+        format!("{message}\n"),
+    )
+    .into()
+}
+
+/// Parse CLI capacities through the same checked resource normalization used
+/// for rule declarations and executor adapters.
+///
+/// `SchedulerConfig` expresses token capacities as whole counts, while C0
+/// permits fractional *demands*. Memory has already been converted to bytes
+/// by the normalizer before it reaches the scheduler.
+fn parse_resource_budget(entries: &[String]) -> Result<BTreeMap<String, u64>> {
+    let mut raw = BTreeMap::new();
+    for entry in entries {
+        let (key, value) = entry.split_once('=').ok_or_else(|| {
+            budget_usage_error(format!(
+                "invalid --resource-budget entry {entry:?}: expected KEY=VALUE"
+            ))
+        })?;
+        if key.is_empty() || value.is_empty() {
+            return Err(budget_usage_error(format!(
+                "invalid --resource-budget entry {entry:?}: expected KEY=VALUE"
+            )));
+        }
+        if raw
+            .insert(key.to_owned(), ResourceValue::Str(value.to_owned()))
+            .is_some()
+        {
+            return Err(budget_usage_error(format!(
+                "invalid --resource-budget entry {entry:?}: resource {key:?} is declared more than once"
+            )));
+        }
+    }
+
+    let normalized = normalize_resources(&raw).map_err(|error| {
+        let entry = match &error {
+            ox_core::resource::ResourceError::Duplicate { second_key, .. } => raw
+                .iter()
+                .find(|(key, _)| *key == second_key)
+                .map(|(key, value)| format!("{key}={value}")),
+            ox_core::resource::ResourceError::InvalidValue { key, .. } => raw
+                .get_key_value(key)
+                .map(|(key, value)| format!("{key}={value}")),
+            ox_core::resource::ResourceError::EmptyName => None,
+        };
+        match entry {
+            Some(entry) => budget_usage_error(format!(
+                "invalid --resource-budget entry {entry:?}: {error}"
+            )),
+            None => budget_usage_error(format!("invalid --resource-budget: {error}")),
+        }
+    })?;
+
+    let mut capacity = BTreeMap::new();
+    if let Some(cpu) = normalized.cpu {
+        capacity.insert("cpu".into(), whole_token_capacity("cpu", cpu)?);
+    }
+    if let Some(gpu) = normalized.gpu {
+        capacity.insert("gpu".into(), whole_token_capacity("gpu", gpu)?);
+    }
+    if let Some(memory_bytes) = normalized.memory_bytes {
+        capacity.insert("memory".into(), memory_bytes);
+    }
+    for (name, amount) in normalized.custom {
+        capacity.insert(
+            format!("custom:{name}"),
+            whole_token_capacity(&format!("custom:{name}"), amount)?,
+        );
+    }
+    Ok(capacity)
+}
+
+fn whole_token_capacity(resource: &str, amount: TokenAmount) -> Result<u64> {
+    let scaled = amount.ten_thousandths();
+    if scaled % TOKEN_SCALE != 0 {
+        return Err(budget_usage_error(format!(
+            "resource budget capacity for {resource} must be a whole token"
+        )));
+    }
+    Ok(scaled / TOKEN_SCALE)
+}
+
 pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
+    if args.profile.is_none() {
+        validate_ray_flags(&args)?;
+        validate_resource_budget_flags(&args)?;
+    }
     let mut timer = PhaseTimer::new(args.timings);
     let file_path = PathBuf::from(&args.file);
     if args.verbose >= 1 {
@@ -1026,6 +1158,10 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
         let profile = common::resolve_profile(&workflow, profile_name)?;
         apply_profile_defaults(&mut args, profile);
     }
+
+    validate_ray_flags(&args)?;
+    validate_resource_budget_flags(&args)?;
+    let resource_budget = parse_resource_budget(&args.resource_budget)?;
 
     // Apply global config for open_dashboard (lowest precedence).
     if !args.open_dashboard {
@@ -1315,6 +1451,9 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
         return Ok(());
     }
 
+    // Admission is a property of the selected DAG, even when cache skips all work.
+    ox_core::scheduler::validate_resource_budget(&job_graph, &resource_budget)?;
+
     // -----------------------------------------------------------------------
     // Cache: determine which jobs can be skipped
     // -----------------------------------------------------------------------
@@ -1538,6 +1677,7 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
         skip_jobs,
         force_rerun,
         run_reasons,
+        resource_budget,
         memory_budget_bytes,
         critical_path_jobs,
         ..Default::default()
@@ -2195,6 +2335,7 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
             }
             "ray" => {
                 let ray_config = RayConfig {
+                    allow_pending: args.ray_allow_pending,
                     dashboard_address: args
                         .ray_address
                         .clone()
@@ -2279,6 +2420,17 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
                     let mut failed = 0usize;
 
                     loop {
+                        if interrupted.load(std::sync::atomic::Ordering::SeqCst) {
+                            executor.cancel(&JobId::from(ctx.run_id.as_str())).await.map_err(|e| {
+                                ox_core::error::OxError::Exec(ox_core::error::ExecError::Executor { message: format!("Ray driver cancellation failed: {e}") })
+                            })?;
+                            if let Some(ref db) = state_db {
+                                let ids = dag_result.job_submissions.keys().cloned().collect::<Vec<_>>();
+                                let _ = db.cancel_job_ids(&ids);
+                            }
+                            failed = active;
+                            break;
+                        }
                         tokio::time::sleep(poll_interval).await;
 
                         let mut still_running = false;
@@ -2379,25 +2531,15 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
         let skip_reporter_finish =
             (args.executor == "ray" || args.executor == "slurm") && !args.follow;
         if !skip_reporter_finish {
-            if let Some(ref reporter) = term_reporter {
+            if let (Some(reporter), Ok(r)) = (&term_reporter, &sched_result) {
                 use ox_core::traits::reporter::{Reporter, RunSummary};
-                let summary = match &sched_result {
-                    Ok(r) => RunSummary {
-                        total_jobs: r.total_jobs,
-                        succeeded: r.succeeded,
-                        failed: r.failed,
-                        skipped: r.skipped,
-                        cancelled: r.cancelled,
-                        duration_ms: r.duration.as_millis() as u64,
-                    },
-                    Err(_) => RunSummary {
-                        total_jobs: 0,
-                        succeeded: 0,
-                        failed: 0,
-                        skipped: 0,
-                        cancelled: 0,
-                        duration_ms: 0,
-                    },
+                let summary = RunSummary {
+                    total_jobs: r.total_jobs,
+                    succeeded: r.succeeded,
+                    failed: r.failed,
+                    skipped: r.skipped,
+                    cancelled: r.cancelled,
+                    duration_ms: r.duration.as_millis() as u64,
                 };
                 reporter.finish(&summary).await;
             }
@@ -2506,7 +2648,11 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
     match result {
         Ok(sched_result) => {
             // Finalise the audit-trail run record.
-            if let Some(ref db) = state_db {
+            if let Some(ref db) = state_db
+                && (args.executor != "ray"
+                    || args.follow
+                    || sched_result.total_jobs == sched_result.skipped)
+            {
                 let _ = db.end_run(
                     &run_id,
                     sched_result.succeeded,
@@ -2660,8 +2806,10 @@ fn print_failure_summary(
 
 #[cfg(test)]
 mod cache_key_tests {
+    use std::collections::BTreeMap;
+
     use super::*;
-    use ox_core::model::{EnvSpec, RuleName};
+    use ox_core::model::{EnvSpec, ResourceValue, RuleName};
 
     fn make_job(execution: ExecutionBlock) -> ConcreteJob {
         ConcreteJob {
@@ -2719,6 +2867,42 @@ mod cache_key_tests {
             lang: None,
         });
         assert_eq!(job_cache_key(&job, None), None);
+    }
+
+    /// Resource declarations do not contribute to concrete job identity.
+    #[test]
+    fn resource_declarations_do_not_change_concrete_job_cache_key() {
+        let mut job = make_job(ExecutionBlock::Shell {
+            command: "echo resource-stable".into(),
+        });
+        job.resources = BTreeMap::from([
+            ("cpus".into(), ResourceValue::Int(4)),
+            ("mem_gb".into(), ResourceValue::Int(16)),
+            ("metal".into(), ResourceValue::Float(0.5.into())),
+        ]);
+
+        // Compare distinct declarations on the same platform, not a golden hash.
+        let mut other = job.clone();
+        other.resources = BTreeMap::from([
+            ("cpu".into(), ResourceValue::Int(1)),
+            ("memory".into(), ResourceValue::Str("1GiB".into())),
+        ]);
+        assert_ne!(job.resources, other.resources);
+        let before = job_cache_key(&other, None).unwrap();
+        let raw = job.resources.clone();
+        let normalized = ox_core::resource::normalize_resources(&job.resources)
+            .expect("the declarations above are valid");
+        assert!(normalized.cpu.is_some(), "normalization ran");
+        let after = job_cache_key(&job, None).unwrap();
+        assert_eq!(
+            before.as_str(),
+            after.as_str(),
+            "resource declarations must not contribute to the concrete-job cache key"
+        );
+        assert_eq!(
+            job.resources, raw,
+            "normalization must leave the raw declarations untouched"
+        );
     }
 
     #[test]
@@ -2804,5 +2988,43 @@ mod cache_key_tests {
                 .any(|(p, _)| p == &normalized_script),
             "script path must appear among provenance inputs"
         );
+    }
+}
+
+#[cfg(test)]
+mod resource_budget_tests {
+    use std::collections::BTreeMap;
+
+    use super::parse_resource_budget;
+
+    #[test]
+    fn resource_budget_uses_the_portable_alias_and_unit_contract() {
+        let from_gib = parse_resource_budget(&["mem_gb=1".into()]).unwrap();
+        let from_mib = parse_resource_budget(&["mem_mb=1024".into()]).unwrap();
+        let from_bytes = parse_resource_budget(&["memory=1GiB".into()]).unwrap();
+
+        let expected = BTreeMap::from([("memory".into(), 1_u64 << 30)]);
+        assert_eq!(from_gib, expected);
+        assert_eq!(from_mib, expected);
+        assert_eq!(from_bytes, expected);
+    }
+
+    #[test]
+    fn resource_budget_rejects_duplicate_aliases_across_flags() {
+        let err = parse_resource_budget(&["cpu=6".into(), "cpus=6".into()]).unwrap_err();
+        assert!(err.to_string().contains("cpu"));
+        assert!(err.to_string().contains("more than once"));
+    }
+
+    #[test]
+    fn resource_budget_names_the_malformed_entry() {
+        let err = parse_resource_budget(&["memory=1XB".into()]).unwrap_err();
+        assert!(err.to_string().contains("memory=1XB"));
+    }
+
+    #[test]
+    fn resource_budget_requires_whole_token_capacities() {
+        let err = parse_resource_budget(&["cpu=0.5".into()]).unwrap_err();
+        assert!(err.to_string().contains("whole token"));
     }
 }

@@ -7,6 +7,70 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Rust callers can validate local admission before skipping cached execution
+  with the unstable `ox_core::scheduler::validate_resource_budget` API (#26).
+- `ox run --resource-budget KEY=VALUE` now opts the local executor into
+  per-run resource admission. It accepts repeatable, comma-separated portable
+  resource capacities (for example `cpu=6,mem_gb=32`) without changing `-j` or
+  `--memory-budget`; Ray and SLURM reject the local-only flag (issue #25).
+- Ray DAG submission now checks each task's complete CPU, GPU, memory and custom
+  request against live node total capacity before submission. The Ray-only
+  `--ray-allow-pending` flag allows waiting for future nodes. Inspection fails
+  closed with a fixed 10-second deadline (issue #25).
+- Native Ray DAG tasks now reserve normalized whole-byte memory for all four
+  execution kinds and memory spellings. Memory is logical Ray admission, not
+  hard RSS containment; the per-job Jobs API and array paths still do not make
+  memory reservations (issue #25).
+
+### Changed
+- **A resource declaration that Ray cannot honour is now an error instead of a
+  silent reinterpretation** (issue #25). Under `--executor ray`, these used to
+  run and now stop the run: two spellings of one resource (`cpu` and `cpus`
+  together, even with equal values — previously last-one-wins), a malformed
+  memory value (`memory = "1XB"` previously became 1 byte), a negative or
+  fractional byte count, and `gpu` above 1 with a fraction (`gpu = 1.5`),
+  which Ray itself does not accept. `mem_mb` and `mem_gb` now mean memory
+  rather than a custom resource of that name. Local and SLURM runs are
+  unaffected by this step. Fix the declaration, or name a genuine custom
+  token explicitly with `custom:`.
+- `ox logs --failed` prints full logs under `==> id <==` headers. A missing
+  local log is reported and the remaining failed jobs are still shown (#26).
+- Ray admission now warns and submits when the cluster reports no live nodes,
+  because an empty snapshot cannot prove infeasibility during scale-up. Visible
+  nodes that cannot satisfy a complete request are still rejected (issue #25).
+- Profiles can set `ray_allow_pending = true`; an explicit
+  `--ray-allow-pending` flag enables it, but no CLI flag disables a profile
+  value of `true` (issue #25).
+- Ray rejects custom token names with leading or trailing whitespace (names
+  are not trimmed), and names colliding with built-ins or reserved `node:` /
+  `accelerator_type:` prefixes, including explicit `custom:` declarations.
+  SLURM-only `time` is documented separately from portable resources
+  (issue #25).
+
+### Fixed
+- Local admission validates declarations even on fully cached runs and omits
+  success summaries on admission errors. Memory diagnostics retain the declared
+  unit. Resource flag usage errors exit 2 with a trailing newline, and retry
+  backoff stays interruptible with or without a resource budget (#26).
+- Native Ray DAG tasks now reserve their custom resources for shell, script,
+  inline run and call mode; resource names are serialized as data. Drivers
+  reserve zero logical CPUs, allowing their own tasks to use a single-CPU
+  cluster. Failed drivers remain visible through follow, status and logs;
+  cancelling a queued Ray DAG stops its driver (issue #25).
+- Local scheduler budgets configured through `SchedulerConfig.resource_budget`
+  now enforce canonical resource aliases, exact fractional tokens and whole
+  memory bytes. Impossible selected jobs fail before claims or output cleanup;
+  attempt permits survive cancellation until task completion and are returned
+  before interruptible retry backoff. Empty budgets retain unconstrained admission.
+  Budgets do not provide host-wide coordination (issue #25).
+- Resource keys and values now have one checked normalization path for Ray and
+  local admission: `mem_mb` and `mem_gb` are binary memory aliases,
+  duplicate aliases and malformed values fail instead of overwriting or
+  falling back, and token counts retain four decimal places exactly. Raw rule
+  and job declarations, serialization, and cache keys are unchanged (issue
+  #25).
+
 ## [0.5.0] - 2026-09-17
 
 Three cache and resolution defects found while using 0.4.0: a uv interpreter

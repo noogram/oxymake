@@ -203,7 +203,14 @@ pub fn cmd_status(args: StatusArgs, theme: &ox_render::Theme) -> Result<()> {
     // that the displayed state is up-to-date on the very first call.
     if let Some(ref rid) = run_id {
         match executor_type.as_str() {
-            "ray" => sync_results_from_driver(&db),
+            "ray" => {
+                sync_results_from_driver(&db, rid);
+                if let Err(error) =
+                    super::ray_remote::sync_driver_failures(&db, rid, ray_addr.as_deref())
+                {
+                    eprintln!("Warning: failed to sync Ray driver: {error:#}");
+                }
+            }
             "slurm" => sync_results_from_sacct(&db, rid),
             _ => {}
         }
@@ -740,63 +747,46 @@ fn sync_and_print_ray_status(
     })
 }
 
-/// Read results.json files from .oxymake/runs/{run_id}/ and sync job
-/// completion status back to state.db.
-fn sync_results_from_driver(db: &ox_state::db::StateDb) {
-    let runs_dir = std::path::Path::new(".oxymake/runs");
-    let entries = match std::fs::read_dir(runs_dir) {
-        Ok(e) => e,
-        Err(_) => return, // No runs directory yet.
+/// Reconcile only this run's results and current rows. Older result files must
+/// never mask a newly submitted driver's failure or modify a newer run's jobs.
+fn sync_results_from_driver(db: &ox_state::db::StateDb, run_id: &str) {
+    let path = std::path::Path::new(".oxymake/runs")
+        .join(run_id)
+        .join("results.json");
+    let Ok(content) = std::fs::read_to_string(path) else {
+        return;
     };
-
-    // Create a sync session so claim_job has a valid session_id reference.
-    let sync_sid = match db.create_session(std::process::id(), "sync", None) {
-        Ok(sid) => sid,
-        Err(_) => return,
+    let Ok(results) =
+        serde_json::from_str::<std::collections::HashMap<String, serde_json::Value>>(&content)
+    else {
+        return;
     };
-
-    for entry in entries.flatten() {
-        let results_path = entry.path().join("results.json");
-        if !results_path.exists() {
+    let Ok(current) = db.job_ids_for_run(run_id) else {
+        return;
+    };
+    let current: std::collections::HashSet<_> = current.into_iter().collect();
+    let Ok(session) = db.create_session(std::process::id(), "ray-results-sync", None) else {
+        return;
+    };
+    for (job_id, info) in results {
+        if !current.contains(&job_id) {
             continue;
         }
-
-        let content = match std::fs::read_to_string(&results_path) {
-            Ok(c) => c,
-            Err(_) => continue,
-        };
-
-        let results: std::collections::HashMap<String, serde_json::Value> =
-            match serde_json::from_str(&content) {
-                Ok(r) => r,
-                Err(_) => continue,
-            };
-
-        for (job_id, info) in &results {
-            let status = info
-                .get("status")
-                .and_then(|v| v.as_str())
-                .unwrap_or("unknown");
-            let exit_code = info.get("exit_code").and_then(|v| v.as_i64()).unwrap_or(1) as i32;
-
-            match status {
-                "completed" => {
-                    // Claim first so the job transitions pending→running,
-                    // then running→completed. The executor's results.json
-                    // is the authority on terminal state here, so the
-                    // session-agnostic reconcile variant is correct even
-                    // when the job was claimed by the original run session.
-                    let _ = db.claim_job(job_id, &sync_sid);
-                    let _ = db.reconcile_complete_job(job_id, exit_code, "");
-                }
-                "failed" => {
-                    let _ = db.claim_job(job_id, &sync_sid);
-                    let _ = db.reconcile_fail_job(job_id, exit_code);
-                }
-                _ => {}
+        let status = info.get("status").and_then(|v| v.as_str());
+        let exit_code = info.get("exit_code").and_then(|v| v.as_i64()).unwrap_or(1) as i32;
+        match status {
+            Some("completed") => {
+                let _ = db.claim_job(&job_id, &session);
+                let _ = db.reconcile_complete_job(&job_id, exit_code, "");
             }
+            Some("failed") => {
+                let _ = db.claim_job(&job_id, &session);
+                let _ = db.reconcile_fail_job(&job_id, exit_code);
+            }
+            _ => {}
         }
     }
+    let _ = db.complete_session(&session);
 }
 
 /// Sync SLURM job results from sacct back to state.db.

@@ -71,19 +71,17 @@ pub fn cmd_cancel(args: CancelArgs) -> Result<()> {
     let running_before = db.running_jobs_detail()?;
 
     // Determine which job IDs to cancel.
-    let cancelled_ids = if !args.names.is_empty() {
-        // Granular cancel: resolve names → job IDs, compute downstream cascade,
-        // then cancel exactly those IDs in the database.
-        cancel_by_names(&db, &args)?
-    } else if args.all || (args.rule.is_none() && args.session.is_none()) {
-        // --all, or no filters at all → cancel everything.
-        let session_id = resolve_session_id(&db, args.session)?;
-        db.cancel_jobs(args.rule.as_deref(), session_id.as_deref())?
+    let selected = if !args.names.is_empty() {
+        select_by_names(&args)?
     } else {
-        // Legacy: --rule / --session filters.
         let session_id = resolve_session_id(&db, args.session)?;
-        db.cancel_jobs(args.rule.as_deref(), session_id.as_deref())?
+        db.cancellable_job_ids(args.rule.as_deref(), session_id.as_deref())?
     };
+    // A queued remote driver must be stopped before local rows are cancelled.
+    // A failed stop leaves those rows retryable. One Ray driver owns the DAG,
+    // so selecting any member also cancels its active siblings.
+    let selected = super::ray_remote::stop_selected(&db, selected)?;
+    let cancelled_ids = db.cancel_job_ids(&selected)?;
 
     // Send SIGTERM to processes that were running (not just pending).
     let mut signalled = 0usize;
@@ -123,12 +121,12 @@ pub fn cmd_cancel(args: CancelArgs) -> Result<()> {
 // Granular cancel with downstream cascade
 // ---------------------------------------------------------------------------
 
-/// Cancel specific jobs by name and cascade to their downstream dependents.
+/// Select specific jobs by name and include their downstream dependents.
 ///
 /// Loads the Oxymakefile to build the job graph, resolves each name to a
 /// `JobId`, computes the transitive downstream closure, then cancels every
 /// matching ID in the state database.
-fn cancel_by_names(db: &ox_state::db::StateDb, args: &CancelArgs) -> Result<Vec<String>> {
+fn select_by_names(args: &CancelArgs) -> Result<Vec<String>> {
     let file_path = PathBuf::from(&args.file);
     let workflow = common::load_workflow(&file_path)?;
     let config = common::workflow_config(&workflow);
@@ -153,9 +151,9 @@ fn cancel_by_names(db: &ox_state::db::StateDb, args: &CancelArgs) -> Result<Vec<
         to_cancel.extend(closure);
     }
 
-    // Cancel matching IDs in the database.
+    // Return the selected IDs; remote cancellation happens before database updates.
     let id_strings: Vec<String> = to_cancel.iter().map(|id| id.to_string()).collect();
-    Ok(db.cancel_job_ids(&id_strings)?)
+    Ok(id_strings)
 }
 
 /// Find the job that produces the given target (job ID or output file path).

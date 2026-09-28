@@ -82,6 +82,7 @@ fn write_header(script: &mut String) {
          and failure propagation natively.\"\"\""
     )
     .unwrap();
+    writeln!(script, "import json").unwrap();
     writeln!(script, "import os").unwrap();
     writeln!(script, "import subprocess").unwrap();
     writeln!(script, "import sys").unwrap();
@@ -236,13 +237,24 @@ fn write_task_submission(
     let escaped_id = python_string_escape(job_id_str);
 
     // Build resource options string for .options() if resources are specified.
-    let resources = crate::resource_mapper::map_resources(&job.resources);
+    let resources = crate::resource_mapper::map_resources(&job.resources)?;
     let mut options_parts: Vec<String> = Vec::new();
     if let Some(cpus) = resources.num_cpus {
         options_parts.push(format!("num_cpus={cpus}"));
     }
     if let Some(gpus) = resources.num_gpus {
         options_parts.push(format!("num_gpus={gpus}"));
+    }
+    if let Some(memory_bytes) = resources.memory_bytes {
+        options_parts.push(format!("memory={memory_bytes}"));
+    }
+
+    if !resources.custom.is_empty() {
+        let data = serde_json::to_string(&resources.custom).expect("validated finite resources");
+        options_parts.push(format!(
+            "resources=json.loads(\"{}\")",
+            python_string_escape(&data)
+        ));
     }
 
     let options_suffix = if options_parts.is_empty() {
@@ -351,6 +363,11 @@ fn write_wait_and_report(
     writeln!(script, "    except Exception as e:").unwrap();
     writeln!(
         script,
+        "        print(f'Job {{job_id}} failed: {{e}}', file=sys.stderr)"
+    )
+    .unwrap();
+    writeln!(
+        script,
         "        results[job_id] = {{\"status\": \"failed\", \"exit_code\": 1, \"error\": str(e)[:500]}}"
     )
     .unwrap();
@@ -448,6 +465,148 @@ mod tests {
 
     fn no_skip() -> HashSet<JobId> {
         HashSet::new()
+    }
+
+    #[test]
+    fn task_resources_round_trip_every_task_kind_and_memory_alias() {
+        let kinds = [
+            ExecutionBlock::Shell {
+                command: "true".into(),
+            },
+            ExecutionBlock::Script {
+                path: "task.py".into(),
+                lang: Some("python".into()),
+            },
+            ExecutionBlock::Run {
+                code: "pass".into(),
+                lang: "python".into(),
+            },
+            ExecutionBlock::Call {
+                function: "tasks:work".into(),
+                lang: "python".into(),
+            },
+        ];
+        let memory_aliases = [
+            ("mem", ResourceValue::Int(17), 17_u64),
+            ("memory", ResourceValue::Str("2KiB".into()), 2_048),
+            ("mem_mb", ResourceValue::Int(3), 3 * 1_048_576),
+            (
+                "mem_gb",
+                ResourceValue::Float(ox_core::OrderedFloat(0.5)),
+                536_870_912,
+            ),
+        ];
+        let name = "metal'\"\\é";
+        for execution in kinds {
+            for (memory_key, memory_value, expected_bytes) in &memory_aliases {
+                let mut job = shell_job("a", "true", vec![], vec![]);
+                job.execution = execution.clone();
+                job.resources.insert("cpu".into(), ResourceValue::Int(2));
+                job.resources.insert(name.into(), ResourceValue::Int(1));
+                job.resources
+                    .insert((*memory_key).into(), memory_value.clone());
+                let graph = JobGraph::build(vec![job]).unwrap();
+                let staging = tempfile::tempdir().unwrap();
+                let script = generate_driver(&graph, &ctx(), staging.path(), &no_skip()).unwrap();
+                let source = staging.path().join("driver.py");
+                std::fs::write(&source, script).unwrap();
+                // Decode actual Python syntax, without importing Ray or executing recipes.
+                let output = std::process::Command::new("python3")
+                    .args(["-c", r#"import ast, json, sys
+root = ast.parse(open(sys.argv[1]).read())
+options = [n for n in ast.walk(root) if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute) and n.func.attr == 'options']
+assert len(options) == 1
+values = {k.arg: eval(compile(ast.Expression(k.value), '<options>', 'eval'), {'json': json}) for k in options[0].keywords}
+print(json.dumps(values))
+"#]).arg(source).output().unwrap();
+                assert!(
+                    output.status.success(),
+                    "{}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+                let actual: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+                assert_eq!(
+                    actual,
+                    serde_json::json!({
+                        "memory": expected_bytes,
+                        "num_cpus": 2,
+                        "resources": {name: 1.0}
+                    }),
+                    "memory alias {memory_key}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn explicit_zero_memory_is_emitted_but_absent_memory_is_not() {
+        for (memory, expected) in [(Some(0), true), (None, false)] {
+            let mut job = shell_job("a", "true", vec![], vec![]);
+            if let Some(memory) = memory {
+                job.resources
+                    .insert("memory".into(), ResourceValue::Int(memory));
+            }
+            let graph = JobGraph::build(vec![job]).unwrap();
+            let staging = tempfile::tempdir().unwrap();
+            let script = generate_driver(&graph, &ctx(), staging.path(), &no_skip()).unwrap();
+            assert_eq!(script.contains(".options(memory=0)"), expected);
+        }
+    }
+
+    #[test]
+    fn custom_resource_emission_is_byte_deterministic() {
+        let mut job = shell_job("a", "true", vec![], vec![]);
+        job.resources = BTreeMap::from([
+            ("cpu".into(), ResourceValue::Int(2)),
+            ("memory".into(), ResourceValue::Int(4096)),
+            ("zeta".into(), ResourceValue::Int(3)),
+            ("alpha".into(), ResourceValue::Int(1)),
+            ("metal".into(), ResourceValue::Float(0.5.into())),
+        ]);
+        let graph = JobGraph::build(vec![job]).unwrap();
+        let staging = tempfile::tempdir().unwrap();
+        let expected = "ref_0 = run_shell.options(num_cpus=2, memory=4096, resources=json.loads(\"{\\\"alpha\\\":1.0,\\\"metal\\\":0.5,\\\"zeta\\\":3.0}\")).remote(\"a\", \"true\", \"/tmp/project\")";
+
+        for _ in 0..32 {
+            let script = generate_driver(&graph, &ctx(), staging.path(), &no_skip()).unwrap();
+            let emitted = script
+                .lines()
+                .find(|line| line.starts_with("ref_0 ="))
+                .unwrap();
+            assert_eq!(emitted, expected);
+        }
+    }
+
+    #[test]
+    fn task_failure_reaches_driver_logs_and_results() {
+        let graph = JobGraph::build(vec![shell_job("a", "must not run", vec![], vec![])]).unwrap();
+        let staging = tempfile::tempdir().unwrap();
+        let source = generate_driver(&graph, &ctx(), staging.path(), &no_skip()).unwrap();
+        let path = staging.path().join("driver.py");
+        std::fs::write(&path, source).unwrap();
+        // Exercise failure reporting only; this stub does not model scheduling.
+        std::fs::write(
+            staging.path().join("ray.py"),
+            r#"
+def init(): pass
+class Task:
+    def remote(self, *args): return object()
+def remote(function): return Task()
+def get(ref): raise RuntimeError('synthetic task failure')
+"#,
+        )
+        .unwrap();
+        let output = std::process::Command::new("python3")
+            .arg(path)
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(1));
+        assert!(String::from_utf8_lossy(&output.stderr).contains("synthetic task failure"));
+        let results: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(staging.path().join("results.json")).unwrap())
+                .unwrap();
+        assert_eq!(results["a"]["status"], "failed");
+        assert_eq!(results["a"]["error"], "synthetic task failure");
     }
 
     #[test]

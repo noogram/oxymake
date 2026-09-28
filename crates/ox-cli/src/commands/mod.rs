@@ -25,6 +25,7 @@ mod logo;
 mod logs;
 mod plan;
 mod query;
+mod ray_remote;
 mod run;
 mod serve;
 mod snapshot;

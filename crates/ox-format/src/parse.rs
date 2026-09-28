@@ -134,6 +134,8 @@ pub struct Profile {
     pub qos: Option<String>,
     /// Open dashboard in browser after DAG submission (`--open-dashboard`).
     pub open_dashboard: Option<bool>,
+    /// Skip Ray live-node feasibility inspection (`--ray-allow-pending`).
+    pub ray_allow_pending: Option<bool>,
     /// Config overrides (equivalent to `--set KEY=VALUE`).
     pub set: BTreeMap<String, String>,
 }
@@ -231,6 +233,7 @@ struct RawProfile {
     account: Option<String>,
     qos: Option<String>,
     open_dashboard: Option<bool>,
+    ray_allow_pending: Option<bool>,
     #[serde(default)]
     set: BTreeMap<String, String>,
 }
@@ -606,6 +609,7 @@ fn parse_profiles(raw: BTreeMap<String, RawProfile>) -> BTreeMap<String, Profile
                 account: rp.account,
                 qos: rp.qos,
                 open_dashboard: rp.open_dashboard,
+                ray_allow_pending: rp.ray_allow_pending,
                 set: rp.set,
             };
             (name, profile)
@@ -3747,6 +3751,7 @@ keep_going = true
 partition = "gpu"
 account = "research"
 qos = "high"
+ray_allow_pending = true
 
 [profile.full.set]
 genome = "hg38"
@@ -3768,6 +3773,7 @@ shell = "echo build"
         assert_eq!(p.partition.as_deref(), Some("gpu"));
         assert_eq!(p.account.as_deref(), Some("research"));
         assert_eq!(p.qos.as_deref(), Some("high"));
+        assert_eq!(p.ray_allow_pending, Some(true));
         assert_eq!(p.set.get("genome").unwrap(), "hg38");
         assert_eq!(p.set.get("samples").unwrap(), "A,B,C");
     }

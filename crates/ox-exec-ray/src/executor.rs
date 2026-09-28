@@ -22,6 +22,8 @@ use crate::runtime_env;
 /// Configuration for the Ray executor.
 #[derive(Debug, Clone)]
 pub struct RayConfig {
+    /// Allow tasks to wait for capacity on nodes that may join later.
+    pub allow_pending: bool,
     /// Ray dashboard address (default: `http://127.0.0.1:8265`).
     pub dashboard_address: String,
     /// Maximum concurrent submissions (rate limiting).
@@ -45,6 +47,7 @@ pub struct RayConfig {
 impl Default for RayConfig {
     fn default() -> Self {
         Self {
+            allow_pending: false,
             dashboard_address: "http://127.0.0.1:8265".to_string(),
             max_submit: None,
             working_dir: PathBuf::from("/tmp/oxymake-ray"),
@@ -373,7 +376,7 @@ impl Executor for RayExecutor {
         }
 
         // Map resources.
-        let resources = resource_mapper::map_resources(&job.resources);
+        let resources = resource_mapper::map_resources(&job.resources)?;
 
         // Build runtime_env from environment spec + memory resources.
         let env_runtime = job
@@ -442,7 +445,7 @@ impl Executor for RayExecutor {
             entrypoint_resources: if resources.custom.is_empty() {
                 None
             } else {
-                Some(resources.custom)
+                Some(resources.custom.into_iter().collect())
             },
             runtime_env: runtime_env.or(merged_runtime),
             metadata: Some(metadata),
@@ -593,7 +596,14 @@ impl Executor for RayExecutor {
         drop(running);
 
         let details = self.client.get_job_details(&submission_id).await?;
-        Ok(ray_status_to_job_status(&details.status))
+        Ok(match details.status {
+            RayJobStatus::Failed => JobStatus::Failed(
+                details
+                    .message
+                    .unwrap_or_else(|| "Ray driver failed".into()),
+            ),
+            _ => ray_status_to_job_status(&details.status),
+        })
     }
 
     async fn submit_dag(
@@ -626,6 +636,34 @@ impl Executor for RayExecutor {
                 skipped: skipped_count,
                 job_submissions: HashMap::new(),
             });
+        }
+
+        // Validate every active request even when the user allows future nodes.
+        let requests = topo_order
+            .iter()
+            .filter(|id| !skip_jobs.contains(*id))
+            .filter_map(|id| graph.get_job(id))
+            .map(|job| {
+                Ok((
+                    job.rule.as_str(),
+                    resource_mapper::map_resources(&job.resources)?,
+                ))
+            })
+            .collect::<Result<Vec<_>, RayError>>()?;
+        if !self.config.allow_pending {
+            let nodes = self
+                .client
+                .inspect_node_capacities(Duration::from_secs(10))
+                .await?;
+            if nodes.is_empty() {
+                tracing_log(
+                    "Warning: Ray resource feasibility could not be checked because no live node was visible; submitting the DAG so it can wait for future capacity",
+                );
+            } else {
+                for (rule, resources) in &requests {
+                    crate::feasibility::check_request(rule, resources, &nodes)?;
+                }
+            }
         }
 
         tracing_log(&format!(
@@ -681,7 +719,7 @@ impl Executor for RayExecutor {
         let request = JobSubmitRequest {
             entrypoint,
             submission_id: None,
-            entrypoint_num_cpus: Some(1.0),
+            entrypoint_num_cpus: Some(0.0),
             entrypoint_num_gpus: None,
             entrypoint_resources: None,
             runtime_env: None,

@@ -181,8 +181,68 @@ output = ["results/{sample}.txt"]
 [rule.heavy_job]
 output = ["results/big.txt"]
 shell = "compute_heavy"
-resources = { cpus = 4, mem_gb = 16, gpu = 1, time_min = 60 }
+resources = { cpus = 4, mem_gb = 16, gpu = 1 }
 ```
+
+The portable resource vocabulary shared by Ray and local scheduler
+admission is:
+
+| Resource | Accepted keys | Value |
+|----------|---------------|-------|
+| CPU | `cpu`, `cpus` | Token count, exact to `0.0001` |
+| GPU | `gpu`, `gpus` | Token count, exact to `0.0001`; Ray requires whole counts above 1, while local admission accepts fractions above 1 |
+| Memory | `mem`, `memory` | Bytes, or a string using `K`/`KB`/`KiB` through `T`/`TB`/`TiB` |
+| Memory | `mem_mb` | MiB (2^20 bytes), including fractional MiB |
+| Memory | `mem_gb` | GiB (2^30 bytes), including fractional GiB |
+| Custom token | any other key, or `custom:<name>` | Case-sensitive token count, exact to `0.0001` |
+
+All memory suffixes above use binary scaling, so `"1GB"` and `"1GiB"`
+both mean 1,073,741,824 bytes. The explicit `custom:` prefix always names a
+custom token: `custom:mem_mb` is distinct from the memory key `mem_mb`.
+
+Aliases may not be combined for the same resource (`cpu` with `cpus`, for
+example), and a bare custom name may not be combined with its prefixed form
+(`metal` with `custom:metal`). Invalid units, negative or non-finite values,
+fractional byte results, overflow, and token counts finer than `0.0001` are
+errors. These checks normalize a declaration without rewriting the original
+`resources` table. Executor-specific keys, including SLURM directives such as
+`time`, retain the vocabulary documented by that executor. `time = 60`
+is a SLURM time limit; on Ray it would request a custom token named `time`
+and the default feasibility check rejects it unless a node advertises 60 units.
+Do not copy SLURM-only keys into a Ray workflow.
+
+Ray rejects custom names with leading or trailing whitespace, and names
+colliding (case-insensitively) with `cpu`, `cpus`, `gpu`, `gpus`, `memory`,
+`object_store_memory`, or the reserved prefixes `node:` and `accelerator_type:`.
+This also applies to explicit `custom:` names. Other names, including quotes,
+backslashes and non-ASCII characters, are forwarded as data.
+
+Native Ray DAG tasks reserve CPU, GPU, memory and custom resources. Memory is
+forwarded as `memory=<bytes>` and included in the live-node feasibility check.
+This is logical scheduling admission, not a hard RSS limit. The per-job Jobs
+API and array paths do not reserve memory.
+
+Local scheduler admission is opt-in with `ox run --resource-budget KEY=VALUE`.
+The flag is repeatable and comma-separated, for example
+`--resource-budget cpu=6,mem_gb=32 --resource-budget metal=1`; it uses exactly
+the aliases, binary memory units and duplicate checks above. Capacity counts
+are whole tokens; job demands may be fractional. Memory capacity is normalized
+to whole bytes, so `mem_gb=1`, `mem_mb=1024`, and `memory=1GiB` are identical.
+Two spellings of one canonical resource across flags are an error.
+
+Only budgeted canonical resources are interpreted and enforced. For example,
+a `cpu = 6` budget also constrains a `cpus = 4` demand. A job with no demand
+consumes no resource tokens and still uses one `-j` / `--jobs` slot. Zero
+demand fits zero capacity; a positive demand against zero capacity, or any
+demand exceeding total capacity, is a configuration error naming the job and
+resource before execution of the selected DAG starts, even when every job is
+cached. Rules outside that DAG do not participate in validation.
+
+`-j N` caps concurrent jobs, while `--resource-budget` caps resources held by
+those jobs. This is distinct from `--memory-budget`, which caps in-memory
+materialized outputs and never admits or rejects a job. The resource budget is
+per `ox run`: two concurrent runs each get their full configured budget.
+OxyMake does not detect host capacity or coordinate budgets across processes.
 
 ### Conditional Guards
 

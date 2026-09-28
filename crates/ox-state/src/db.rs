@@ -369,6 +369,23 @@ pub struct PipelineStatsWithTiming {
     pub earliest_started_at: Option<u64>,
 }
 
+/// A current job attached to a remote DAG submission.
+#[derive(Debug, Clone)]
+pub struct RemoteJobSubmission {
+    /// OxyMake job ID.
+    pub job_id: String,
+    /// Owning run ID.
+    pub run_id: String,
+    /// Executor backend name.
+    pub executor: String,
+    /// Remote dashboard address.
+    pub address: Option<String>,
+    /// Backend submission ID (shared by all jobs in a Ray DAG).
+    pub submission_id: String,
+    /// Current local status.
+    pub status: String,
+}
+
 /// Log path and status for a specific job.
 pub struct JobLogInfo {
     /// Path to the job's log file, if known.
@@ -835,8 +852,8 @@ impl StateDb {
         Ok(ids)
     }
 
-    /// Return IDs of running/pending jobs matching the given filters.
-    fn cancellable_job_ids(
+    /// Return IDs of running/pending jobs matching the filters without changing state.
+    pub fn cancellable_job_ids(
         &self,
         rule: Option<&str>,
         session_id: Option<&str>,
@@ -2047,6 +2064,35 @@ impl StateDb {
             rusqlite::params![submission_id, job_id],
         )?;
         Ok(())
+    }
+
+    /// Current job IDs belonging to a run (excludes rows replaced by later runs).
+    pub fn job_ids_for_run(&self, run_id: &str) -> Result<Vec<String>, StateError> {
+        let mut stmt = self.conn.prepare("SELECT id FROM jobs WHERE run_id = ?1")?;
+        let rows = stmt.query_map([run_id], |row| row.get(0))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(StateError::from)
+    }
+
+    /// Read remote submission metadata for current job rows, scoped to their run.
+    pub fn remote_job_submissions(&self) -> Result<Vec<RemoteJobSubmission>, StateError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT j.id, j.run_id, d.executor, d.dashboard_address, j.executor_submission_id, j.status
+             FROM jobs j JOIN dag_submissions d ON j.run_id = d.run_id
+             WHERE j.executor_submission_id IS NOT NULL",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok(RemoteJobSubmission {
+                job_id: row.get(0)?,
+                run_id: row.get(1)?,
+                executor: row.get(2)?,
+                address: row.get(3)?,
+                submission_id: row.get(4)?,
+                status: row.get(5)?,
+            })
+        })?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(StateError::from)
     }
 
     /// Query the most recent DAG submission. Returns `(run_id, executor, dashboard_address)`.
