@@ -263,3 +263,28 @@ async fn two_tasks_serialize_when_their_memory_sum_exceeds_one_node() {
     let b = interval("memory-b");
     assert!(a[1] <= b[0] || b[1] <= a[0], "{a:?} overlaps {b:?}");
 }
+
+#[tokio::test]
+#[ignore = "requires a real token-mode Ray cluster and cluster-local token configuration"]
+async fn token_mode_dashboard_and_driver_authenticate() {
+    let address = std::env::var("OXYMAKE_RAY_LIVE_ADDRESS")
+        .expect("set OXYMAKE_RAY_LIVE_ADDRESS to a token-mode Ray dashboard");
+    let shared = std::env::var("OXYMAKE_RAY_LIVE_DIR")
+        .expect("set OXYMAKE_RAY_LIVE_DIR to a directory shared at the same path on every node");
+    assert_eq!(
+        std::env::var("RAY_AUTH_MODE").as_deref(),
+        Ok("token"),
+        "set RAY_AUTH_MODE=token and configure a client-side token source"
+    );
+    let root = tempfile::tempdir_in(shared).unwrap();
+    let executor = RayExecutor::new(RayConfig {
+        allow_pending: true,
+        dashboard_address: address,
+        working_dir: root.path().join("runs"),
+        ..Default::default()
+    })
+    .unwrap();
+    submit(&executor, root.path(), "token-mode", false).await;
+    wait(&executor, "token-mode").await;
+    assert!(root.path().join("token-mode.json").exists());
+}

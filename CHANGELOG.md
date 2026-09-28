@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Ray dashboard token authentication is enabled with `RAY_AUTH_MODE=token`.
+  OxyMake uses Ray's token precedence, authenticates submission and lifecycle
+  requests, and passes only the mode (never the token) to native DAG drivers
+  (issue #27).
 - `ox run --resource-budget KEY=VALUE` now opts the local executor into
   per-run resource admission. It accepts repeatable, comma-separated portable
   resource capacities (for example `cpu=6,mem_gb=32`) without changing `-j` or

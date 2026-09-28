@@ -119,6 +119,30 @@ submits in that case. When live nodes are visible and no single node provides
 the complete request, submission still fails so misspelled or impossible
 requests do not remain pending forever.
 
+## Token-authenticated dashboards
+
+Set `RAY_AUTH_MODE=token` when the Ray dashboard requires token
+authentication. OxyMake then loads the client token using Ray's precedence:
+
+1. `RAY_AUTH_TOKEN`
+2. the file named by `RAY_AUTH_TOKEN_PATH`
+3. `~/.ray/auth_token`
+
+Trailing whitespace in token files is ignored. If none of those sources
+provides a token, OxyMake stops before making a dashboard request. The bearer
+token is used for submission, status, logs, cancellation, and the
+pre-submission node inspection. It is not written to the generated driver,
+run metadata, reports, or logs.
+
+Native DAG submissions pass `RAY_AUTH_MODE=token` to the driver, but never the
+token itself. The driver runs on the cluster and must be able to load its own
+token using Ray's cluster-local configuration. If a dashboard answers 401,
+OxyMake reports the observed mode and the token sources it consulted without
+printing any part of the token.
+
+When `RAY_AUTH_MODE` is unset or has any other value, OxyMake performs no token
+lookup and sends no authorization header.
+
 Custom names with surrounding whitespace are rejected. Names colliding with
 Ray built-ins or reserved prefixes are also rejected; see the
 [resource reference](../reference/format.md#resources). `time_min` is a SLURM
@@ -163,6 +187,9 @@ cargo test -p ox-exec-ray --test live_dag_resources two_drivers -- --ignored
 cargo test -p ox-exec-ray --test live_dag_resources busy_node -- --ignored
 # Separate cluster with exactly one live node and at least two CPUs:
 cargo test -p ox-exec-ray --test live_dag_resources two_tasks_serialize_when_their_memory_sum_exceeds_one_node -- --ignored
+# Against a token-mode head, with a client-side token source configured and a
+# cluster-local token available to the submitted driver:
+RAY_AUTH_MODE=token cargo test -p ox-exec-ray --test live_dag_resources token_mode_dashboard_and_driver_authenticate -- --ignored
 ```
 
 Ignored tests are **NOT RUN**, not passing scheduling evidence. HTTP contract

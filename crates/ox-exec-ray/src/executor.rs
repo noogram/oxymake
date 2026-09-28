@@ -120,7 +120,7 @@ impl RayExecutor {
             .timeout(Duration::from_secs(30))
             .build()?;
 
-        let client = RayClient::new(config.dashboard_address.clone(), http_client);
+        let client = RayClient::new(config.dashboard_address.clone(), http_client)?;
         let autoscaler = AutoscalerAdvisor::new(config.max_submit, config.min_concurrency);
         Ok(Self {
             config,
@@ -722,7 +722,7 @@ impl Executor for RayExecutor {
             entrypoint_num_cpus: Some(0.0),
             entrypoint_num_gpus: None,
             entrypoint_resources: None,
-            runtime_env: None,
+            runtime_env: runtime_env::ray_auth_runtime_env(self.client.token_mode()),
             metadata: Some(metadata),
         };
 
@@ -810,14 +810,43 @@ fn ray_status_to_job_status(status: &RayJobStatus) -> JobStatus {
 
 /// Simple logging helper.
 fn tracing_log(msg: &str) {
+    #[cfg(test)]
+    if TEST_LOG_CAPTURE.with(|capture| {
+        if let Some(messages) = capture.borrow_mut().as_mut() {
+            messages.push(msg.to_string());
+            true
+        } else {
+            false
+        }
+    }) {
+        return;
+    }
     eprintln!("[ox-exec-ray] {msg}");
+}
+
+#[cfg(test)]
+thread_local! {
+    static TEST_LOG_CAPTURE: std::cell::RefCell<Option<Vec<String>>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+fn begin_log_capture() {
+    TEST_LOG_CAPTURE.with(|capture| *capture.borrow_mut() = Some(Vec::new()));
+}
+
+#[cfg(test)]
+fn take_captured_logs() -> Vec<String> {
+    TEST_LOG_CAPTURE.with(|capture| capture.borrow_mut().take().unwrap_or_default())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ox_core::job_graph::JobGraph;
     use ox_core::model::*;
     use std::collections::BTreeMap;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
 
     /// Helper to create a minimal ConcreteJob for testing.
     fn test_job(id: &str, command: &str) -> ConcreteJob {
@@ -910,5 +939,85 @@ mod tests {
             result.is_ok(),
             "RayExecutor::new should return Ok with default config"
         );
+    }
+
+    #[tokio::test]
+    async fn token_mode_driver_payload_and_artifacts_never_contain_the_token() {
+        const TOKEN: &str = "distinctive-driver-token-a91e";
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v0/nodes"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "result": true,
+                "data": {"result": {
+                    "total": 1,
+                    "num_after_truncation": 1,
+                    "num_filtered": 1,
+                    "result": [{
+                        "node_ip": "127.0.0.1",
+                        "state": "ALIVE",
+                        "resources_total": {"CPU": 2},
+                        "resources_available": {"CPU": 2}
+                    }]
+                }}
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/jobs/"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({"submission_id": "driver-id"})),
+            )
+            .mount(&server)
+            .await;
+
+        let root = tempfile::tempdir().unwrap();
+        let config = RayConfig {
+            dashboard_address: server.uri(),
+            working_dir: root.path().join("staging"),
+            ..RayConfig::default()
+        };
+        let client = RayClient::with_test_token(server.uri(), reqwest::Client::new(), TOKEN);
+        let executor = RayExecutor::with_client(config, client);
+        let graph = JobGraph::build(vec![test_job("token-job", "echo safe")]).unwrap();
+        let context = ExecContext {
+            global_job_limit: 1,
+            run_id: "token-run".into(),
+            log_dir: root.path().join("logs"),
+            project_dir: root.path().into(),
+            trusted_dirs: vec![],
+            input_data: HashMap::new(),
+            memory_map: None,
+        };
+
+        begin_log_capture();
+        executor.submit_dag(&graph, &context).await.unwrap();
+        let captured_logs = take_captured_logs().join("\n");
+        let requests = server.received_requests().await.unwrap();
+        let submission = requests
+            .iter()
+            .find(|request| request.url.path() == "/api/jobs/")
+            .unwrap();
+        let payload: serde_json::Value = serde_json::from_slice(&submission.body).unwrap();
+        assert_eq!(
+            payload.pointer("/runtime_env/env_vars/RAY_AUTH_MODE"),
+            Some(&serde_json::Value::String("token".into()))
+        );
+
+        let driver =
+            std::fs::read_to_string(root.path().join("staging/token-run/oxymake_dag_driver.py"))
+                .unwrap();
+        let metadata =
+            std::fs::read_to_string(root.path().join("staging/token-run/meta.json")).unwrap();
+        for (surface, rendered) in [
+            ("payload", serde_json::to_string(&payload).unwrap()),
+            ("driver", driver),
+            ("metadata", metadata),
+            ("logs", captured_logs),
+            ("debug", format!("{executor:?}")),
+        ] {
+            assert!(!rendered.contains(TOKEN), "token leaked through {surface}");
+        }
     }
 }

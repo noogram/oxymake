@@ -16,7 +16,7 @@ fn client(address: Option<&str>) -> Result<RayClient> {
     Ok(RayClient::new(
         address.unwrap_or("http://127.0.0.1:8265").into(),
         ox_exec_ray::ray_client_http(Duration::from_secs(10))?,
-    ))
+    )?)
 }
 
 fn same_driver(a: &RemoteJobSubmission, b: &RemoteJobSubmission) -> bool {
