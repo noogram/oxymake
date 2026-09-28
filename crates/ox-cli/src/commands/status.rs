@@ -602,7 +602,7 @@ fn sync_and_print_ray_status(
         };
 
         let ray_client =
-            ox_exec_ray::ray_client::RayClient::new(ray_address.to_string(), http_client);
+            ox_exec_ray::ray_client::RayClient::new(ray_address.to_string(), http_client)?;
 
         // Follow mode: poll the specific driver job ID from meta.json.
         if let Some(rid) = run_id {

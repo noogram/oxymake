@@ -3,6 +3,18 @@
 /// Errors that can occur during Ray job submission, polling, or cancellation.
 #[derive(Debug, thiserror::Error)]
 pub enum RayError {
+    /// Token mode was requested but no token could be loaded.
+    #[error(
+        "RAY_AUTH_MODE=token but no Ray authentication token was found; tried RAY_AUTH_TOKEN, RAY_AUTH_TOKEN_PATH, and ~/.ray/auth_token"
+    )]
+    AuthTokenMissing,
+
+    /// The dashboard rejected a request because token authentication is required.
+    #[error(
+        "Ray dashboard returned 401: the cluster requires a Ray token; RAY_AUTH_MODE is {mode}; token sources consulted: {sources}"
+    )]
+    AuthRequired { mode: String, sources: String },
+
     /// The live State API snapshot could not be decoded safely.
     #[error(
         "Ray node inspection malformed or unknown payload: {0}\n  use --ray-allow-pending to bypass node inspection and wait for future capacity"

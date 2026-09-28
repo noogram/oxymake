@@ -98,6 +98,20 @@ pub fn memory_runtime_env(memory_bytes: u64) -> Value {
     })
 }
 
+/// Build the runtime environment needed by a token-authenticated Ray driver.
+///
+/// The token is deliberately absent: the driver reads its own cluster-local
+/// token using Ray's normal lookup rules.
+pub fn ray_auth_runtime_env(token_mode: bool) -> Option<Value> {
+    token_mode.then(|| {
+        json!({
+            "env_vars": {
+                "RAY_AUTH_MODE": "token",
+            }
+        })
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
