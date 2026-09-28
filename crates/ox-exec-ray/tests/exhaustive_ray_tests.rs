@@ -752,7 +752,11 @@ async fn test_prepare_workspace_shell_block() {
     let workspace = executor.prepare_workspace(&job, &ctx).await.unwrap();
 
     assert!(workspace.work_dir.exists());
-    assert!(workspace.work_dir.starts_with(tmp.path()));
+    assert!(
+        workspace
+            .work_dir
+            .starts_with(std::fs::canonicalize(tmp.path()).unwrap())
+    );
 }
 
 #[tokio::test]

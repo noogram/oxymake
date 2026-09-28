@@ -2341,7 +2341,10 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
                         .clone()
                         .unwrap_or_else(|| "http://127.0.0.1:8265".to_string()),
                     max_submit: Some(args.jobs),
-                    working_dir: PathBuf::from(".oxymake/runs"),
+                    // Native Ray DAG drivers are submitted by absolute path.
+                    // This staging root follows the Oxymakefile, including
+                    // when `ox run -f <path>` was invoked elsewhere.
+                    working_dir: ctx.project_dir.join(".oxymake/runs"),
                     ..RayConfig::default()
                 };
                 let executor = RayExecutor::new(ray_config).map_err(|e| {
