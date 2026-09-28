@@ -301,7 +301,8 @@ Explicit `ResolveRequest::existing_files` remain source leaves in these APIs.
 shared, unstable workflow-relative discovery and cache-provenance policy used by
 CLI, MCP and `SessionBuilder`.
 
-Ray's `RayConfig::allow_pending` and driver log API, and the state queries
+Ray's `RayConfig::allow_pending`, driver log API and `RayError::StagingIo`
+staging diagnostic, and the state queries
 for remote submissions, cancellable jobs and current run membership are
 **unstable** Rust APIs.
 

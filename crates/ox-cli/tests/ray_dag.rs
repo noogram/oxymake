@@ -25,13 +25,24 @@ async fn dash_f_file_submits_the_driver_written_beside_the_oxymakefile() {
         .await;
 
     let invocation_dir = tempfile::tempdir().unwrap();
-    let project_dir = tempfile::tempdir().unwrap();
+    let project_dir = tempfile::Builder::new()
+        .prefix("ray project's ")
+        .tempdir()
+        .unwrap();
     let oxymakefile = project_dir.path().join("Oxymakefile.toml");
     std::fs::write(
         &oxymakefile,
         "ox_version = \"0.1\"\n[rule.a]\noutput = [\"a.out\"]\nshell = \"touch a.out\"\n",
     )
     .unwrap();
+
+    // A workflow selected through a symlink must submit the real staging path.
+    #[cfg(unix)]
+    let oxymakefile = {
+        let link = invocation_dir.path().join("project-link");
+        std::os::unix::fs::symlink(project_dir.path(), &link).unwrap();
+        link.join("Oxymakefile.toml")
+    };
 
     ox().current_dir(invocation_dir.path())
         .args([
@@ -57,21 +68,25 @@ async fn dash_f_file_submits_the_driver_written_beside_the_oxymakefile() {
         .find(|request| request.method == "POST" && request.url.path() == "/api/jobs/")
         .unwrap();
     let payload: serde_json::Value = serde_json::from_slice(&request.body).unwrap();
-    let driver_path = std::path::Path::new(
-        payload["entrypoint"]
-            .as_str()
-            .unwrap()
-            .strip_prefix("python3 ")
-            .unwrap(),
-    );
-    assert!(driver_path.is_absolute(), "{payload}");
+    let run_id = payload["metadata"]["oxymake_run_id"].as_str().unwrap();
+    let driver_path = project_dir
+        .path()
+        .canonicalize()
+        .unwrap()
+        .join(".oxymake/runs")
+        .join(run_id)
+        .join("oxymake_dag_driver.py");
+    assert!(driver_path.is_absolute());
     assert!(
-        driver_path.starts_with(std::fs::canonicalize(project_dir.path()).unwrap()),
-        "{payload}"
-    );
-    assert!(
-        driver_path.exists(),
+        driver_path.is_file(),
         "{driver_path:?} must exist when submitted"
+    );
+    assert_eq!(
+        payload["entrypoint"],
+        format!(
+            "python3 '{}'",
+            driver_path.to_str().unwrap().replace('\'', "'\\''")
+        )
     );
 }
 

@@ -113,14 +113,25 @@ pub struct RayExecutor {
 impl RayExecutor {
     /// Create a new Ray executor with the given configuration.
     ///
-    /// Returns an error if the HTTP client cannot be constructed (e.g. TLS
-    /// backend unavailable).
+    /// Creates and canonicalizes the staging directory, resolving symlinks.
+    /// With [`RayConfig::default()`], this creates `/tmp/oxymake-ray` if absent.
+    ///
+    /// Returns an error if the staging directory cannot be created or resolved,
+    /// the HTTP client cannot be constructed (e.g. TLS backend unavailable),
+    /// or Ray token authentication cannot be configured.
     pub fn new(mut config: RayConfig) -> Result<Self, RayError> {
         // Ray executes DAG driver paths from the head's job working directory.
         // Keep the staging root absolute so the generated path remains valid
         // when that working directory differs from OxyMake's project directory.
-        std::fs::create_dir_all(&config.working_dir)?;
-        config.working_dir = std::fs::canonicalize(&config.working_dir)?;
+        std::fs::create_dir_all(&config.working_dir).map_err(|source| RayError::StagingIo {
+            path: config.working_dir.clone(),
+            source,
+        })?;
+        config.working_dir =
+            std::fs::canonicalize(&config.working_dir).map_err(|source| RayError::StagingIo {
+                path: config.working_dir.clone(),
+                source,
+            })?;
 
         let http_client = reqwest::Client::builder()
             .timeout(Duration::from_secs(30))
@@ -688,17 +699,35 @@ impl Executor for RayExecutor {
         // Create a staging directory for the driver script and any
         // inline code / call-mode wrapper files it references.
         let run_staging = self.config.working_dir.join(&ctx.run_id);
-        tokio::fs::create_dir_all(&run_staging).await?;
+        tokio::fs::create_dir_all(&run_staging)
+            .await
+            .map_err(|source| RayError::StagingIo {
+                path: run_staging.clone(),
+                source,
+            })?;
 
         // Generate a single Python driver script that encodes only the
         // uncached subgraph using @ray.remote tasks with ObjectRef
         // dependency chaining. Cached jobs are omitted — their outputs
         // already exist on disk.
         let driver_source =
-            crate::driver_script::generate_driver(graph, ctx, &run_staging, &skip_jobs)?;
+            crate::driver_script::generate_driver(graph, ctx, &run_staging, &skip_jobs).map_err(
+                |error| match error {
+                    RayError::Io(source) => RayError::StagingIo {
+                        path: run_staging.clone(),
+                        source,
+                    },
+                    other => other,
+                },
+            )?;
 
         let driver_path = run_staging.join("oxymake_dag_driver.py");
-        tokio::fs::write(&driver_path, &driver_source).await?;
+        tokio::fs::write(&driver_path, &driver_source)
+            .await
+            .map_err(|source| RayError::StagingIo {
+                path: driver_path.clone(),
+                source,
+            })?;
 
         // The Jobs API receives this as a path, rather than an uploaded
         // runtime_env. Fail locally with the shared-filesystem requirement if
@@ -722,7 +751,12 @@ impl Executor for RayExecutor {
             "skipped_jobs": skipped_count,
         });
         let meta_path = run_staging.join("meta.json");
-        tokio::fs::write(&meta_path, serde_json::to_string_pretty(&meta).unwrap()).await?;
+        tokio::fs::write(&meta_path, serde_json::to_string_pretty(&meta).unwrap())
+            .await
+            .map_err(|source| RayError::StagingIo {
+                path: meta_path.clone(),
+                source,
+            })?;
 
         tracing_log(&format!(
             "Generated DAG driver: {} ({} tasks)",
@@ -740,7 +774,7 @@ impl Executor for RayExecutor {
         );
 
         // Submit the driver as a single Ray job.
-        let entrypoint = format!("python3 {}", driver_path.display());
+        let entrypoint = format!("python3 {}", shell_quote(&driver_path.to_string_lossy()));
         let request = JobSubmitRequest {
             entrypoint,
             submission_id: None,

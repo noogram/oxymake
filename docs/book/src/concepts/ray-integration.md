@@ -594,9 +594,12 @@ file does not change.
 ### Shared filesystem requirement
 
 The native Ray DAG driver is generated under the Oxymakefile's
-`.oxymake/runs/` directory and submitted to Ray by its absolute path. The Ray
-head and workers that execute the driver must be able to see that OxyMake
-working directory through a shared filesystem. OxyMake does not upload the
+`.oxymake/runs/` directory and submitted to Ray by its shell-quoted absolute
+path, with symlinks resolved. For example, `-f <symlink>/Oxymakefile.toml`
+submits the path under the real project directory. OxyMake needs write access
+to the staging directory; staging failures report the affected path and the
+underlying IO error. The Ray head and workers that execute the driver must
+be able to see that OxyMake working directory through a shared filesystem. OxyMake does not upload the
 driver with `runtime_env.working_dir`, because changing Ray's job working
 directory would change how workflow rules resolve their relative inputs and
 outputs. A remote head without that shared mount is not supported by this
