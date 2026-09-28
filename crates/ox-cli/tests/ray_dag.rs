@@ -9,6 +9,72 @@ fn ox() -> Command {
     Command::cargo_bin("ox").unwrap()
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn dash_f_file_submits_the_driver_written_beside_the_oxymakefile() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/version"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"ray_version":"2.54.1"})))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/jobs/"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"submission_id":"driver"})))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let invocation_dir = tempfile::tempdir().unwrap();
+    let project_dir = tempfile::tempdir().unwrap();
+    let oxymakefile = project_dir.path().join("Oxymakefile.toml");
+    std::fs::write(
+        &oxymakefile,
+        "ox_version = \"0.1\"\n[rule.a]\noutput = [\"a.out\"]\nshell = \"touch a.out\"\n",
+    )
+    .unwrap();
+
+    ox().current_dir(invocation_dir.path())
+        .args([
+            "run",
+            "a.out",
+            "-f",
+            oxymakefile.to_str().unwrap(),
+            "--executor",
+            "ray",
+            "--ray-address",
+            &server.uri(),
+            "--ray-allow-pending",
+            "--no-cache",
+        ])
+        .assert()
+        .success();
+
+    let request = server
+        .received_requests()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|request| request.method == "POST" && request.url.path() == "/api/jobs/")
+        .unwrap();
+    let payload: serde_json::Value = serde_json::from_slice(&request.body).unwrap();
+    let driver_path = std::path::Path::new(
+        payload["entrypoint"]
+            .as_str()
+            .unwrap()
+            .strip_prefix("python3 ")
+            .unwrap(),
+    );
+    assert!(driver_path.is_absolute(), "{payload}");
+    assert!(
+        driver_path.starts_with(std::fs::canonicalize(project_dir.path()).unwrap()),
+        "{payload}"
+    );
+    assert!(
+        driver_path.exists(),
+        "{driver_path:?} must exist when submitted"
+    );
+}
+
 fn recorded_run(dir: &std::path::Path, address: &str) {
     let root = dir.join(".oxymake");
     std::fs::create_dir_all(root.join("runs/run-1")).unwrap();

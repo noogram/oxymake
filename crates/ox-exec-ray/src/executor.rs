@@ -115,7 +115,13 @@ impl RayExecutor {
     ///
     /// Returns an error if the HTTP client cannot be constructed (e.g. TLS
     /// backend unavailable).
-    pub fn new(config: RayConfig) -> Result<Self, RayError> {
+    pub fn new(mut config: RayConfig) -> Result<Self, RayError> {
+        // Ray executes DAG driver paths from the head's job working directory.
+        // Keep the staging root absolute so the generated path remains valid
+        // when that working directory differs from OxyMake's project directory.
+        std::fs::create_dir_all(&config.working_dir)?;
+        config.working_dir = std::fs::canonicalize(&config.working_dir)?;
+
         let http_client = reqwest::Client::builder()
             .timeout(Duration::from_secs(30))
             .build()?;
@@ -693,6 +699,17 @@ impl Executor for RayExecutor {
 
         let driver_path = run_staging.join("oxymake_dag_driver.py");
         tokio::fs::write(&driver_path, &driver_source).await?;
+
+        // The Jobs API receives this as a path, rather than an uploaded
+        // runtime_env. Fail locally with the shared-filesystem requirement if
+        // the path we are about to submit is not a usable absolute file.
+        let driver_exists = tokio::fs::metadata(&driver_path)
+            .await
+            .map(|metadata| metadata.is_file())
+            .unwrap_or(false);
+        if !driver_path.is_absolute() || !driver_exists {
+            return Err(RayError::DriverUnavailable { path: driver_path });
+        }
 
         // Write run metadata so `ox status` can detect the executor type
         // and poll Ray instead of relying solely on state.db.

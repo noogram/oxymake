@@ -591,6 +591,17 @@ OxyMake handles caching, DAG optimization, and driver generation. Ray
 handles task placement, GPU scheduling, and data passing. Your workflow
 file does not change.
 
+### Shared filesystem requirement
+
+The native Ray DAG driver is generated under the Oxymakefile's
+`.oxymake/runs/` directory and submitted to Ray by its absolute path. The Ray
+head and workers that execute the driver must be able to see that OxyMake
+working directory through a shared filesystem. OxyMake does not upload the
+driver with `runtime_env.working_dir`, because changing Ray's job working
+directory would change how workflow rules resolve their relative inputs and
+outputs. A remote head without that shared mount is not supported by this
+executor.
+
 ### 4. Monitor execution
 
 ```bash

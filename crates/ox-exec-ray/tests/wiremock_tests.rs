@@ -7,6 +7,7 @@ use std::time::Duration;
 use wiremock::matchers::{method, path, path_regex};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
+use ox_core::job_graph::JobGraph;
 use ox_core::model::*;
 use ox_core::traits::executor::*;
 use ox_exec_ray::object_store;
@@ -50,6 +51,72 @@ fn test_ctx(tmp: &tempfile::TempDir) -> ExecContext {
         trusted_dirs: vec![],
         input_data: std::collections::HashMap::new(),
         memory_map: None,
+    }
+}
+
+/// The DAG driver is passed to Ray as a filesystem path, so it must be
+/// absolute even when callers configure the staging directory relatively.
+#[tokio::test]
+async fn dag_driver_entrypoint_uses_an_absolute_existing_path() {
+    for use_relative_working_dir in [true, false] {
+        let mock_server = MockServer::start().await;
+        mount_capable_nodes(&mock_server).await;
+        Mock::given(method("POST"))
+            .and(path("/api/jobs/"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({"submission_id": "driver-path"})),
+            )
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let staging = tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap();
+        let working_dir = if use_relative_working_dir {
+            staging
+                .path()
+                .strip_prefix(std::env::current_dir().unwrap())
+                .unwrap()
+                .to_path_buf()
+        } else {
+            staging.path().to_path_buf()
+        };
+        let executor = RayExecutor::new(RayConfig {
+            dashboard_address: mock_server.uri(),
+            working_dir,
+            ..RayConfig::default()
+        })
+        .unwrap();
+
+        executor
+            .submit_dag(
+                &JobGraph::build(vec![test_job("driver-path", "true")]).unwrap(),
+                &test_ctx(&tmp),
+            )
+            .await
+            .unwrap();
+
+        let request = mock_server
+            .received_requests()
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|request| request.method == "POST" && request.url.path() == "/api/jobs/")
+            .unwrap();
+        let payload: serde_json::Value = serde_json::from_slice(&request.body).unwrap();
+        let driver_path = std::path::Path::new(
+            payload["entrypoint"]
+                .as_str()
+                .unwrap()
+                .strip_prefix("python3 ")
+                .unwrap(),
+        );
+        assert!(driver_path.is_absolute(), "{payload}");
+        assert!(
+            driver_path.exists(),
+            "{driver_path:?} must exist when submitted"
+        );
     }
 }
 
