@@ -194,3 +194,72 @@ async fn busy_node_queues_and_cancelled_task_never_starts_after_release() {
         }
     }
 }
+
+#[tokio::test]
+#[ignore = "requires an isolated real Ray cluster with one node and at least two CPUs"]
+async fn two_tasks_serialize_when_their_memory_sum_exceeds_one_node() {
+    let address = std::env::var("OXYMAKE_RAY_LIVE_ADDRESS").expect("set OXYMAKE_RAY_LIVE_ADDRESS");
+    let shared = std::env::var("OXYMAKE_RAY_LIVE_DIR")
+        .expect("set OXYMAKE_RAY_LIVE_DIR to a directory shared at the same path on every node");
+    let root = tempfile::tempdir_in(shared).unwrap();
+    let payload: serde_json::Value = reqwest::Client::new()
+        .get(format!("{address}/api/v0/nodes?detail=1&limit=10000"))
+        .timeout(Duration::from_secs(10))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let alive = payload
+        .pointer("/data/result/result")
+        .unwrap()
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|node| node["state"] == "ALIVE")
+        .collect::<Vec<_>>();
+    assert_eq!(alive.len(), 1, "witness requires exactly one live node");
+    assert!(alive[0]["resources_total"]["CPU"].as_f64().unwrap() >= 2.0);
+    let total_memory = alive[0]["resources_total"]["memory"]
+        .as_f64()
+        .expect("Ray node must advertise memory") as u64;
+    let each_memory = total_memory / 2 + 1;
+    assert!(each_memory <= total_memory && each_memory.saturating_mul(2) > total_memory);
+
+    let executor = RayExecutor::new(RayConfig {
+        dashboard_address: address,
+        working_dir: root.path().join("runs"),
+        ..Default::default()
+    })
+    .unwrap();
+    let mut jobs = Vec::new();
+    for id in ["memory-a", "memory-b"] {
+        let mut job = make_test_job(id, &[], &[]);
+        job.resources
+            .insert("memory".into(), ResourceValue::Int(each_memory as i64));
+        job.execution = ExecutionBlock::Run {
+            lang: "python".into(),
+            code: format!(
+                "import json, time\nstart = time.time()\ntime.sleep(3)\nwith open({:?}, 'w') as f: json.dump([start, time.time()], f)",
+                root.path().join(format!("{id}.json")).to_str().unwrap()
+            ),
+        };
+        jobs.push(job);
+    }
+    executor
+        .submit_dag(
+            &JobGraph::build(jobs).unwrap(),
+            &context(root.path(), "memory-serialization"),
+        )
+        .await
+        .unwrap();
+    wait(&executor, "memory-a").await;
+    let interval = |id: &str| -> [f64; 2] {
+        serde_json::from_slice(&std::fs::read(root.path().join(format!("{id}.json"))).unwrap())
+            .unwrap()
+    };
+    let a = interval("memory-a");
+    let b = interval("memory-b");
+    assert!(a[1] <= b[0] || b[1] <= a[0], "{a:?} overlaps {b:?}");
+}

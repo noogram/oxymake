@@ -245,6 +245,9 @@ fn write_task_submission(
     if let Some(gpus) = resources.num_gpus {
         options_parts.push(format!("num_gpus={gpus}"));
     }
+    if let Some(memory_bytes) = resources.memory_bytes {
+        options_parts.push(format!("memory={memory_bytes}"));
+    }
 
     if !resources.custom.is_empty() {
         let data = serde_json::to_string(&resources.custom).expect("validated finite resources");
@@ -465,7 +468,7 @@ mod tests {
     }
 
     #[test]
-    fn custom_resources_round_trip_every_task_kind() {
+    fn task_resources_round_trip_every_task_kind_and_memory_alias() {
         let kinds = [
             ExecutionBlock::Shell {
                 command: "true".into(),
@@ -483,38 +486,70 @@ mod tests {
                 lang: "python".into(),
             },
         ];
+        let memory_aliases = [
+            ("mem", ResourceValue::Int(17), 17_u64),
+            ("memory", ResourceValue::Str("2KiB".into()), 2_048),
+            ("mem_mb", ResourceValue::Int(3), 3 * 1_048_576),
+            (
+                "mem_gb",
+                ResourceValue::Float(ox_core::OrderedFloat(0.5)),
+                536_870_912,
+            ),
+        ];
         let name = "metal'\"\\é";
         for execution in kinds {
-            let mut job = shell_job("a", "true", vec![], vec![]);
-            job.execution = execution;
-            job.resources.insert("cpu".into(), ResourceValue::Int(2));
-            job.resources.insert(name.into(), ResourceValue::Int(1));
-            job.resources
-                .insert("mem_mb".into(), ResourceValue::Int(32));
-            let graph = JobGraph::build(vec![job]).unwrap();
-            let staging = tempfile::tempdir().unwrap();
-            let script = generate_driver(&graph, &ctx(), staging.path(), &no_skip()).unwrap();
-            let source = staging.path().join("driver.py");
-            std::fs::write(&source, script).unwrap();
-            // Decode actual Python syntax, without importing Ray or executing recipes.
-            let output = std::process::Command::new("python3")
-                .args(["-c", r#"import ast, json, sys
+            for (memory_key, memory_value, expected_bytes) in &memory_aliases {
+                let mut job = shell_job("a", "true", vec![], vec![]);
+                job.execution = execution.clone();
+                job.resources.insert("cpu".into(), ResourceValue::Int(2));
+                job.resources.insert(name.into(), ResourceValue::Int(1));
+                job.resources
+                    .insert((*memory_key).into(), memory_value.clone());
+                let graph = JobGraph::build(vec![job]).unwrap();
+                let staging = tempfile::tempdir().unwrap();
+                let script = generate_driver(&graph, &ctx(), staging.path(), &no_skip()).unwrap();
+                let source = staging.path().join("driver.py");
+                std::fs::write(&source, script).unwrap();
+                // Decode actual Python syntax, without importing Ray or executing recipes.
+                let output = std::process::Command::new("python3")
+                    .args(["-c", r#"import ast, json, sys
 root = ast.parse(open(sys.argv[1]).read())
 options = [n for n in ast.walk(root) if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute) and n.func.attr == 'options']
 assert len(options) == 1
 values = {k.arg: eval(compile(ast.Expression(k.value), '<options>', 'eval'), {'json': json}) for k in options[0].keywords}
 print(json.dumps(values))
 "#]).arg(source).output().unwrap();
-            assert!(
-                output.status.success(),
-                "{}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-            let actual: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-            assert_eq!(
-                actual,
-                serde_json::json!({"num_cpus": 2, "resources": {name: 1.0}})
-            );
+                assert!(
+                    output.status.success(),
+                    "{}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+                let actual: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+                assert_eq!(
+                    actual,
+                    serde_json::json!({
+                        "memory": expected_bytes,
+                        "num_cpus": 2,
+                        "resources": {name: 1.0}
+                    }),
+                    "memory alias {memory_key}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn explicit_zero_memory_is_emitted_but_absent_memory_is_not() {
+        for (memory, expected) in [(Some(0), true), (None, false)] {
+            let mut job = shell_job("a", "true", vec![], vec![]);
+            if let Some(memory) = memory {
+                job.resources
+                    .insert("memory".into(), ResourceValue::Int(memory));
+            }
+            let graph = JobGraph::build(vec![job]).unwrap();
+            let staging = tempfile::tempdir().unwrap();
+            let script = generate_driver(&graph, &ctx(), staging.path(), &no_skip()).unwrap();
+            assert_eq!(script.contains(".options(memory=0)"), expected);
         }
     }
 
@@ -523,13 +558,14 @@ print(json.dumps(values))
         let mut job = shell_job("a", "true", vec![], vec![]);
         job.resources = BTreeMap::from([
             ("cpu".into(), ResourceValue::Int(2)),
+            ("memory".into(), ResourceValue::Int(4096)),
             ("zeta".into(), ResourceValue::Int(3)),
             ("alpha".into(), ResourceValue::Int(1)),
             ("metal".into(), ResourceValue::Float(0.5.into())),
         ]);
         let graph = JobGraph::build(vec![job]).unwrap();
         let staging = tempfile::tempdir().unwrap();
-        let expected = "ref_0 = run_shell.options(num_cpus=2, resources=json.loads(\"{\\\"alpha\\\":1.0,\\\"metal\\\":0.5,\\\"zeta\\\":3.0}\")).remote(\"a\", \"true\", \"/tmp/project\")";
+        let expected = "ref_0 = run_shell.options(num_cpus=2, memory=4096, resources=json.loads(\"{\\\"alpha\\\":1.0,\\\"metal\\\":0.5,\\\"zeta\\\":3.0}\")).remote(\"a\", \"true\", \"/tmp/project\")";
 
         for _ in 0..32 {
             let script = generate_driver(&graph, &ctx(), staging.path(), &no_skip()).unwrap();

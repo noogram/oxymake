@@ -941,7 +941,10 @@ async fn busy_capacity_and_pending_override_submit_one_zero_cpu_driver() {
     for allow_pending in [false, true] {
         let server = MockServer::start().await;
         if !allow_pending {
-            mount_capable_nodes(&server).await;
+            Mock::given(method("GET")).and(path("/api/v0/nodes"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(node_payload(serde_json::json!([
+                    {"node_ip":"127.0.0.1","state":"ALIVE","resources_total":{"CPU":8,"memory":1048576,"metal":1},"resources_available":{"CPU":0,"memory":0,"metal":0}}
+                ])))).mount(&server).await;
         }
         Mock::given(method("POST"))
             .and(path("/api/jobs/"))
@@ -975,6 +978,7 @@ async fn busy_capacity_and_pending_override_submit_one_zero_cpu_driver() {
         .unwrap();
         let mut job = make_test_job("a", &[], &["a.out"]);
         job.resources.insert("metal".into(), ResourceValue::Int(1));
+        job.resources.insert("mem_mb".into(), ResourceValue::Int(1));
         executor
             .submit_dag(&JobGraph::build(vec![job]).unwrap(), &test_ctx(&tmp))
             .await
@@ -992,13 +996,62 @@ async fn busy_capacity_and_pending_override_submit_one_zero_cpu_driver() {
         let body: serde_json::Value = serde_json::from_slice(&submitted.body).unwrap();
         assert_eq!(body["entrypoint_num_cpus"], 0.0);
         assert!(body.get("entrypoint_resources").is_none());
+        assert!(body.get("entrypoint_memory").is_none());
+        assert!(body.get("runtime_env").is_none());
         if allow_pending {
             assert!(!requests.iter().any(|r| r.url.path() == "/api/v0/nodes"));
         }
         let source =
             std::fs::read_to_string(tmp.path().join("test-run-001/oxymake_dag_driver.py")).unwrap();
         assert!(source.contains("resources=json.loads"));
+        assert!(source.contains("memory=1048576"));
     }
+}
+
+#[tokio::test]
+async fn dag_rejects_memory_larger_than_every_live_node_before_submission() {
+    use ox_core::job_graph::{JobGraph, make_test_job};
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/v0/nodes"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(node_payload(serde_json::json!([
+                {"node_ip":"a","state":"ALIVE","resources_total":{"CPU":8,"memory":1024}},
+                {"node_ip":"b","state":"ALIVE","resources_total":{"CPU":8,"memory":2048}}
+            ]))),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/jobs/"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(serde_json::json!({"submission_id":"unexpected"})),
+        )
+        .expect(0)
+        .mount(&server)
+        .await;
+    let tmp = tempfile::tempdir().unwrap();
+    let executor = RayExecutor::new(RayConfig {
+        dashboard_address: server.uri(),
+        working_dir: tmp.path().into(),
+        ..Default::default()
+    })
+    .unwrap();
+    let mut job = make_test_job("a", &[], &["a.out"]);
+    job.resources
+        .insert("memory".into(), ResourceValue::Int(2049));
+    let error = executor
+        .submit_dag(&JobGraph::build(vec![job]).unwrap(), &test_ctx(&tmp))
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("memory=2049")
+            && error.contains("no single live node")
+            && error.contains("--ray-allow-pending"),
+        "{error}"
+    );
 }
 
 #[tokio::test]

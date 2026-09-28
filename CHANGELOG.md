@@ -8,10 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- Ray DAG submission now checks each task's complete CPU, GPU and custom
+- Ray DAG submission now checks each task's complete CPU, GPU, memory and custom
   request against live node total capacity before submission. The Ray-only
   `--ray-allow-pending` flag allows waiting for future nodes. Inspection fails
   closed with a fixed 10-second deadline (issue #25).
+- Native Ray DAG tasks now reserve normalized whole-byte memory for all four
+  execution kinds and memory spellings. Memory is logical Ray admission, not
+  hard RSS containment; the per-job Jobs API and array paths still do not make
+  memory reservations (issue #25).
 
 ### Changed
 - Ray admission now warns and submits when the cluster reports no live nodes,
@@ -22,8 +26,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Ray rejects custom token names with leading or trailing whitespace (names
   are not trimmed), and names colliding with built-ins or reserved `node:` /
   `accelerator_type:` prefixes, including explicit `custom:` declarations.
-  SLURM-only `time_min` is documented separately from portable resources.
-  Memory syntax remains accepted but memory is **not yet reserved** (issue #25).
+  SLURM-only `time_min` is documented separately from portable resources
+  (issue #25).
 
 ### Fixed
 - Native Ray DAG tasks now reserve their custom resources for shell, script,

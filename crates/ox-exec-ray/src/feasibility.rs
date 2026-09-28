@@ -68,6 +68,9 @@ pub(crate) fn check_request(
     let mut request: BTreeMap<String, f64> = resources.custom.clone().into_iter().collect();
     request.insert("CPU".into(), resources.num_cpus.unwrap_or(1.0));
     request.insert("GPU".into(), resources.num_gpus.unwrap_or(0.0));
+    if let Some(memory_bytes) = resources.memory_bytes {
+        request.insert("memory".into(), memory_bytes as f64);
+    }
     request.retain(|_, n| *n > 0.0);
     if nodes.iter().any(|node| {
         request
@@ -160,5 +163,32 @@ mod tests {
         let request =
             map_resources(&BTreeMap::from([("metal".into(), ResourceValue::Int(1))])).unwrap();
         assert!(check_request("a", &request, &[]).is_ok());
+    }
+
+    #[test]
+    fn memory_must_fit_one_node_but_independent_requests_are_not_summed() {
+        let nodes = parse_nodes(snapshot(
+            json!({"node_ip":"a","state":"ALIVE","resources_total":{"CPU":2,"memory":1024}}),
+        ))
+        .unwrap();
+        let too_large = map_resources(&BTreeMap::from([(
+            "memory".into(),
+            ResourceValue::Int(1025),
+        )]))
+        .unwrap();
+        let error = check_request("large", &too_large, &nodes)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("memory=1025")
+                && error.contains("no single live node")
+                && error.contains("--ray-allow-pending"),
+            "{error}"
+        );
+
+        let fits =
+            map_resources(&BTreeMap::from([("mem".into(), ResourceValue::Int(800))])).unwrap();
+        assert!(check_request("first", &fits, &nodes).is_ok());
+        assert!(check_request("second", &fits, &nodes).is_ok());
     }
 }

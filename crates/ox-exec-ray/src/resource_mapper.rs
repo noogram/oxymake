@@ -4,7 +4,7 @@
 //! |----------------------------------|---------------------------|
 //! | `cpu` / `cpus`                   | `entrypoint_num_cpus`     |
 //! | `gpu` / `gpus`                   | `entrypoint_num_gpus`     |
-//! | `mem` / `memory` / `mem_mb` / `mem_gb` | runtime-env memory |
+//! | `mem` / `memory` / `mem_mb` / `mem_gb` | task memory / runtime-env hint |
 //! | custom key / `custom:*`          | `entrypoint_resources`    |
 
 use std::collections::BTreeMap;
