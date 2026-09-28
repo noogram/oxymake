@@ -54,6 +54,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (issue #25).
 
 ### Fixed
+- Local benchmark TSV files no longer publish per-job memory and CPU figures
+  derived from process-wide child counters. Those values could belong to other
+  concurrent or earlier jobs, so `max_rss` and `cpu_time` are now `-` until a
+  per-job measurement exists; measured `max_rss` values use MiB (issue #24).
 - Local admission validates declarations even on fully cached runs and omits
   success summaries on admission errors. Memory diagnostics retain the declared
   unit. Resource flag usage errors exit 2 with a trailing newline, and retry

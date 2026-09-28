@@ -4567,6 +4567,12 @@ mod tests {
 
         let fields: Vec<&str> = lines[1].split('\t').collect();
         assert_eq!(fields.len(), 4, "data row should have 4 columns");
+        // The mock executor here reports no resource figures, so these two
+        // columns pin the schema, not the #24 fix: the guards that fail on
+        // the old behaviour run the real local executor (crates/ox-cli/tests
+        // and crates/ox-exec-local/tests).
+        assert_eq!(fields[2], "-", "an absent max_rss is written as a dash");
+        assert_eq!(fields[3], "-", "an absent cpu_time is written as a dash");
 
         // Wall-clock seconds should be parseable as f64.
         let _wall_secs: f64 = fields[0].parse().expect("wall secs should be a number");

@@ -244,6 +244,24 @@ materialized outputs and never admits or rejects a job. The resource budget is
 per `ox run`: two concurrent runs each get their full configured budget.
 OxyMake does not detect host capacity or coordinate budgets across processes.
 
+### Benchmark output
+
+Set `benchmark` on a rule to write a two-line TSV after a successful job:
+
+```toml
+[rule.measured]
+output = ["results/output.txt"]
+shell = "produce results/output.txt"
+benchmark = "benchmarks/output.tsv"
+```
+
+The columns are `s`, `h:m:s`, `max_rss`, and `cpu_time`, in that order.
+`max_rss` is expressed in MiB when the executor supplies a per-job
+measurement, and `cpu_time` is expressed in seconds. An unmeasured value is
+written as `-`; in particular, the local executor currently leaves both
+resource columns unmeasured rather than attributing process-wide counters to
+one job.
+
 ### Conditional Guards
 
 ```toml

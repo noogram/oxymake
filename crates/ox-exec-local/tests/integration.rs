@@ -787,6 +787,8 @@ async fn spawn_shell_success() {
 
     assert_eq!(result.exit_code, 0);
     assert!(!result.killed_by_timeout);
+    assert!(result.peak_memory_bytes.is_none());
+    assert!(result.cpu_time.is_none());
 
     let contents = std::fs::read_to_string(&log_path).unwrap();
     assert!(contents.contains("direct-spawn"));

@@ -17,7 +17,8 @@ use crate::traits::executor::JobResult;
 ///
 /// Returns a string with a header row and one data row containing:
 /// `s` (wall-clock seconds), `h:m:s` (wall-clock formatted), `max_rss`
-/// (peak RSS in MB), `cpu_time` (CPU seconds).
+/// (peak RSS in MiB), `cpu_time` (CPU seconds). Unmeasured resource values
+/// are rendered as `-`.
 pub fn format_benchmark_tsv(result: &JobResult) -> String {
     let wall_secs = result.duration.as_secs_f64();
     let total_secs = result.duration.as_secs();
@@ -52,4 +53,34 @@ pub trait BenchmarkSink: Send + Sync {
         path: &'a Path,
         result: &'a JobResult,
     ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::format_benchmark_tsv;
+    use crate::model::JobId;
+    use crate::traits::executor::JobResult;
+    use std::time::Duration;
+
+    #[test]
+    /// Characterises the formatter, which #24 did not change: it already
+    /// divided by 1024² and already wrote `-` for an absent value. What #24
+    /// changed is that the local executor now supplies `None`; the guards
+    /// for that live in the CLI and ox-exec-local test suites.
+    fn formatter_keeps_schema_and_uses_mib_for_measured_rss() {
+        let result = JobResult {
+            job_id: JobId::from("measured"),
+            exit_code: 0,
+            duration: Duration::from_millis(1500),
+            peak_memory_bytes: Some(2 * 1024 * 1024),
+            cpu_time: Some(Duration::from_millis(250)),
+            log_path: None,
+            stderr_tail: None,
+        };
+
+        assert_eq!(
+            format_benchmark_tsv(&result),
+            "s\th:m:s\tmax_rss\tcpu_time\n1.5000\t0:00:01\t2.00\t0.2500\n"
+        );
+    }
 }
