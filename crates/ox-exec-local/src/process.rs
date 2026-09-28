@@ -448,20 +448,27 @@ mod measured_child {
     use super::{ChildExit, Command, Duration};
     use std::io;
     use std::os::unix::process::ExitStatusExt;
+    use std::task::Poll;
+    use tokio::signal::unix::{Signal, SignalKind, signal};
 
     /// Sole reaper for a cold child. `std::process` spawns but never waits;
     /// Tokio owns only the nonblocking pipes, never a process handle.
     pub(super) struct ColdChild {
         pid: Option<libc::pid_t>,
+        exited: Signal,
         pub stdout: Option<tokio::process::ChildStdout>,
         pub stderr: Option<tokio::process::ChildStderr>,
     }
 
     impl ColdChild {
         pub fn spawn(cmd: &mut Command) -> io::Result<Self> {
+            // Subscribe before spawning: even an immediate exit must wake us.
+            // This listener only notifies; wait4 below remains the sole reaper.
+            let exited = signal(SignalKind::child())?;
             let mut process = cmd.spawn()?;
             let mut child = Self {
                 pid: Some(process.id() as libc::pid_t),
+                exited,
                 stdout: None,
                 stderr: None,
             };
@@ -488,22 +495,34 @@ mod measured_child {
             let pid = self
                 .pid
                 .ok_or_else(|| io::Error::other("child already reaped"))?;
-            loop {
-                match reap(pid, libc::WNOHANG) {
-                    Ok(Some(result)) => {
-                        self.pid = None;
-                        return Ok(result);
-                    }
-                    Ok(None) => tokio::time::sleep(Duration::from_millis(10)).await,
-                    Err(err) if err.kind() == io::ErrorKind::Interrupted => continue,
-                    Err(err) => {
-                        if err.raw_os_error() == Some(libc::ECHILD) {
+            std::future::poll_fn(|cx| {
+                loop {
+                    // Register the waker BEFORE checking wait4, as Tokio's reaper
+                    // does, so an exit between the check and Pending cannot be lost.
+                    // Signals may coalesce or belong to another child; always check
+                    // this PID, and re-register after consuming a notification.
+                    let registered = self.exited.poll_recv(cx).is_pending();
+                    match reap(pid, libc::WNOHANG) {
+                        Ok(Some(result)) => {
                             self.pid = None;
+                            return Poll::Ready(Ok(result));
                         }
-                        return Err(err);
+                        Ok(None) => {
+                            if registered {
+                                return Poll::Pending;
+                            }
+                        }
+                        Err(err) if err.kind() == io::ErrorKind::Interrupted => continue,
+                        Err(err) => {
+                            if err.raw_os_error() == Some(libc::ECHILD) {
+                                self.pid = None;
+                            }
+                            return Poll::Ready(Err(err));
+                        }
                     }
                 }
-            }
+            })
+            .await
         }
     }
 
@@ -587,6 +606,75 @@ mod measured_child {
     #[cfg(test)]
     mod tests {
         use super::*;
+
+        #[tokio::test(start_paused = true)]
+        async fn child_exit_wakes_without_advancing_a_poll_timer() {
+            use std::future::Future;
+            use std::io::Write;
+            use std::os::fd::OwnedFd;
+            use std::os::unix::net::UnixStream;
+
+            let (reader, mut writer) = UnixStream::pair().unwrap();
+            let mut command = Command::new("/bin/bash");
+            command.args(["-c", "read line; exit 0"]);
+            command.stdin(OwnedFd::from(reader));
+            let mut child = ColdChild::spawn(&mut command).unwrap();
+            let mut waiting = Box::pin(child.wait());
+            // The child cannot exit until we release stdin. First establish a
+            // pending wait, so even a slow host cannot skip the old poll sleep.
+            std::future::poll_fn(|cx| {
+                assert!(waiting.as_mut().poll(cx).is_pending());
+                Poll::Ready(())
+            })
+            .await;
+            writer.write_all(b"go\n").unwrap();
+            let start = tokio::time::Instant::now();
+            assert!(waiting.await.unwrap().status.success());
+            // Paused Tokio time auto-advances to pending timers. SIGCHLD should
+            // finish this wait without any clock advance, regardless of the
+            // real shell startup time. Restoring the polling loop fails here.
+            assert_eq!(start.elapsed(), Duration::ZERO);
+        }
+
+        #[tokio::test]
+        async fn exit_before_wait_is_reaped_once() {
+            let mut command = Command::new("/bin/bash");
+            command.args(["-c", "exit 7"]);
+            let mut child = ColdChild::spawn(&mut command).unwrap();
+            // Observe exit without reaping, independently of signal delivery.
+            tokio::time::timeout(Duration::from_secs(5), async {
+                loop {
+                    let mut info = std::mem::MaybeUninit::<libc::siginfo_t>::zeroed();
+                    // SAFETY: info is valid writable storage. WNOWAIT preserves
+                    // this owned child's status and usage for the sole reaper.
+                    let result = unsafe {
+                        libc::waitid(
+                            libc::P_PID,
+                            child.id().unwrap() as libc::id_t,
+                            info.as_mut_ptr(),
+                            libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+                        )
+                    };
+                    assert_eq!(result, 0);
+                    // SAFETY: waitid succeeded and initialized the zeroed info.
+                    if unsafe { info.assume_init().si_pid() } != 0 {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(1)).await;
+                }
+            })
+            .await
+            .unwrap();
+            let result = tokio::time::timeout(Duration::from_secs(1), child.wait())
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(result.status.code(), Some(7));
+            assert!(result.peak_memory_bytes.is_some());
+            assert!(result.cpu_time.is_some());
+            assert!(child.id().is_none());
+            assert!(child.wait().await.is_err());
+        }
 
         #[test]
         fn rss_units_and_missing_are_distinct_from_zero() {

@@ -3040,9 +3040,10 @@ shell = "printf serial > serial.txt"
         .success()
         .stdout(predicates::str::contains("1 succeeded"));
 
-    let (rss, cpu) = local_benchmark_usage(&base.join("serial.tsv"));
+    // Parsing both fields rejects missing measurements ("-"). A short child
+    // may legitimately have CPU time rounded to zero in the TSV.
+    let (rss, _) = local_benchmark_usage(&base.join("serial.tsv"));
     assert!(rss > 0.0);
-    assert!(cpu >= 0.0);
 }
 
 // ---------------------------------------------------------------------------
