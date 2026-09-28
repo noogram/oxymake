@@ -742,6 +742,7 @@ mod tests {
             job_id: "j1".into(),
             duration_ms: 1234,
             outputs: vec![],
+            peak_memory_bytes: None,
         };
         reporter.on_event(&event).await;
         assert_eq!(reporter.completed.load(Ordering::Relaxed), 1);
@@ -929,6 +930,7 @@ mod tests {
                 job_id: (*name).into(),
                 duration_ms: 500,
                 outputs: vec![],
+                peak_memory_bytes: None,
             };
             reporter.on_event(&ev).await;
         }
@@ -968,6 +970,7 @@ mod tests {
             job_id: "build".into(),
             duration_ms: 500,
             outputs: vec![],
+            peak_memory_bytes: None,
         };
         reporter.on_event(&done).await;
         assert_eq!(reporter.completed.load(Ordering::Relaxed), 2);

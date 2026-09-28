@@ -156,6 +156,7 @@ pub trait StateBackend {
         executor: &str,
         hostname: &str,
         wall_times: &std::collections::HashMap<String, u64>,
+        peak_memory_bytes: &std::collections::HashMap<String, u64>,
         provenance: &std::collections::HashMap<String, JobProvenance>,
     ) -> Result<usize, StateError>;
 

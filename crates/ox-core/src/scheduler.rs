@@ -2730,6 +2730,7 @@ async fn handle_completion<E: Executor + ?Sized>(
             job_id: msg.job_id.clone(),
             duration_ms,
             outputs,
+            peak_memory_bytes: msg.result.peak_memory_bytes,
         });
 
         let on_critical_path =
@@ -2787,6 +2788,7 @@ async fn handle_completion<E: Executor + ?Sized>(
                     job_id: msg.job_id.clone(),
                     duration_ms,
                     outputs: vec![],
+                    peak_memory_bytes: msg.result.peak_memory_bytes,
                 });
                 let on_critical_path = config.critical_path_jobs.is_empty()
                     || config.critical_path_jobs.contains(&msg.job_id);
@@ -7608,6 +7610,50 @@ mod tests {
                 stderr_tail: None,
             },
         }
+    }
+
+    #[tokio::test]
+    async fn completion_event_carries_executor_peak_memory() {
+        let graph = JobGraph::build(vec![make_job("A", "rA", vec![], vec![])]).unwrap();
+        let job_ids = graph.job_ids();
+        let state = Arc::new(Mutex::new(Frontier::new(
+            &job_ids,
+            &graph,
+            0,
+            None,
+            ResourceBudget::new(BTreeMap::new()),
+        )));
+        state
+            .lock()
+            .await
+            .set_status(JobId::from("A"), JobLifecycle::Running);
+
+        let bus = EventBus::new();
+        let mut events = bus.subscribe();
+        let mut msg = completion_msg_for(&graph, "A", 0);
+        msg.result.peak_memory_bytes = Some(512 * 1024);
+
+        assert!(
+            handle_completion(
+                &msg,
+                &state,
+                &graph,
+                &SchedulerConfig::default(),
+                &bus,
+                &default_ctx(),
+                &mut false,
+                &MockExecutor::new(),
+            )
+            .await
+        );
+
+        assert!(matches!(
+            events.try_recv().unwrap(),
+            Event::JobCompleted {
+                peak_memory_bytes: Some(524_288),
+                ..
+            }
+        ));
     }
 
     /// B4: a job marked Cancelled (by cancel_downstream) whose process

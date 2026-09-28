@@ -76,6 +76,7 @@ fn single_run_single_completion_satisfies_invariant() {
             "host",
             &Default::default(),
             &Default::default(),
+            &Default::default(),
         )
         .unwrap();
     assert_eq!(count, 1, "exactly one terminal history row should land");
@@ -101,6 +102,7 @@ fn multiple_jobs_one_per_terminal_status_satisfies_invariant() {
         run_id,
         "local",
         "host",
+        &Default::default(),
         &Default::default(),
         &Default::default(),
     )
@@ -169,6 +171,7 @@ fn cancellation_does_not_violate_invariant() {
         run_id,
         "local",
         "host",
+        &Default::default(),
         &Default::default(),
         &Default::default(),
     )
