@@ -79,11 +79,14 @@ Only the **uncached subgraph** is sent to Ray.
 ## Resource admission
 
 Each shell, script, inline `run`, and `call` task receives its checked CPU,
-GPU and custom resource request. For example, `resources = {cpu = 1, metal = 1}`
-reserves one logical CPU and one `metal` token. A cluster advertising one
+GPU, memory and custom resource request. For example,
+`resources = {cpu = 1, memory = "4GiB", metal = 1}` reserves one logical CPU,
+4 GiB of logical memory and one `metal` token. A cluster advertising one
 `metal` token serializes tasks requesting that token across concurrent DAG
-runs. The single DAG driver reserves **zero** logical CPUs and no task tokens;
-it still consumes real CPU while orchestrating.
+runs. Ray memory is **logical admission** against the memory declared by its
+nodes; it is not an enforced resident-set-size ceiling. The single DAG driver
+reserves **zero** logical CPUs, no memory and no task tokens; it only
+orchestrates, though it still consumes real CPU and memory.
 
 Before submitting the driver, OxyMake reads `/api/v0/nodes?detail=1` from the
 Ray dashboard and checks every active task against each live node's **total**
@@ -121,8 +124,20 @@ Ray built-ins or reserved prefixes are also rejected; see the
 [resource reference](../reference/format.md#resources). `time_min` is a SLURM
 key, not a Ray time limit.
 
-**Memory syntax is accepted but memory is not yet reserved by Ray.** Memory
-forwarding is deferred; this admission check covers CPU, GPU and custom tokens.
+For native DAG submission, `mem`, `memory`, `mem_mb` and `mem_gb` are normalized
+to whole bytes and passed as Ray task `memory` reservations. The pre-submission
+check compares each request independently with one live node's total `memory`;
+it does not sum sibling tasks. Ray queues and serializes simultaneously ready
+tasks when their combined reservations exceed currently available capacity.
+An explicit zero-byte declaration remains present in the generated task
+options, while a task with no memory declaration emits no memory option.
+
+This reservation currently applies only to tasks in the generated native DAG.
+The older per-job Jobs API path and the array-emulation path do not request Ray
+memory. On the per-job path, `OXYMAKE_MEMORY_LIMIT_BYTES` remains a runtime
+environment **hint** for the process; it is neither Ray admission nor hard RSS
+containment. Array submissions likewise keep their existing behavior. Do not
+rely on either path for memory reservation.
 
 A submission acknowledgment means the driver was accepted. `--follow` reports
 its terminal failure, `ox status` refreshes failed driver state even without a
@@ -146,6 +161,8 @@ cargo test -p ox-exec-ray --test live_dag_resources single_cpu -- --ignored
 # Separate cluster with exactly one live node, two CPUs and metal=1:
 cargo test -p ox-exec-ray --test live_dag_resources two_drivers -- --ignored
 cargo test -p ox-exec-ray --test live_dag_resources busy_node -- --ignored
+# Separate cluster with exactly one live node and at least two CPUs:
+cargo test -p ox-exec-ray --test live_dag_resources two_tasks_serialize_when_their_memory_sum_exceeds_one_node -- --ignored
 ```
 
 Ignored tests are **NOT RUN**, not passing scheduling evidence. HTTP contract
@@ -441,17 +458,17 @@ OxyMake resources map to Ray resources via `map_resources()`:
 | OxyMake | Ray | Notes |
 |---------|-----|-------|
 | `cpu` / `cpus` | `num_cpus` | Exact to `0.0001` before Ray conversion |
-| `mem` / `memory` | runtime environment | Bytes or a binary-unit string |
-| `mem_mb` / `mem_gb` | runtime environment | MiB / GiB converted to bytes |
+| `mem` / `memory` | task `memory` (native DAG) | Whole bytes after parsing a byte count or binary-unit string |
+| `mem_mb` / `mem_gb` | task `memory` (native DAG) | MiB / GiB converted to whole bytes |
 | `gpu` / `gpus` | `num_gpus` | Fractional GPUs up to one (`gpu = 0.5`), or whole multi-GPU counts |
 | any custom key / `custom:tpu` | Custom resource | Arbitrary case-sensitive Ray custom resources |
 
 Ray's advantage: fractional GPUs (`num_gpus=0.5`) enable model serving
 workloads where multiple inference tasks share a single GPU.
 
-This table describes the checked mapper output. The native DAG driver currently
-forwards CPU and GPU only; forwarding normalized memory and custom resources to
-Ray task options is a separate implementation step.
+This table describes the checked mapper output and native DAG task options.
+The per-job Jobs API and array-emulation limitations are described in
+[Resource admission](#resource-admission).
 
 
 ## Philosophy: Complementary, Not Overlapping
