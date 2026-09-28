@@ -102,7 +102,8 @@ fn absent_resource_budget_preserves_unconstrained_dispatch_and_budget_rejects_im
     .assert()
     .failure()
     .stderr(predicate::str::contains("job "))
-    .stderr(predicate::str::contains("resource cpu"));
+    .stderr(predicate::str::contains("requests cpu"))
+    .stderr(predicate::str::contains("more than the whole budget"));
     assert!(!constrained.path().join("a.out").exists());
     assert!(!constrained.path().join("b.out").exists());
 }
@@ -202,7 +203,7 @@ fn resource_budget_is_rejected_for_remote_executors() {
         .assert()
         .failure()
         .stderr(predicate::str::contains(
-            "--resource-budget is only supported",
+            "--resource-budget applies to the local executor only",
         ));
     }
 }

@@ -93,7 +93,8 @@ use crate::event::EventBus;
 use crate::job_graph::{JobGraph, output_ref_key};
 use crate::model::*;
 use crate::resource::{
-    CanonicalResource, NormalizedResources, canonicalize_resource_key, normalize_resources,
+    CanonicalResource, NormalizedResources, TokenAmount, canonicalize_resource_key,
+    normalize_resources,
 };
 use crate::traits::benchmark::BenchmarkSink;
 use crate::traits::cache::{CacheCheck, OutputHashes};
@@ -1308,6 +1309,15 @@ fn resource_config_error(reason: String) -> OxError {
 
 // C0 owns all parsing and conversion. Here we only expose the normalized
 // integer representation for comparison and accounting.
+/// Render an internal amount the way the user wrote it: memory in bytes,
+/// counts back from ten-thousandths of a token.
+fn render_amount(key: &CanonicalResource, amount: u64) -> String {
+    match key {
+        CanonicalResource::Memory => amount.to_string(),
+        _ => TokenAmount::from_ten_thousandths(amount).to_string(),
+    }
+}
+
 fn resource_amounts(resources: NormalizedResources) -> ResourceAmounts {
     let mut amounts = BTreeMap::new();
     if let Some(cpu) = resources.cpu {
@@ -1381,9 +1391,13 @@ impl ResourceBudget {
     fn validate(&self, job: &JobId, demand: &ResourceAmounts) -> Result<(), OxError> {
         let inner = self.inner.lock().expect("resource budget lock poisoned");
         for (key, required) in demand {
-            if *required > inner.capacity[key] {
+            let capacity = inner.capacity[key];
+            if *required > capacity {
                 return Err(resource_config_error(format!(
-                    "job {job}: resource {key} demand exceeds total capacity"
+                    "job {job} requests {key} = {}, more than the whole budget ({key} = {}). \
+                     Lower the rule's declaration or raise --resource-budget",
+                    render_amount(key, *required),
+                    render_amount(key, capacity),
                 )));
             }
         }

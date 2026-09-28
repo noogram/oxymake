@@ -1040,7 +1040,7 @@ fn validate_resource_budget_flags(args: &RunArgs) -> Result<()> {
     if !args.resource_budget.is_empty() && args.executor != "local" {
         return Err(clap::Error::raw(
             clap::error::ErrorKind::ArgumentConflict,
-            "--resource-budget is only supported with --executor local; Ray and SLURM map rule resources to their own backends",
+            "--resource-budget applies to the local executor only; Ray and SLURM map a rule's declared resources onto their own backend requests",
         )
         .into());
     }
