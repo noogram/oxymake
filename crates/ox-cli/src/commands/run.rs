@@ -103,7 +103,8 @@ pub struct RunArgs {
     /// Uses the portable resource names and units, for example
     /// `--resource-budget cpu=6,mem_gb=32 --resource-budget metal=1`.
     /// This limits resources held by admitted jobs; it does not detect host
-    /// capacity or coordinate with other `ox run` processes.
+    /// capacity or coordinate with other `ox run` processes. In mixed SLURM
+    /// runs it applies only to jobs routed locally. Pure remote runs reject it.
     #[arg(long, value_name = "KEY=VALUE", value_delimiter = ',')]
     pub resource_budget: Vec<String>,
 
@@ -1041,11 +1042,14 @@ fn validate_ray_flags(args: &RunArgs) -> Result<()> {
     Ok(())
 }
 
-fn validate_resource_budget_flags(args: &RunArgs) -> Result<()> {
-    if !args.resource_budget.is_empty() && args.executor != "local" {
+fn validate_resource_budget_flags(args: &RunArgs, has_local_jobs: bool) -> Result<()> {
+    if !args.resource_budget.is_empty()
+        && args.executor != "local"
+        && !(args.executor == "slurm" && has_local_jobs)
+    {
         return Err(clap::Error::raw(
             clap::error::ErrorKind::ArgumentConflict,
-            "--resource-budget applies to the local executor only; Ray and SLURM map a rule's declared resources onto their own backend requests\n",
+            "--resource-budget applies to the local executor only (including local overrides in SLURM runs); Ray and SLURM map a rule's declared resources onto their own backend requests\n",
         )
         .into());
     }
@@ -1170,7 +1174,6 @@ fn local_executor(args: &RunArgs, event_bus: &EventBus) -> LocalExecutor {
 pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
     if args.profile.is_none() {
         validate_ray_flags(&args)?;
-        validate_resource_budget_flags(&args)?;
     }
     let mut timer = PhaseTimer::new(args.timings);
     let file_path = PathBuf::from(&args.file);
@@ -1195,7 +1198,6 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
     }
 
     validate_ray_flags(&args)?;
-    validate_resource_budget_flags(&args)?;
     let resource_budget = parse_resource_budget(&args.resource_budget)?;
 
     // Apply global config for open_dashboard (lowest precedence).
@@ -1289,20 +1291,6 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
     // `before` is blocked until the gate is approved (issue #2).
     let gated_jobs = attach_gates(&mut job_graph, &workflow.gates);
     timer.mark("resolve_and_build");
-    let local_override = job_graph
-        .job_ids()
-        .into_iter()
-        .filter_map(|id| job_graph.get_job(id))
-        .find(|job| job.executor.as_deref() == Some("local"));
-    if args.executor == "ray" {
-        if let Some(job) = local_override {
-            bail!(
-                "rule '{}' declares executor = \"local\", which Ray DAG submission cannot honour on the submitting host; run these targets separately with ox run --executor local",
-                job.rule
-            );
-        }
-    }
-    let mixed_slurm = args.executor == "slurm" && local_override.is_some();
 
     // -----------------------------------------------------------------------
     // Selective execution: --until and --omit-from
@@ -1327,6 +1315,16 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
             selective_skip.insert(job_id);
         }
     }
+
+    let selected_local_jobs: Vec<_> = job_graph
+        .job_ids()
+        .into_iter()
+        .filter(|id| !selective_skip.contains(*id))
+        .filter_map(|id| job_graph.get_job(id))
+        .filter(|job| args.executor == "local" || job.executor.as_deref() == Some("local"))
+        .cloned()
+        .collect();
+    validate_resource_budget_flags(&args, !selected_local_jobs.is_empty())?;
 
     let job_count = job_graph.job_count();
 
@@ -1501,7 +1499,10 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
     }
 
     // Admission is a property of the selected DAG, even when cache skips all work.
-    ox_core::scheduler::validate_resource_budget(&job_graph, &resource_budget)?;
+    ox_core::scheduler::validate_resource_budget(
+        &JobGraph::build(selected_local_jobs)?,
+        &resource_budget,
+    )?;
 
     // -----------------------------------------------------------------------
     // Cache: determine which jobs can be skipped
@@ -1688,6 +1689,31 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
         timer.mark("all_cached_exit");
         timer.print();
         return Ok(());
+    }
+
+    let local_override = job_graph
+        .job_ids()
+        .into_iter()
+        .filter(|id| !skip_jobs.contains(*id))
+        .filter_map(|id| job_graph.get_job(id))
+        .find(|job| job.executor.as_deref() == Some("local"));
+    if args.executor == "ray" {
+        if let Some(job) = local_override {
+            bail!(
+                "rule '{}' declares executor = \"local\", which Ray DAG submission cannot honour on the submitting host; run these targets separately with ox run --executor local",
+                job.rule
+            );
+        }
+    }
+    let mixed_slurm = args.executor == "slurm" && local_override.is_some();
+
+    if mixed_slurm {
+        eprintln!(
+            "Notice: this run contains a local override and uses scheduler dispatch instead of DAG submission. \
+             --jobs={} bounds concurrent jobs, including cluster submissions (default: 1). \
+             The ox process must stay alive until the run completes.",
+            args.jobs
+        );
     }
 
     // Execute via the scheduler.
@@ -2507,23 +2533,18 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
 
                 if args.follow {
                     eprintln!("Following execution progress…\n");
-                    let (result, stop) = remote_follow::follow(
-                        FollowRequest {
-                            jobs: dag_result.job_submissions.keys().cloned().collect(),
-                            total: dag_result.total_jobs,
-                            skipped: dag_result.skipped,
-                            endpoint: dashboard_url,
-                            policy: FollowPolicy::new(std::time::Duration::from_secs(3)),
-                            interrupted: &interrupted,
-                            shutdown: &shutdown,
-                        },
-                        |job| {
-                            let executor = &executor;
-                            async move { executor.poll_status(&JobId::from(job.as_str())).await }
-                        },
-                        |line| eprintln!("{line}"),
-                    )
-                    .await;
+                    // Preserve the existing follow block formatting.
+                    #[rustfmt::skip]
+                    let (result, stop) = remote_follow::follow(FollowRequest {
+                        jobs: dag_result.job_submissions.keys().cloned().collect(),
+                        total: dag_result.total_jobs, skipped: dag_result.skipped,
+                        endpoint: dashboard_url,
+                        policy: FollowPolicy::new(std::time::Duration::from_secs(3)),
+                        interrupted: &interrupted, shutdown: &shutdown,
+                    }, |job| {
+                        let executor = &executor;
+                        async move { executor.poll_status(&JobId::from(job.as_str())).await }
+                    }, |line| eprintln!("{line}")).await;
                     // The controller drops an in-flight poll on the first signal.
                     // Restore Ray's driver cancellation before leaving follow;
                     // a failed stop must not claim or record cancellation.

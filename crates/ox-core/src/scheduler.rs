@@ -163,7 +163,9 @@ pub struct SchedulerConfig {
     /// Whether to continue on independent branches after failure.
     pub keep_going: bool,
     /// Jobs to skip (e.g., because they are cached). These will be
-    /// pre-marked as `Skipped` before the scheduling loop starts.
+    /// pre-marked as `Skipped` before the scheduling loop starts. Callers
+    /// supplying precomputed cache hits must validate their resource declarations
+    /// before adding them here (see [`validate_resource_budget`]).
     pub skip_jobs: HashSet<JobId>,
     /// Jobs to force re-execute regardless of cache. These bypass the
     /// dynamic cache check in the scheduler, ensuring they always run
@@ -512,6 +514,9 @@ pub async fn run_scheduler_with_claims<E: Executor + 'static>(
     // Fail closed for callers bypassing the workflow parser or using a
     // remote executor without the local routing adapter.
     for id in graph.job_ids() {
+        if config.skip_jobs.contains(id) {
+            continue;
+        }
         let job = graph.get_job(id).expect("graph job");
         if let Some(value) = &job.executor {
             if value != "local" || executor.executor_name(job) != "local" {
@@ -572,7 +577,13 @@ pub async fn run_scheduler_with_claims<E: Executor + 'static>(
     let mut demands = HashMap::new();
     for job_id in &topo_order {
         let job = graph.get_job(job_id).expect("topological job exists");
-        let demand = resource_budget.validated_demand(job_id, &job.resources)?;
+        // Explicit skips are already selected/validated by the caller. The
+        // scheduler's own cache checks still happen after admission validation.
+        let demand = if !config.skip_jobs.contains(*job_id) && executor.uses_resource_budget(job) {
+            resource_budget.validated_demand(job_id, &job.resources)?
+        } else {
+            BTreeMap::new()
+        };
         demands.insert((*job_id).clone(), demand);
     }
     let mut sched_state = match config.resume_snapshot.as_ref() {

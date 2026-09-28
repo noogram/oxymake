@@ -11,8 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Rule `executor` accepts only `"local"`. Previously accepted values such as
   `"ray"`, `"slurm"`, site names and typos now fail parsing (including
   `ox lint`), naming the rule and directing backend selection to
-  `ox run --executor`. Bump the workspace minor version to 0.6.0 under the
-  stable-field policy (#37).
+  `ox run --executor`. The next release requires a minor-version bump under
+  the stable-field policy (#37).
 
 ### Added
 - Local cold launches on Linux and macOS now measure peak RSS and user + system
@@ -49,7 +49,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `ox run --resource-budget KEY=VALUE` now opts the local executor into
   per-run resource admission. It accepts repeatable, comma-separated portable
   resource capacities (for example `cpu=6,mem_gb=32`) without changing `-j` or
-  `--memory-budget`; Ray and SLURM reject the local-only flag (issue #25).
+  `--memory-budget`; pure remote runs reject the local-only flag (issue #25).
 - Ray DAG submission now checks each task's complete CPU, GPU, memory and custom
   request against live node total capacity before submission. The Ray-only
   `--ray-allow-pending` flag allows waiting for future nodes. Inspection fails
@@ -93,6 +93,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (issue #25).
 
 ### Fixed
+- Mixed SLURM runs announce scheduler dispatch, the current `--jobs` limit
+  (default 1), and the need to keep `ox` alive. Pruned or cached local rules
+  no longer force scheduler dispatch or block Ray. `--resource-budget` now
+  admits only locally routed jobs in mixed SLURM runs; remote requests remain
+  with SLURM. The routing adapter preserves backend error text and forwards
+  the stricter concurrency limit. Its unstable `LocalOverrideError` type and
+  `Executor::uses_resource_budget` method support these semantics (#37).
 - `executor = "local"` actually runs on the submitting host in SLURM runs.
   A mixed graph uses the scheduler and waits for completion, preserving its
   cache, dependency, retry, logging and cancellation paths. Pure SLURM graphs

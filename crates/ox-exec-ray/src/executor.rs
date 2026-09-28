@@ -640,9 +640,10 @@ impl Executor for RayExecutor {
         graph: &ox_core::job_graph::JobGraph,
         ctx: &ExecContext,
     ) -> Result<DagSubmission, Self::Error> {
+        let skip_jobs = self.skip_jobs.lock().await.clone();
         for id in graph.job_ids() {
             let job = graph.get_job(id).expect("graph job");
-            if job.executor.as_deref() == Some("local") {
+            if !skip_jobs.contains(id) && job.executor.as_deref() == Some("local") {
                 return Err(RayError::CallModeError(format!(
                     "rule '{}' declares executor = \"local\", which Ray DAG submission cannot honour; run these targets separately with ox run --executor local",
                     job.rule
@@ -657,8 +658,6 @@ impl Executor for RayExecutor {
 
         let total_jobs = topo_order.len();
 
-        // Read cached jobs to skip.
-        let skip_jobs = self.skip_jobs.lock().await.clone();
         let skipped_count = topo_order
             .iter()
             .filter(|id| skip_jobs.contains(id))
@@ -943,6 +942,13 @@ mod tests {
             err.contains("on_host") && err.contains("local") && err.contains("DAG"),
             "{err}"
         );
+
+        executor
+            .set_skip_jobs(graph.job_ids().into_iter().cloned().collect())
+            .await;
+        let submission = executor.submit_dag(&graph, &ctx).await.unwrap();
+        assert_eq!(submission.submitted, 0);
+        assert_eq!(submission.skipped, 1);
     }
 
     use super::*;

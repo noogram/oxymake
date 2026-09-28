@@ -80,7 +80,8 @@ The `ox` binary exposes 27 subcommands today (see `crates/ox-cli/src/lib.rs`).
 
 - `ox run --resource-budget KEY=VALUE` enables per-run local admission with
   repeatable, comma-separated capacities. It validates the selected DAG even
-  when all jobs are cached; it does not coordinate concurrent runs.
+  when all jobs are cached; in mixed SLURM runs only selected local jobs
+  participate. It does not coordinate concurrent runs.
 - `ox run --ray-allow-pending` opts out of Ray's live-node capacity check;
   it does not disable resource validation. Ray custom names reject surrounding
   whitespace and collisions with built-in names or reserved prefixes.
@@ -324,7 +325,8 @@ staging diagnostic, and the state queries
 for remote submissions, cancellable jobs and current run membership are
 **unstable** Rust APIs.
 
-`Executor::executor_name`, `LocalOverrideExecutor`, and
+`Executor::executor_name`, `Executor::uses_resource_budget`,
+`LocalOverrideExecutor`, `LocalOverrideError`, and
 `StateDb::finalize_job_history_with_executors` are **unstable** Rust APIs.
 The routing adapter preserves per-job selection through workspace preparation,
 execution, finalization, retries, polling and cancellation; it requires the
