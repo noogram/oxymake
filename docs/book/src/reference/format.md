@@ -220,16 +220,27 @@ backslashes and non-ASCII characters, are forwarded as data.
 Ray currently accepts memory syntax but does **not** reserve memory. CPU, GPU
 and custom tokens are scheduling reservations; memory forwarding is deferred.
 
-Local scheduler admission is opt-in through the Rust API's
-`SchedulerConfig.resource_budget` (a map of resource keys to `u64` capacities).
-Capacity counts are whole tokens; job demands may be fractional. Memory
-capacities use the units of their key. Only budgeted canonical resources are
-interpreted and enforced. For example, a `cpu = 6` budget also constrains a
-`cpus = 4` demand. A job with no demand consumes no resource tokens and still
-uses one `max_jobs` slot. Zero demand fits zero capacity; a positive demand
-against zero capacity, or any demand exceeding total capacity, is a configuration
-error naming the job and resource before execution of the selected DAG starts.
-Rules outside that DAG do not participate in validation.
+Local scheduler admission is opt-in with `ox run --resource-budget KEY=VALUE`.
+The flag is repeatable and comma-separated, for example
+`--resource-budget cpu=6,mem_gb=32 --resource-budget metal=1`; it uses exactly
+the aliases, binary memory units and duplicate checks above. Capacity counts
+are whole tokens; job demands may be fractional. Memory capacity is normalized
+to whole bytes, so `mem_gb=1`, `mem_mb=1024`, and `memory=1GiB` are identical.
+Two spellings of one canonical resource across flags are an error.
+
+Only budgeted canonical resources are interpreted and enforced. For example,
+a `cpu = 6` budget also constrains a `cpus = 4` demand. A job with no demand
+consumes no resource tokens and still uses one `-j` / `--jobs` slot. Zero
+demand fits zero capacity; a positive demand against zero capacity, or any
+demand exceeding total capacity, is a configuration error naming the job and
+resource before execution of the selected DAG starts. Rules outside that DAG
+do not participate in validation.
+
+`-j N` caps concurrent jobs, while `--resource-budget` caps resources held by
+those jobs. This is distinct from `--memory-budget`, which caps in-memory
+materialized outputs and never admits or rejects a job. The resource budget is
+per `ox run`: two concurrent runs each get their full configured budget.
+OxyMake does not detect host capacity or coordinate budgets across processes.
 
 ### Conditional Guards
 

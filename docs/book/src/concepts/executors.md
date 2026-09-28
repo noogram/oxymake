@@ -24,12 +24,15 @@ ox run -j 8           # 8 parallel jobs
 
 Best for development, small pipelines, and single-node execution.
 
-Rust API callers can opt into resource admission with
-`SchedulerConfig.resource_budget`, for example `cpu = 6` and `gpu = 1`.
-Two jobs each requesting four CPUs then run sequentially even with
-`max_jobs = 3`; two half-GPU jobs may run together. The CLI does not yet
-provide a resource-budget flag. An empty budget leaves dispatch bounded by
-`max_jobs` alone.
+Opt into resource admission with `--resource-budget`, for example
+`ox run -j 3 --resource-budget cpu=6,gpu=1`. Two jobs each requesting four
+CPUs then run sequentially even with `-j 3`; two half-GPU jobs may run
+together. An empty budget leaves dispatch bounded by `-j` alone.
+
+`-j` caps concurrent jobs, `--resource-budget` caps declared resources held by
+those jobs, and `--memory-budget` separately caps in-memory outputs. A budget
+is per `ox run`; concurrent processes each get their own capacity, with no
+host-wide coordination or capacity promise.
 
 Admission validates the selected graph before cache checks, claims, output
 cleanup or recipes. It reserves only resources named in the budget, using the
@@ -118,9 +121,8 @@ max_submit = 10
 | `gpu` / `gpus` | `num_gpus` | Fractional GPUs up to one, or whole multi-GPU counts |
 | any custom key / `custom:*` | Custom resources | Case-sensitive custom resources |
 
-The native Ray DAG driver currently forwards CPU and GPU only. Memory and
-custom resources are normalized and validated here but are not yet emitted in
-Ray task options.
+The native Ray DAG driver forwards CPU, GPU and custom resources. Memory is
+normalized and validated but is not a Ray scheduling reservation.
 
 ### Memory Passing
 
