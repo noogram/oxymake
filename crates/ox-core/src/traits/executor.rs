@@ -216,6 +216,12 @@ pub trait Executor: Send + Sync + Debug {
     /// Error type specific to this executor.
     type Error: std::error::Error + Send + Sync + 'static;
 
+    /// Actual backend selected for a job, used by events and history.
+    /// Implementations that do not identify themselves report "unknown".
+    fn executor_name(&self, _job: &ConcreteJob) -> &str {
+        "unknown"
+    }
+
     // -- Lifecycle --
 
     /// Initialize the executor (validate configuration, check connectivity).

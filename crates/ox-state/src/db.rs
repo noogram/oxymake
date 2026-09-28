@@ -1471,6 +1471,30 @@ impl StateDb {
         peak_memory_bytes: &std::collections::HashMap<String, u64>,
         provenance: &std::collections::HashMap<String, JobProvenance>,
     ) -> Result<usize, StateError> {
+        self.finalize_job_history_with_executors(
+            run_id,
+            executor,
+            hostname,
+            wall_times,
+            peak_memory_bytes,
+            provenance,
+            &std::collections::HashMap::new(),
+        )
+    }
+
+    /// Finalize history using actual job-start executor observations.
+    /// Jobs with no observation retain the run executor (e.g. DAG submissions).
+    #[allow(clippy::too_many_arguments)]
+    pub fn finalize_job_history_with_executors(
+        &self,
+        run_id: &str,
+        executor: &str,
+        hostname: &str,
+        wall_times: &std::collections::HashMap<String, u64>,
+        peak_memory_bytes: &std::collections::HashMap<String, u64>,
+        provenance: &std::collections::HashMap<String, JobProvenance>,
+        executors: &std::collections::HashMap<String, String>,
+    ) -> Result<usize, StateError> {
         let mut stmt = self.conn.prepare(
             "SELECT id, rule_name, wildcards, status, started_at, completed_at, exit_code
              FROM jobs
@@ -1492,6 +1516,7 @@ impl StateDb {
                     .copied()
                     .map(bytes_to_mib_rounded_up);
                 let prov = provenance.get(job_id.as_str()).cloned().unwrap_or_default();
+                let actual_executor = executors.get(&job_id).map_or(executor, String::as_str);
                 Ok(JobHistoryEntry {
                     run_id: run_id.to_string(),
                     job_id,
@@ -1501,7 +1526,7 @@ impl StateDb {
                     output_hashes: prov.output_hashes,
                     params_hash: prov.params_hash,
                     env_hash: prov.env_hash,
-                    executor: Some(executor.to_string()),
+                    executor: Some(actual_executor.to_string()),
                     hostname: Some(hostname.to_string()),
                     started_at: row.get(4)?,
                     completed_at: row.get(5)?,

@@ -136,6 +136,9 @@ pub struct RunArgs {
     pub overrides: Vec<String>,
 
     /// Executor backend
+    ///
+    /// SLURM graphs with rule-level local overrides run through the scheduler
+    /// and wait for completion. Ray DAG runs reject local overrides.
     #[arg(long, default_value = "local")]
     pub executor: String,
 
@@ -1134,6 +1137,36 @@ fn whole_token_capacity(resource: &str, amount: TokenAmount) -> Result<u64> {
     Ok(scaled / TOKEN_SCALE)
 }
 
+fn local_executor(args: &RunArgs, event_bus: &EventBus) -> LocalExecutor {
+    let mut executor = if args.jobs > 1 {
+        LocalExecutor::with_max_jobs(args.jobs)
+    } else {
+        LocalExecutor::new()
+    };
+    if args.verbose >= 2 {
+        executor = executor.with_event_bus(event_bus.clone());
+    }
+    if let Some(ref mode) = args.warm_workers {
+        let project_dir = std::env::current_dir().unwrap_or_default();
+        let warm_mode = match mode.as_str() {
+            "fork" => ox_exec_local::call_mode::WarmWorkerMode::Fork,
+            "persistent" => ox_exec_local::call_mode::WarmWorkerMode::Persistent,
+            other => {
+                eprintln!(
+                    "error: unknown --warm-workers mode: {other:?} (expected 'fork' or 'persistent')"
+                );
+                std::process::exit(1);
+            }
+        };
+        let pool = Arc::new(ox_exec_local::worker_pool::WorkerPool::new_with_mode(
+            project_dir,
+            warm_mode,
+        ));
+        executor = executor.with_worker_pool(pool);
+    }
+    executor
+}
+
 pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
     if args.profile.is_none() {
         validate_ray_flags(&args)?;
@@ -1256,6 +1289,20 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
     // `before` is blocked until the gate is approved (issue #2).
     let gated_jobs = attach_gates(&mut job_graph, &workflow.gates);
     timer.mark("resolve_and_build");
+    let local_override = job_graph
+        .job_ids()
+        .into_iter()
+        .filter_map(|id| job_graph.get_job(id))
+        .find(|job| job.executor.as_deref() == Some("local"));
+    if args.executor == "ray" {
+        if let Some(job) = local_override {
+            bail!(
+                "rule '{}' declares executor = \"local\", which Ray DAG submission cannot honour on the submitting host; run these targets separately with ox run --executor local",
+                job.rule
+            );
+        }
+    }
+    let mixed_slurm = args.executor == "slurm" && local_override.is_some();
 
     // -----------------------------------------------------------------------
     // Selective execution: --until and --omit-from
@@ -1649,7 +1696,7 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
     // branches below bypass the scheduler (`submit_dag`), so a gated
     // workflow would run unguarded there: refuse instead of silently
     // dropping the approval step.
-    if gated_jobs > 0 && args.executor != "local" {
+    if gated_jobs > 0 && args.executor != "local" && !mixed_slurm {
         bail!(
             "this workflow declares {} gate(s) but `--executor {}` submits the DAG \
              without the scheduler, so gates cannot block jobs there; run with \
@@ -1854,6 +1901,8 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
 
     // Collect per-job duration_ms from events for the audit trail (ox-mnbb).
     let job_durations: Arc<Mutex<HashMap<String, u64>>> = Arc::new(Mutex::new(HashMap::new()));
+    let job_executors: Arc<Mutex<HashMap<String, String>>> = Arc::new(Mutex::new(HashMap::new()));
+
     // Preserve only executor-scoped peak-memory observations. Missing values
     // stay absent so history can distinguish them from a measured zero (#24).
     let job_peak_memory_bytes: Arc<Mutex<HashMap<String, u64>>> =
@@ -1865,7 +1914,8 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
     let interrupted = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let interrupted_outer = interrupted.clone();
     let mut remote_stop = None;
-    let remote_following = args.follow && matches!(args.executor.as_str(), "ray" | "slurm");
+    let remote_following =
+        args.follow && !mixed_slurm && matches!(args.executor.as_str(), "ray" | "slurm");
     let result = rt.block_on(async {
         let interrupted = interrupted_outer;
         // Set up graceful shutdown: SIGINT (Ctrl+C) notifies the scheduler
@@ -2008,6 +2058,7 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
             let db_path = state_db_path.clone();
             let sid = session_id.clone().unwrap_or_default();
             let durations = Arc::clone(&job_durations);
+            let executors = Arc::clone(&job_executors);
             let peak_memory = Arc::clone(&job_peak_memory_bytes);
             bridge_handles.push(tokio::spawn(async move {
                 let db = match ox_state::db::StateDb::open(&db_path) {
@@ -2017,7 +2068,15 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
                 loop {
                     match rx.recv().await {
                         Ok(event) => match event {
-                            Event::JobStarted { ref job_id, .. } => {
+                            Event::JobStarted {
+                                ref job_id,
+                                ref executor,
+                                ..
+                            } => {
+                                executors
+                                    .lock()
+                                    .await
+                                    .insert(job_id.to_string(), executor.clone());
                                 let _ = db.claim_job(job_id.as_str(), &sid);
                             }
                             Event::JobCompleted {
@@ -2146,33 +2205,7 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
 
         let sched_result = match args.executor.as_str() {
             "local" => {
-                let mut executor = if args.jobs > 1 {
-                    LocalExecutor::with_max_jobs(args.jobs)
-                } else {
-                    LocalExecutor::new()
-                };
-                if args.verbose >= 2 {
-                    executor = executor.with_event_bus(event_bus.clone());
-                }
-                if let Some(ref mode) = args.warm_workers {
-                    let project_dir = std::env::current_dir().unwrap_or_default();
-                    let warm_mode = match mode.as_str() {
-                        "fork" => ox_exec_local::call_mode::WarmWorkerMode::Fork,
-                        "persistent" => ox_exec_local::call_mode::WarmWorkerMode::Persistent,
-                        other => {
-                            eprintln!(
-                                "error: unknown --warm-workers mode: {other:?} (expected 'fork' or 'persistent')"
-                            );
-                            std::process::exit(1);
-                        }
-                    };
-                    let pool = Arc::new(
-                        ox_exec_local::worker_pool::WorkerPool::new_with_mode(
-                            project_dir, warm_mode,
-                        ),
-                    );
-                    executor = executor.with_worker_pool(pool);
-                }
+                let executor = local_executor(&args, &event_bus);
                 let bench_sink: Option<Arc<dyn BenchmarkSink>> = Some(Arc::new(FsBenchmarkSink));
                 scheduler::run_scheduler_with_claims(
                     &job_graph,
@@ -2219,7 +2252,9 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
                         .unwrap_or_default(),
                     ..SlurmConfig::default()
                 };
-                let endpoint = slurm_config.api_url.clone()
+                let endpoint = slurm_config
+                    .api_url
+                    .clone()
                     .unwrap_or_else(|| "SLURM scheduler via local sacct/squeue".into());
                 let executor = SlurmExecutor::new(slurm_config, event_bus.clone());
                 // Pre-flight: verify SLURM CLI tools are available before
@@ -2231,122 +2266,162 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
                     })
                 })?;
 
-                // Pass cached jobs to the SLURM executor so it omits them
-                // from the DAG submission (their outputs already exist).
-                executor
-                    .set_skip_jobs(scheduler_config.skip_jobs.clone())
-                    .await;
-
-                // Mark cached jobs as skipped in state.db before submission.
-                if let Some(ref db) = state_db {
-                    for job_id in &scheduler_config.skip_jobs {
-                        let _ = db.skip_job(job_id.as_str());
-                    }
-                }
-
-                // DAG-level submission: submit uncached jobs via sbatch
-                // with --dependency=afterok chains for the DAG edges.
-                let dag_result = executor.submit_dag(&job_graph, &ctx).await.map_err(|e| {
-                    ox_core::error::OxError::Exec(ox_core::error::ExecError::Executor {
-                        message: format!("SLURM DAG submission failed: {e}"),
-                    })
-                })?;
-
-                // Record DAG submission in state.db for `ox status` tracking.
-                if let Some(ref db) = state_db {
-                    let _ = db.record_dag_submission(
-                        &dag_result.run_id,
-                        "slurm",
-                        None,
-                        dag_result.total_jobs - dag_result.skipped,
+                if mixed_slurm {
+                    let executor = ox_core::traits::local_override::LocalOverrideExecutor::new(
+                        executor,
+                        local_executor(&args, &event_bus),
+                        &job_graph,
                     );
-                    for (job_id_str, submission_id) in &dag_result.job_submissions {
-                        let _ = db.set_executor_submission_id(job_id_str, submission_id);
-                    }
-                }
-
-                let active = dag_result.total_jobs - dag_result.skipped;
-                eprintln!(
-                    "DAG submitted to SLURM: {} active jobs ({} cached, {} total, run_id: {})",
-                    active, dag_result.skipped, dag_result.total_jobs, dag_result.run_id
-                );
-                eprintln!(
-                    "  {} root jobs submitted, {} jobs pending on dependencies",
-                    dag_result.submitted, dag_result.pending
-                );
-
-                if args.follow {
-                    eprintln!("Following execution progress…\n");
-                    let (result, stop) = remote_follow::follow(FollowRequest {
-                        jobs: dag_result.job_submissions.keys().cloned().collect(),
-                        total: dag_result.total_jobs, skipped: dag_result.skipped,
-                        endpoint: &endpoint,
-                        policy: FollowPolicy::new(std::time::Duration::from_secs(5)),
-                        interrupted: &interrupted, shutdown: &shutdown,
-                    }, |job_id_str| {
-                        let executor = &executor;
-                        let state_db = &state_db;
-                        let session_id = &session_id;
-                        let job_durations = &job_durations;
-                        let job_peak_memory_bytes = &job_peak_memory_bytes;
-                        async move {
-                            use ox_core::traits::executor::JobStatus;
-                            let jid = JobId::from(job_id_str.as_str());
-                            let (status, record) = executor.poll_status_with_record(&jid).await?;
-                            if let (Some(db), Some(sid)) = (&state_db, &session_id) {
-                                match &status {
-                                    JobStatus::Completed
-                                    | JobStatus::Failed(_)
-                                    | JobStatus::Running => {
-                                        let _ = db.claim_job(&job_id_str, sid);
-                                    }
-                                    _ => {}
-                                }
-                                match &status {
-                                    JobStatus::Completed => {
-                                        let _ = db.complete_job(&job_id_str, sid, 0, "");
-                                    }
-                                    JobStatus::Failed(_) => {
-                                        let exit = record.as_ref()
-                                            .map(|r| r.exit_code)
-                                            .filter(|c| *c != 0)
-                                            .unwrap_or(1);
-                                        let _ = db.fail_job(&job_id_str, sid, exit);
-                                    }
-                                    JobStatus::Cancelled => {
-                                        let _ = db.cancel_job_ids_for_session(
-                                            std::slice::from_ref(&job_id_str), sid,
-                                        );
-                                    }
-                                    _ => {}
-                                }
-                            }
-
-                            if matches!(status, JobStatus::Completed) && let Some(record) = record {
-                                job_durations.lock().await.insert(job_id_str.clone(), record.elapsed.as_millis() as u64);
-                                if let Some(bytes) = record.peak_memory_bytes {
-                                    job_peak_memory_bytes.lock().await.insert(job_id_str, bytes);
-                                }
-                            }
-                            Ok::<_, ox_exec_slurm::error::SlurmError>(status)
-                        }
-                    }, |line| eprintln!("{line}")).await;
-                    remote_stop = stop;
-                    Ok(result)
+                    scheduler::run_scheduler_with_claims(
+                        &job_graph,
+                        Arc::new(executor),
+                        &scheduler_config,
+                        &event_bus,
+                        &ctx,
+                        scheduler_cache.clone(),
+                        gate_checker.clone(),
+                        Some(Arc::new(FsBenchmarkSink)),
+                        Some(shutdown.clone()),
+                        disk_writer_handle.clone(),
+                        job_claimer.clone(),
+                    )
+                    .await
                 } else {
-                    // Fire-and-forget: return immediately.
-                    eprintln!("Use 'ox status' to check progress.");
-                    Ok(scheduler::SchedulerResult {
-                        total_jobs: dag_result.total_jobs,
-                        succeeded: 0,
-                        failed: 0,
-                        skipped: dag_result.skipped,
-                        cancelled: 0,
-                        duration: std::time::Duration::ZERO,
-                        failed_details: vec![],
-                        root_cause: None,
-                        memory_stats: None,
-                    })
+                    // Pass cached jobs to the SLURM executor so it omits them
+                    // from the DAG submission (their outputs already exist).
+                    executor
+                        .set_skip_jobs(scheduler_config.skip_jobs.clone())
+                        .await;
+
+                    // Mark cached jobs as skipped in state.db before submission.
+                    if let Some(ref db) = state_db {
+                        for job_id in &scheduler_config.skip_jobs {
+                            let _ = db.skip_job(job_id.as_str());
+                        }
+                    }
+
+                    // DAG-level submission: submit uncached jobs via sbatch
+                    // with --dependency=afterok chains for the DAG edges.
+                    let dag_result = executor.submit_dag(&job_graph, &ctx).await.map_err(|e| {
+                        ox_core::error::OxError::Exec(ox_core::error::ExecError::Executor {
+                            message: format!("SLURM DAG submission failed: {e}"),
+                        })
+                    })?;
+
+                    // Record DAG submission in state.db for `ox status` tracking.
+                    if let Some(ref db) = state_db {
+                        let _ = db.record_dag_submission(
+                            &dag_result.run_id,
+                            "slurm",
+                            None,
+                            dag_result.total_jobs - dag_result.skipped,
+                        );
+                        for (job_id_str, submission_id) in &dag_result.job_submissions {
+                            let _ = db.set_executor_submission_id(job_id_str, submission_id);
+                        }
+                    }
+
+                    let active = dag_result.total_jobs - dag_result.skipped;
+                    eprintln!(
+                        "DAG submitted to SLURM: {} active jobs ({} cached, {} total, run_id: {})",
+                        active, dag_result.skipped, dag_result.total_jobs, dag_result.run_id
+                    );
+                    eprintln!(
+                        "  {} root jobs submitted, {} jobs pending on dependencies",
+                        dag_result.submitted, dag_result.pending
+                    );
+
+                    if args.follow {
+                        eprintln!("Following execution progress…\n");
+                        let (result, stop) = remote_follow::follow(
+                            FollowRequest {
+                                jobs: dag_result.job_submissions.keys().cloned().collect(),
+                                total: dag_result.total_jobs,
+                                skipped: dag_result.skipped,
+                                endpoint: &endpoint,
+                                policy: FollowPolicy::new(std::time::Duration::from_secs(5)),
+                                interrupted: &interrupted,
+                                shutdown: &shutdown,
+                            },
+                            |job_id_str| {
+                                let executor = &executor;
+                                let state_db = &state_db;
+                                let session_id = &session_id;
+                                let job_durations = &job_durations;
+                                let job_peak_memory_bytes = &job_peak_memory_bytes;
+                                async move {
+                                    use ox_core::traits::executor::JobStatus;
+                                    let jid = JobId::from(job_id_str.as_str());
+                                    let (status, record) =
+                                        executor.poll_status_with_record(&jid).await?;
+                                    if let (Some(db), Some(sid)) = (&state_db, &session_id) {
+                                        match &status {
+                                            JobStatus::Completed
+                                            | JobStatus::Failed(_)
+                                            | JobStatus::Running => {
+                                                let _ = db.claim_job(&job_id_str, sid);
+                                            }
+                                            _ => {}
+                                        }
+                                        match &status {
+                                            JobStatus::Completed => {
+                                                let _ = db.complete_job(&job_id_str, sid, 0, "");
+                                            }
+                                            JobStatus::Failed(_) => {
+                                                let exit = record
+                                                    .as_ref()
+                                                    .map(|r| r.exit_code)
+                                                    .filter(|c| *c != 0)
+                                                    .unwrap_or(1);
+                                                let _ = db.fail_job(&job_id_str, sid, exit);
+                                            }
+                                            JobStatus::Cancelled => {
+                                                let _ = db.cancel_job_ids_for_session(
+                                                    std::slice::from_ref(&job_id_str),
+                                                    sid,
+                                                );
+                                            }
+                                            _ => {}
+                                        }
+                                    }
+
+                                    if matches!(status, JobStatus::Completed)
+                                        && let Some(record) = record
+                                    {
+                                        job_durations.lock().await.insert(
+                                            job_id_str.clone(),
+                                            record.elapsed.as_millis() as u64,
+                                        );
+                                        if let Some(bytes) = record.peak_memory_bytes {
+                                            job_peak_memory_bytes
+                                                .lock()
+                                                .await
+                                                .insert(job_id_str, bytes);
+                                        }
+                                    }
+                                    Ok::<_, ox_exec_slurm::error::SlurmError>(status)
+                                }
+                            },
+                            |line| eprintln!("{line}"),
+                        )
+                        .await;
+                        remote_stop = stop;
+                        Ok(result)
+                    } else {
+                        // Fire-and-forget: return immediately.
+                        eprintln!("Use 'ox status' to check progress.");
+                        Ok(scheduler::SchedulerResult {
+                            total_jobs: dag_result.total_jobs,
+                            succeeded: 0,
+                            failed: 0,
+                            skipped: dag_result.skipped,
+                            cancelled: 0,
+                            duration: std::time::Duration::ZERO,
+                            failed_details: vec![],
+                            root_cause: None,
+                            memory_stats: None,
+                        })
+                    }
                 }
             }
             "ray" => {
@@ -2432,16 +2507,23 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
 
                 if args.follow {
                     eprintln!("Following execution progress…\n");
-                    let (result, stop) = remote_follow::follow(FollowRequest {
-                        jobs: dag_result.job_submissions.keys().cloned().collect(),
-                        total: dag_result.total_jobs, skipped: dag_result.skipped,
-                        endpoint: dashboard_url,
-                        policy: FollowPolicy::new(std::time::Duration::from_secs(3)),
-                        interrupted: &interrupted, shutdown: &shutdown,
-                    }, |job| {
-                        let executor = &executor;
-                        async move { executor.poll_status(&JobId::from(job.as_str())).await }
-                    }, |line| eprintln!("{line}")).await;
+                    let (result, stop) = remote_follow::follow(
+                        FollowRequest {
+                            jobs: dag_result.job_submissions.keys().cloned().collect(),
+                            total: dag_result.total_jobs,
+                            skipped: dag_result.skipped,
+                            endpoint: dashboard_url,
+                            policy: FollowPolicy::new(std::time::Duration::from_secs(3)),
+                            interrupted: &interrupted,
+                            shutdown: &shutdown,
+                        },
+                        |job| {
+                            let executor = &executor;
+                            async move { executor.poll_status(&JobId::from(job.as_str())).await }
+                        },
+                        |line| eprintln!("{line}"),
+                    )
+                    .await;
                     // The controller drops an in-flight poll on the first signal.
                     // Restore Ray's driver cancellation before leaving follow;
                     // a failed stop must not claim or record cancellation.
@@ -2451,8 +2533,14 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
                             .await
                             .err()
                             .map(|error| error.to_string());
-                        if cancellation_error.is_none() && let Some(db) = &state_db {
-                            let ids = dag_result.job_submissions.keys().cloned().collect::<Vec<_>>();
+                        if cancellation_error.is_none()
+                            && let Some(db) = &state_db
+                        {
+                            let ids = dag_result
+                                .job_submissions
+                                .keys()
+                                .cloned()
+                                .collect::<Vec<_>>();
                             let _ = db.cancel_job_ids(&ids);
                         }
                         Some(FollowStop::RayInterrupted { cancellation_error })
@@ -2503,7 +2591,7 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
         // Skip for fire-and-forget remote executors — their "0 succeeded"
         // result is misleading; the real summary is printed later (ox-x2jm).
         let skip_reporter_finish =
-            (args.executor == "ray" || args.executor == "slurm") && !args.follow;
+            (args.executor == "ray" || args.executor == "slurm") && !args.follow && !mixed_slurm;
         if !skip_reporter_finish && remote_stop.is_none() {
             if let (Some(reporter), Ok(r)) = (&term_reporter, &sched_result) {
                 use ox_core::traits::reporter::{Reporter, RunSummary};
@@ -2592,13 +2680,14 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
             cache_provenance.extend(sc.provenance.blocking_lock().clone());
         }
         let _ = db.record_job_cache_keys(&run_id, &cache_provenance);
-        let _ = db.finalize_job_history(
+        let _ = db.finalize_job_history_with_executors(
             &run_id,
             &args.executor,
             hostname,
             &durations,
             &peak_memory_bytes,
             &cache_provenance,
+            &job_executors.blocking_lock(),
         );
 
         // A stopped follow did not complete, even without a signal. Close it
@@ -2672,8 +2761,9 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
             }
 
             // Fire-and-forget remote executors: show "Submitted" not "Completed".
-            let is_fire_and_forget =
-                (args.executor == "ray" || args.executor == "slurm") && !args.follow;
+            let is_fire_and_forget = (args.executor == "ray" || args.executor == "slurm")
+                && !args.follow
+                && !mixed_slurm;
 
             if is_fire_and_forget {
                 let submitted = sched_result.total_jobs - sched_result.skipped;

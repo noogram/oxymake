@@ -324,6 +324,12 @@ staging diagnostic, and the state queries
 for remote submissions, cancellable jobs and current run membership are
 **unstable** Rust APIs.
 
+`Executor::executor_name`, `LocalOverrideExecutor`, and
+`StateDb::finalize_job_history_with_executors` are **unstable** Rust APIs.
+The routing adapter preserves per-job selection through workspace preparation,
+execution, finalization, retries, polling and cancellation; it requires the
+scheduler and does not submit a mixed graph as a remote DAG.
+
 The resource-normalization Rust API in `ox_core::resource` is likewise
 **unstable**. It provides the checked canonical form shared by executor
 adapters and local scheduler admission while leaving raw rule and job declarations

@@ -4,7 +4,7 @@
 .SH NAME
 ox\-run \- Execute a workflow, ensuring requested outputs exist
 .SH SYNOPSIS
-\fBox\-run\fR [\fB\-j\fR|\fB\-\-jobs\fR] [\fB\-\-rule\fR] [\fB\-\-json\fR] [\fB\-\-report\-json\fR] [\fB\-n\fR|\fB\-\-dry\-run\fR] [\fB\-k\fR|\fB\-\-keep\-going\fR] [\fB\-\-note\fR] [\fB\-\-set\fR] [\fB\-\-executor\fR] [\fB\-\-partition\fR] [\fB\-\-account\fR] [\fB\-\-qos\fR] [\fB\-\-slurm\-api\fR] [\fB\-\-ray\-address\fR] [\fB\-\-follow\fR] [\fB\-f\fR|\fB\-\-file\fR] [\fB\-\-no\-cache\fR] [\fB\-\-cache\-validation\fR] [\fB\-\-cache\-remote\fR] [\fB\-v\fR|\fB\-\-verbose\fR]... [\fB\-\-until\fR] [\fB\-\-omit\-from\fR] [\fB\-\-touch\fR] [\fB\-\-forcerun\fR] [\fB\-\-profile\fR] [\fB\-\-timings\fR] [\fB\-\-open\-dashboard\fR] [\fB\-\-memory\-budget\fR] [\fB\-\-warm\-workers\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fITARGETS\fR] 
+\fBox\-run\fR [\fB\-j\fR|\fB\-\-jobs\fR] [\fB\-\-resource\-budget\fR] [\fB\-\-rule\fR] [\fB\-\-json\fR] [\fB\-\-report\-json\fR] [\fB\-n\fR|\fB\-\-dry\-run\fR] [\fB\-k\fR|\fB\-\-keep\-going\fR] [\fB\-\-note\fR] [\fB\-\-set\fR] [\fB\-\-executor\fR] [\fB\-\-partition\fR] [\fB\-\-account\fR] [\fB\-\-qos\fR] [\fB\-\-slurm\-api\fR] [\fB\-\-ray\-address\fR] [\fB\-\-ray\-allow\-pending\fR] [\fB\-\-follow\fR] [\fB\-f\fR|\fB\-\-file\fR] [\fB\-\-no\-cache\fR] [\fB\-\-cache\-validation\fR] [\fB\-\-cache\-remote\fR] [\fB\-v\fR|\fB\-\-verbose\fR]... [\fB\-\-until\fR] [\fB\-\-omit\-from\fR] [\fB\-\-touch\fR] [\fB\-\-forcerun\fR] [\fB\-\-profile\fR] [\fB\-\-timings\fR] [\fB\-\-open\-dashboard\fR] [\fB\-\-memory\-budget\fR] [\fB\-\-warm\-workers\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fITARGETS\fR] 
 .SH DESCRIPTION
 Execute a workflow, ensuring requested outputs exist
 .PP
@@ -15,6 +15,11 @@ Scripts are responsible for domain validation: if a script exits 0, OxyMake trus
 .TP
 \fB\-j\fR, \fB\-\-jobs\fR \fI<JOBS>\fR [default: 1]
 Maximum concurrent jobs (must be at least 1)
+.TP
+\fB\-\-resource\-budget\fR \fI<KEY=VALUE>\fR
+Per\-run local resource capacity for job admission (repeatable; comma\-separated).
+
+Uses the portable resource names and units, for example `\-\-resource\-budget cpu=6,mem_gb=32 \-\-resource\-budget metal=1`. This limits resources held by admitted jobs; it does not detect host capacity or coordinate with other `ox run` processes.
 .TP
 \fB\-\-rule\fR \fI<RULE>\fR
 Filter by rule name (exact or /regex/)
@@ -39,6 +44,8 @@ Override config or resource values
 .TP
 \fB\-\-executor\fR \fI<EXECUTOR>\fR [default: local]
 Executor backend
+
+SLURM graphs with rule\-level local overrides run through the scheduler and wait for completion. Ray DAG runs reject local overrides.
 .TP
 \fB\-\-partition\fR \fI<PARTITION>\fR
 SLURM partition (only with \-\-executor slurm)
@@ -56,6 +63,9 @@ When set, the SLURM executor uses the REST API instead of CLI commands (sbatch/s
 .TP
 \fB\-\-ray\-address\fR \fI<RAY_ADDRESS>\fR
 Ray dashboard address (only with \-\-executor ray, default: http://127.0.0.1:8265)
+.TP
+\fB\-\-ray\-allow\-pending\fR
+Allow Ray tasks to wait for nodes with missing capacity (Ray only)
 .TP
 \fB\-\-follow\fR
 Submit DAG to remote executor and stream progress (only with \-\-executor ray)

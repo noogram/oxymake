@@ -194,11 +194,11 @@ fn show_run_detail(
         );
         println!();
         let header = format!(
-            "{:<24} {:<20} {:>10} {:>8} {:>6}",
-            "JOB", "RULE", "WALL TIME", "MEM MiB", "EXIT"
+            "{:<24} {:<20} {:<10} {:>10} {:>8} {:>6}",
+            "JOB", "RULE", "EXECUTOR", "WALL TIME", "MEM MiB", "EXIT"
         );
         println!("{}", theme.header.apply_to(&header));
-        println!("{}", theme.muted.apply_to("-".repeat(72)));
+        println!("{}", theme.muted.apply_to("-".repeat(84)));
         for job in &jobs {
             let wall = job.wall_time_ms.map_or("-".to_string(), format_duration_ms);
             let mem = job.peak_mem_mb.map_or("-".to_string(), |v| v.to_string());
@@ -210,9 +210,10 @@ fn show_run_detail(
                 None => theme.muted.apply_to(&exit),
             };
             println!(
-                "{:<24} {:<20} {:>10} {:>8} {:>6}",
+                "{:<24} {:<20} {:<10} {:>10} {:>8} {:>6}",
                 theme.highlight.apply_to(&job.job_id),
                 theme.info.apply_to(&job.rule_name),
+                job.executor.as_deref().unwrap_or("-"),
                 theme.muted.apply_to(&wall),
                 theme.muted.apply_to(&mem),
                 exit_styled

@@ -796,6 +796,16 @@ fn resolve_file_sources(
 // ---------------------------------------------------------------------------
 
 fn parse_rule(name: &str, raw: &RawRule, file_path: &Path) -> Result<Rule, ParseError> {
+    if let Some(value) = &raw.executor {
+        if value != "local" {
+            return Err(ParseError::InvalidField {
+                field: format!("rule.{name}.executor"),
+                reason: format!(
+                    "unsupported value {value:?}; accepted value: \"local\". Choosing a backend is a property of the run (ox run --executor), not of a rule"
+                ),
+            });
+        }
+    }
     let inputs = parse_inputs(&raw.input);
     let outputs = parse_outputs(&raw.output)?;
     let execution = parse_execution(name, raw, file_path)?;
@@ -3043,10 +3053,29 @@ description = "A test rule"
 input = ["a.txt"]
 output = ["b.txt"]
 shell = "echo hi"
-executor = "slurm"
+executor = "local"
 "#;
         let wf = parse_workflow(toml, Path::new("test.toml")).unwrap();
-        assert_eq!(wf.rules[0].executor.as_deref(), Some("slurm"));
+        assert_eq!(wf.rules[0].executor.as_deref(), Some("local"));
+    }
+
+    #[test]
+    fn rule_executor_rejects_non_local_values() {
+        for value in ["ray", "slurm", "site-a", "Local", "locla", ""] {
+            let source = format!(
+                r#"[rule.heavy]
+output = ["out"]
+shell = "touch out"
+executor = "{value}"
+"#
+            );
+            let err = parse_workflow(&source, Path::new("test.toml"))
+                .expect_err("only local is a rule override")
+                .to_string();
+            for expected in ["heavy", "local", "ox run --executor"] {
+                assert!(err.contains(expected), "{err}");
+            }
+        }
     }
 
     #[test]

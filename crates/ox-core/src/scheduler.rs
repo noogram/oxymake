@@ -509,6 +509,22 @@ pub async fn run_scheduler_with_claims<E: Executor + 'static>(
     disk_writer: Option<DiskWriterHandle>,
     claimer: Option<Arc<dyn JobClaim>>,
 ) -> Result<SchedulerResult, OxError> {
+    // Fail closed for callers bypassing the workflow parser or using a
+    // remote executor without the local routing adapter.
+    for id in graph.job_ids() {
+        let job = graph.get_job(id).expect("graph job");
+        if let Some(value) = &job.executor {
+            if value != "local" || executor.executor_name(job) != "local" {
+                return Err(OxError::Exec(ExecError::Executor {
+                    message: format!(
+                        "rule '{}' executor = {value:?} cannot be honoured by this executor; only local is a rule override and requires local routing",
+                        job.rule
+                    ),
+                }));
+            }
+        }
+    }
+
     let start = Instant::now();
 
     let total_jobs = graph.job_count();
@@ -844,7 +860,7 @@ pub async fn run_scheduler_with_claims<E: Executor + 'static>(
 
                 event_bus.emit(Event::JobStarted {
                     job_id: job_id.clone(),
-                    executor: job.executor.clone().unwrap_or_else(|| "local".into()),
+                    executor: executor.executor_name(&job).to_string(),
                     reason,
                 });
                 debug!(
