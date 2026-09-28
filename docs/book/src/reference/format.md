@@ -184,8 +184,8 @@ shell = "compute_heavy"
 resources = { cpus = 4, mem_gb = 16, gpu = 1, time_min = 60 }
 ```
 
-The portable resource vocabulary shared by Ray and the planned local
-admission path is:
+The portable resource vocabulary shared by Ray and local scheduler
+admission is:
 
 | Resource | Accepted keys | Value |
 |----------|---------------|-------|
@@ -207,6 +207,17 @@ fractional byte results, overflow, and token counts finer than `0.0001` are
 errors. These checks normalize a declaration without rewriting the original
 `resources` table. Executor-specific keys, including SLURM directives such as
 `time_min`, retain the vocabulary documented by that executor.
+
+Local scheduler admission is opt-in through the Rust API's
+`SchedulerConfig.resource_budget` (a map of resource keys to `u64` capacities).
+Capacity counts are whole tokens; job demands may be fractional. Memory
+capacities use the units of their key. Only budgeted canonical resources are
+interpreted and enforced. For example, a `cpu = 6` budget also constrains a
+`cpus = 4` demand. A job with no demand consumes no resource tokens and still
+uses one `max_jobs` slot. Zero demand fits zero capacity; a positive demand
+against zero capacity, or any demand exceeding total capacity, is a configuration
+error naming the job and resource before execution of the selected DAG starts.
+Rules outside that DAG do not participate in validation.
 
 ### Conditional Guards
 

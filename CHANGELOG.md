@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- Local scheduler budgets configured through `SchedulerConfig.resource_budget`
+  now enforce canonical resource aliases, exact fractional tokens and whole
+  memory bytes. Impossible selected jobs fail before claims or output cleanup;
+  attempt permits survive cancellation until task completion and are returned
+  before interruptible retry backoff. Empty budgets retain existing behavior.
+  This does not add a CLI budget flag or host-wide coordination (issue #25, C2).
 - Resource keys and values now have one checked normalization path for Ray and
   future local admission: `mem_mb` and `mem_gb` are binary memory aliases,
   duplicate aliases and malformed values fail instead of overwriting or
