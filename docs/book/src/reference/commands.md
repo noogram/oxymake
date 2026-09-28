@@ -232,8 +232,10 @@ cache decision — `input_hashes`, `output_hashes`, `params_hash`,
 report can be reconstructed from recorded state instead of being caught
 live. A job the cache layer never keyed (`--no-cache`, or
 `cache_validation = "mtime"`) reports `null` for these. `peak_mem_mb` is
-always `null`: the only measurement available is process-wide and cannot
-be attributed to one job under `-j N`.
+the executor's per-job peak-memory observation, stored as whole MiB rounded
+up. The SLURM CLI backend supplies this from `sacct` MaxRSS; an unavailable
+measurement is `null`. The local and SLURM REST backends currently report no
+peak-memory observation.
 
 ## Management Commands
 

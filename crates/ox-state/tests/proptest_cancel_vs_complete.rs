@@ -243,6 +243,7 @@ proptest! {
                 "proptest",
                 &Default::default(),
                 &Default::default(),
+                &Default::default(),
             )
             .unwrap();
         let violations = db.terminal_status_violations().unwrap();

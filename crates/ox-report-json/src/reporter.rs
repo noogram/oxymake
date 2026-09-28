@@ -240,6 +240,7 @@ mod tests {
             job_id: JobId("align_S001".into()),
             duration_ms: 272000,
             outputs: vec!["results/S001.bam".into()],
+            peak_memory_bytes: Some(128 * 1024 * 1024),
         };
         r.on_event(&event).await;
 
@@ -248,6 +249,7 @@ mod tests {
         assert_eq!(v["event"], "job_completed");
         assert_eq!(v["duration_ms"], 272000);
         assert_eq!(v["outputs"][0], "results/S001.bam");
+        assert_eq!(v["peak_memory_bytes"], 128 * 1024 * 1024);
     }
 
     #[tokio::test]
@@ -371,6 +373,7 @@ mod tests {
             job_id: JobId("j1".into()),
             duration_ms: 500,
             outputs: vec!["out.txt".into()],
+            peak_memory_bytes: None,
         })
         .await;
 

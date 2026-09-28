@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Successful `job_completed` events optionally include the executor's
+  `peak_memory_bytes` observation (issue #24).
 - Ray dashboard token authentication is enabled with `RAY_AUTH_MODE=token`.
   OxyMake uses Ray's token precedence, authenticates submission and lifecycle
   requests, trims surrounding token whitespace, reports unreadable or malformed
@@ -29,6 +31,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   memory reservations (issue #25).
 
 ### Changed
+- `ox-state`: `StateDb::finalize_job_history` and the unstable `StateBackend`
+  method now accept a per-job peak-memory byte map (issue #24).
 - **A resource declaration that Ray cannot honour is now an error instead of a
   silent reinterpretation** (issue #25). Under `--executor ray`, these used to
   run and now stop the run: two spellings of one resource (`cpu` and `cpus`
@@ -54,6 +58,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (issue #25).
 
 ### Fixed
+- `ox history` now records and displays the per-job peak memory reported by
+  the SLURM CLI backend. Values are whole MiB rounded up; an unavailable
+  measurement remains `-` in text and `null` in JSON (issue #24).
 - Local benchmark TSV files no longer publish per-job memory and CPU figures
   derived from process-wide child counters. Those values could belong to other
   concurrent or earlier jobs, so `max_rss` and `cpu_time` are now `-` until a
