@@ -33,7 +33,10 @@ ray_allow_pending = true
 ```
 
 `ray_allow_pending` is the profile equivalent of `--ray-allow-pending`.
-Explicit CLI flags take precedence over profile values.
+Explicit CLI flags take precedence over profile values, except that
+`ray_allow_pending = true` cannot be disabled from the CLI: there is no
+negative flag. Set it to `false` in the profile or select a different profile
+to restore the feasibility check.
 
 There is no project-level settings file. `ox init` creates `Oxymakefile.toml`
 and an empty `.oxymake/` directory; it does not write a `config.toml`, and no

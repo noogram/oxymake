@@ -228,7 +228,16 @@ pub fn cmd_logs(args: LogsArgs, theme: &ox_render::Theme) -> Result<()> {
                     }
                 } else {
                     let log_path = resolve_log_path(j.log_path.as_deref(), &j.id);
-                    print_log(&log_path, &j.id, false)?;
+                    match print_log(&log_path, &j.id, false) {
+                        Err(error)
+                            if error
+                                .downcast_ref::<std::io::Error>()
+                                .is_some_and(|e| e.kind() == std::io::ErrorKind::NotFound) =>
+                        {
+                            println!("! No log available for {}: {}", j.id, log_path.display());
+                        }
+                        result => result?,
+                    }
                 }
                 continue;
             }

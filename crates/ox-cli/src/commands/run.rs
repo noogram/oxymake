@@ -1029,7 +1029,7 @@ fn validate_ray_flags(args: &RunArgs) -> Result<()> {
     if args.ray_allow_pending && args.executor != "ray" {
         return Err(clap::Error::raw(
             clap::error::ErrorKind::ArgumentConflict,
-            "--ray-allow-pending requires --executor ray",
+            "--ray-allow-pending requires --executor ray\n",
         )
         .into());
     }
@@ -1040,11 +1040,19 @@ fn validate_resource_budget_flags(args: &RunArgs) -> Result<()> {
     if !args.resource_budget.is_empty() && args.executor != "local" {
         return Err(clap::Error::raw(
             clap::error::ErrorKind::ArgumentConflict,
-            "--resource-budget applies to the local executor only; Ray and SLURM map a rule's declared resources onto their own backend requests",
+            "--resource-budget applies to the local executor only; Ray and SLURM map a rule's declared resources onto their own backend requests\n",
         )
         .into());
     }
     Ok(())
+}
+
+fn budget_usage_error(message: String) -> anyhow::Error {
+    clap::Error::raw(
+        clap::error::ErrorKind::ValueValidation,
+        format!("{message}\n"),
+    )
+    .into()
 }
 
 /// Parse CLI capacities through the same checked resource normalization used
@@ -1057,18 +1065,22 @@ fn parse_resource_budget(entries: &[String]) -> Result<BTreeMap<String, u64>> {
     let mut raw = BTreeMap::new();
     for entry in entries {
         let (key, value) = entry.split_once('=').ok_or_else(|| {
-            anyhow::anyhow!("invalid --resource-budget entry {entry:?}: expected KEY=VALUE")
+            budget_usage_error(format!(
+                "invalid --resource-budget entry {entry:?}: expected KEY=VALUE"
+            ))
         })?;
         if key.is_empty() || value.is_empty() {
-            bail!("invalid --resource-budget entry {entry:?}: expected KEY=VALUE");
+            return Err(budget_usage_error(format!(
+                "invalid --resource-budget entry {entry:?}: expected KEY=VALUE"
+            )));
         }
         if raw
             .insert(key.to_owned(), ResourceValue::Str(value.to_owned()))
             .is_some()
         {
-            bail!(
+            return Err(budget_usage_error(format!(
                 "invalid --resource-budget entry {entry:?}: resource {key:?} is declared more than once"
-            );
+            )));
         }
     }
 
@@ -1084,8 +1096,10 @@ fn parse_resource_budget(entries: &[String]) -> Result<BTreeMap<String, u64>> {
             ox_core::resource::ResourceError::EmptyName => None,
         };
         match entry {
-            Some(entry) => anyhow::anyhow!("invalid --resource-budget entry {entry:?}: {error}"),
-            None => anyhow::anyhow!("invalid --resource-budget: {error}"),
+            Some(entry) => budget_usage_error(format!(
+                "invalid --resource-budget entry {entry:?}: {error}"
+            )),
+            None => budget_usage_error(format!("invalid --resource-budget: {error}")),
         }
     })?;
 
@@ -1111,7 +1125,9 @@ fn parse_resource_budget(entries: &[String]) -> Result<BTreeMap<String, u64>> {
 fn whole_token_capacity(resource: &str, amount: TokenAmount) -> Result<u64> {
     let scaled = amount.ten_thousandths();
     if scaled % TOKEN_SCALE != 0 {
-        bail!("resource budget capacity for {resource} must be a whole token");
+        return Err(budget_usage_error(format!(
+            "resource budget capacity for {resource} must be a whole token"
+        )));
     }
     Ok(scaled / TOKEN_SCALE)
 }
@@ -1434,6 +1450,9 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
         println!("Touched {} job output(s).", touched);
         return Ok(());
     }
+
+    // Admission is a property of the selected DAG, even when cache skips all work.
+    ox_core::scheduler::validate_resource_budget(&job_graph, &resource_budget)?;
 
     // -----------------------------------------------------------------------
     // Cache: determine which jobs can be skipped
@@ -2512,25 +2531,15 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
         let skip_reporter_finish =
             (args.executor == "ray" || args.executor == "slurm") && !args.follow;
         if !skip_reporter_finish {
-            if let Some(ref reporter) = term_reporter {
+            if let (Some(reporter), Ok(r)) = (&term_reporter, &sched_result) {
                 use ox_core::traits::reporter::{Reporter, RunSummary};
-                let summary = match &sched_result {
-                    Ok(r) => RunSummary {
-                        total_jobs: r.total_jobs,
-                        succeeded: r.succeeded,
-                        failed: r.failed,
-                        skipped: r.skipped,
-                        cancelled: r.cancelled,
-                        duration_ms: r.duration.as_millis() as u64,
-                    },
-                    Err(_) => RunSummary {
-                        total_jobs: 0,
-                        succeeded: 0,
-                        failed: 0,
-                        skipped: 0,
-                        cancelled: 0,
-                        duration_ms: 0,
-                    },
+                let summary = RunSummary {
+                    total_jobs: r.total_jobs,
+                    succeeded: r.succeeded,
+                    failed: r.failed,
+                    skipped: r.skipped,
+                    cancelled: r.cancelled,
+                    duration_ms: r.duration.as_millis() as u64,
                 };
                 reporter.finish(&summary).await;
             }
@@ -2860,11 +2869,9 @@ mod cache_key_tests {
         assert_eq!(job_cache_key(&job, None), None);
     }
 
-    /// Resource normalization is a side-car operation: adding it must not
-    /// change the established cache identity of a concrete job whose raw
-    /// resource declarations are already present.
+    /// Resource declarations do not contribute to concrete job identity.
     #[test]
-    fn resource_normalization_does_not_move_concrete_job_cache_key() {
+    fn resource_declarations_do_not_change_concrete_job_cache_key() {
         let mut job = make_job(ExecutionBlock::Shell {
             command: "echo resource-stable".into(),
         });
@@ -2874,11 +2881,27 @@ mod cache_key_tests {
             ("metal".into(), ResourceValue::Float(0.5.into())),
         ]);
 
-        let key = job_cache_key(&job, None).unwrap();
+        // Compare distinct declarations on the same platform, not a golden hash.
+        let mut other = job.clone();
+        other.resources = BTreeMap::from([
+            ("cpu".into(), ResourceValue::Int(1)),
+            ("memory".into(), ResourceValue::Str("1GiB".into())),
+        ]);
+        assert_ne!(job.resources, other.resources);
+        let before = job_cache_key(&other, None).unwrap();
+        let raw = job.resources.clone();
+        let normalized = ox_core::resource::normalize_resources(&job.resources)
+            .expect("the declarations above are valid");
+        assert!(normalized.cpu.is_some(), "normalization ran");
+        let after = job_cache_key(&job, None).unwrap();
         assert_eq!(
-            key.as_str(),
-            "af8c2cf6ef33969b09e535b27ce0dae2ec525942060f2252ef9ba38eb44dc196",
-            "resource side-car normalization moved the concrete-job cache key"
+            before.as_str(),
+            after.as_str(),
+            "resource declarations must not contribute to the concrete-job cache key"
+        );
+        assert_eq!(
+            job.resources, raw,
+            "normalization must leave the raw declarations untouched"
         );
     }
 

@@ -35,12 +35,14 @@ is per `ox run`; concurrent processes each get their own capacity, with no
 host-wide coordination or capacity promise.
 
 Admission validates the selected graph before cache checks, claims, output
-cleanup or recipes. It reserves only resources named in the budget, using the
+cleanup or recipes, including fully cached runs. It reserves only resources
+named in the budget, using the
 [resource alias and value contract](../reference/format.md#resources).
 Reservations cover preparation, execution, finalization and output hashing.
 Cancellation keeps a running attempt's reservation until its task exits;
 retries release reservations before backoff and acquire them again for the
-next attempt. Budgeted retry backoff remains responsive to shutdown.
+next attempt. Retry backoff remains responsive to shutdown with or without
+a budget.
 
 Each scheduler run owns its budget. Concurrent runs each receive their own
 capacity; claims and output locks do not coordinate resource budgets. These
@@ -116,13 +118,15 @@ max_submit = 10
 | OxyMake | Ray | Notes |
 |---------|-----|-------|
 | `cpu` / `cpus` | `num_cpus` | Exact to `0.0001` before Ray conversion |
-| `mem` / `memory` | runtime environment | Bytes or a binary-unit string |
-| `mem_mb` / `mem_gb` | runtime environment | MiB / GiB converted to bytes |
+| `mem` / `memory` | `memory` | Bytes or a binary-unit string |
+| `mem_mb` / `mem_gb` | `memory` | MiB / GiB converted to bytes |
 | `gpu` / `gpus` | `num_gpus` | Fractional GPUs up to one, or whole multi-GPU counts |
 | any custom key / `custom:*` | Custom resources | Case-sensitive custom resources |
 
-The native Ray DAG driver forwards CPU, GPU and custom resources. Memory is
-normalized and validated but is not a Ray scheduling reservation.
+The native Ray DAG driver reserves CPU, GPU, memory and custom resources.
+Memory is normalized to whole bytes and included in the live-node feasibility
+check. It is logical scheduling admission, not a hard RSS limit; the per-job
+Jobs API and array paths do not reserve memory.
 
 ### Memory Passing
 

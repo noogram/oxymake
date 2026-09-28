@@ -62,7 +62,7 @@ A resource budget belongs to one `ox run` process. Two concurrent runs each
 receive their configured capacity; OxyMake makes no host-wide capacity or
 cross-process resource-arbitration promise.
 
-Ray checks each active task's CPU (default 1), GPU and custom request against
+Ray checks each active task's CPU (default 1), GPU, memory and custom request against
 one live node's **total** capacity before submitting the DAG. Busy capable
 nodes queue normally. The State API inspection has a 10-second end-to-end
 deadline; malformed, unknown, partial or truncated snapshots fail closed.
