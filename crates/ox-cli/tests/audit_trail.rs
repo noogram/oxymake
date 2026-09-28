@@ -229,8 +229,8 @@ fn history_json_surfaces_the_provenance() {
     assert_eq!(seen, 2, "expected one JSON line per job:\n{out}");
 }
 
-/// Issue #24: executor-scoped peak memory survives the completion-event
-/// collector and history finalization without collapsing unavailable into 0.
+/// Issue #24: the history reader preserves measured/unavailable values from
+/// StateDb. The actual CLI collection path is covered by slurm_history.rs.
 #[test]
 fn history_surfaces_measured_and_unavailable_peak_memory() {
     let dir = TempDir::new().unwrap();

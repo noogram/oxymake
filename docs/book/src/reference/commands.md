@@ -233,9 +233,23 @@ report can be reconstructed from recorded state instead of being caught
 live. A job the cache layer never keyed (`--no-cache`, or
 `cache_validation = "mtime"`) reports `null` for these. `peak_mem_mb` is
 the executor's per-job peak-memory observation, stored as whole MiB rounded
-up. The SLURM CLI backend supplies this from `sacct` MaxRSS; an unavailable
-measurement is `null`. The local and SLURM REST backends currently report no
-peak-memory observation.
+up (the text column is `MEM MiB`; the JSON key remains `peak_mem_mb`). Unlike
+history's whole-MiB round-up, benchmark TSV `max_rss` uses two decimal places:
+1500 KiB appears as 2 in history and 1.46 in the TSV; a positive sub-MiB value
+rounds up to 1 in history.
+
+`ox run --executor slurm --follow` records the maximum `sacct` MaxRSS across
+that job's steps (`.batch`, `.0`, etc.), retaining allocation status. Zero,
+missing accounting, and squeue fallback leave memory `null`. The local and
+SLURM REST backends currently report no peak-memory observation. Submission
+without `--follow` does not collect this accounting.
+
+The figure belongs to the attempt that finished the job; earlier failed
+attempts are not accumulated. Failures and cancellations leave memory `null`.
+The scheduler's `ErrorStrategy::Ignore` is an exception: it treats a failed
+attempt as completed and its `job_completed` event can carry that attempt's
+memory. Mock commands verify persistence; a live SLURM cluster has not verified
+this path.
 
 ## Management Commands
 

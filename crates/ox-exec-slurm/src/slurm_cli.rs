@@ -60,8 +60,13 @@ pub async fn sacct(job_ids: &[u32]) -> Result<Vec<SacctRecord>, SlurmError> {
         return Err(SlurmError::ParseError(format!("sacct failed: {stderr}")));
     }
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    parse_sacct(&String::from_utf8_lossy(&output.stdout))
+}
+
+/// Preserve allocation state/timing and attach the largest step observation.
+fn parse_sacct(stdout: &str) -> Result<Vec<SacctRecord>, SlurmError> {
     let mut records = Vec::new();
+    let mut step_peaks = std::collections::HashMap::<u32, u64>::new();
 
     for line in stdout.lines() {
         if line.trim().is_empty() {
@@ -72,8 +77,16 @@ pub async fn sacct(job_ids: &[u32]) -> Result<Vec<SacctRecord>, SlurmError> {
             continue;
         }
 
-        // Skip job step records (e.g., "12345.batch") — only want the main job.
-        if fields[0].contains('.') {
+        // MaxRSS normally lives on steps, while status belongs to the allocation.
+        // Collect independently so row order does not affect the observation.
+        if let Some((allocation, _step)) = fields[0].split_once('.') {
+            if let (Ok(job_id), Some(bytes)) = (allocation.parse::<u32>(), parse_max_rss(fields[3]))
+            {
+                step_peaks
+                    .entry(job_id)
+                    .and_modify(|peak| *peak = (*peak).max(bytes))
+                    .or_insert(bytes);
+            }
             continue;
         }
 
@@ -95,6 +108,11 @@ pub async fn sacct(job_ids: &[u32]) -> Result<Vec<SacctRecord>, SlurmError> {
         });
     }
 
+    for record in &mut records {
+        record.peak_memory_bytes = record
+            .peak_memory_bytes
+            .max(step_peaks.get(&record.job_id).copied());
+    }
     Ok(records)
 }
 
@@ -265,6 +283,8 @@ fn parse_exit_code(s: &str) -> i32 {
 }
 
 /// Parse sacct MaxRSS format (e.g., "1024K", "512M", "2G") → bytes.
+/// Zero is absent: disabled accounting or a step ending before the first sample
+/// can report zero without measuring its peak. Positive sub-MiB values survive.
 fn parse_max_rss(s: &str) -> Option<u64> {
     if s.is_empty() {
         return None;
@@ -279,7 +299,11 @@ fn parse_max_rss(s: &str) -> Option<u64> {
     } else {
         (s, 1u64) // Assume bytes
     };
-    num_str.parse::<u64>().ok().map(|n| n * suffix)
+    num_str
+        .parse::<u64>()
+        .ok()
+        .and_then(|n| n.checked_mul(suffix))
+        .filter(|n| *n > 0)
 }
 
 /// Parse sacct Elapsed format "HH:MM:SS" → Duration.
@@ -306,6 +330,32 @@ mod tests {
     use super::*;
 
     #[test]
+    fn step_memory_is_grouped_by_allocation_independent_of_order() {
+        let records = parse_sacct(
+            "43.batch|COMPLETED|0:0|2M|00:00:01|c2\n\
+             42.0|FAILED|7:0|1500K|00:00:01|c1\n\
+             42|RUNNING|0:0||00:00:03|c1\n\
+             43|COMPLETED|0:0||00:00:04|c2\n\
+             42.batch|COMPLETED|0:0|512K|00:00:02|c1\n\
+             42.extern|COMPLETED|0:0|0|00:00:03|c1\n\
+             99.batch|COMPLETED|0:0|9G|00:00:01|c9",
+        )
+        .unwrap();
+        assert_eq!(
+            records.len(),
+            2,
+            "steps alone must not invent allocation status"
+        );
+        assert_eq!(records[0].job_id, 42);
+        assert_eq!(records[0].state, "RUNNING");
+        assert_eq!(records[0].exit_code, 0);
+        assert_eq!(records[0].elapsed.as_secs(), 3);
+        assert_eq!(records[0].peak_memory_bytes, Some(1500 * 1024));
+        assert_eq!(records[1].job_id, 43);
+        assert_eq!(records[1].peak_memory_bytes, Some(2 * 1024 * 1024));
+    }
+
+    #[test]
     fn parse_exit_code_success() {
         assert_eq!(parse_exit_code("0:0"), 0);
     }
@@ -324,6 +374,14 @@ mod tests {
     #[test]
     fn parse_max_rss_megabytes() {
         assert_eq!(parse_max_rss("512M"), Some(512 * 1024 * 1024));
+    }
+
+    #[test]
+    fn parse_max_rss_zero_is_unavailable() {
+        for value in ["0", "0K", "0M", "0G"] {
+            assert_eq!(parse_max_rss(value), None, "{value}");
+        }
+        assert_eq!(parse_max_rss("1"), Some(1));
     }
 
     #[test]
