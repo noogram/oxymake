@@ -898,6 +898,36 @@ async fn dag_rejects_impossible_requests_before_submission() {
     }
 }
 
+#[tokio::test]
+async fn node_inspection_http_failure_names_pending_escape_hatch() {
+    use ox_core::job_graph::{JobGraph, make_test_job};
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/v0/nodes"))
+        .respond_with(ResponseTemplate::new(404))
+        .mount(&server)
+        .await;
+    let tmp = tempfile::tempdir().unwrap();
+    let executor = RayExecutor::new(RayConfig {
+        dashboard_address: server.uri(),
+        working_dir: tmp.path().into(),
+        ..Default::default()
+    })
+    .unwrap();
+    let error = executor
+        .submit_dag(
+            &JobGraph::build(vec![make_test_job("a", &[], &["a.out"])]).unwrap(),
+            &test_ctx(&tmp),
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("404") && error.contains("--ray-allow-pending"),
+        "{error}"
+    );
+}
+
 async fn mount_capable_nodes(server: &MockServer) {
     Mock::given(method("GET")).and(path("/api/v0/nodes"))
         .respond_with(ResponseTemplate::new(200).set_body_json(node_payload(serde_json::json!([

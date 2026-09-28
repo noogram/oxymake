@@ -601,6 +601,7 @@ shell = "echo"
             account: None,
             qos: None,
             open_dashboard: None,
+            ray_allow_pending: None,
             set: {
                 let mut m = BTreeMap::new();
                 m.insert("genome".into(), "hg38".into());
@@ -694,6 +695,7 @@ shell = "echo"
             account: None,
             qos: None,
             open_dashboard: None,
+            ray_allow_pending: None,
             set: {
                 let mut m = BTreeMap::new();
                 m.insert("genome".into(), "hg38".into());

@@ -60,6 +60,11 @@ pub(crate) fn check_request(
     resources: &RayResources,
     nodes: &[NodeCapacity],
 ) -> Result<(), RayError> {
+    // An empty snapshot says nothing about what a scaling cluster can provide.
+    // The caller emits one warning for the whole DAG before submitting.
+    if nodes.is_empty() {
+        return Ok(());
+    }
     let mut request: BTreeMap<String, f64> = resources.custom.clone().into_iter().collect();
     request.insert("CPU".into(), resources.num_cpus.unwrap_or(1.0));
     request.insert("GPU".into(), resources.num_gpus.unwrap_or(0.0));
@@ -90,13 +95,8 @@ pub(crate) fn check_request(
         .collect::<Vec<_>>()
         .join("; ");
     Err(RayError::InfeasibleRequest(format!(
-        "rule `{rule}` requests {}; no single live node provides the complete request\n  nodes: {}\n  use --ray-allow-pending to wait for a future node",
+        "rule `{rule}` requests {}; no single live node provides the complete request\n  nodes: {capacities}\n  use --ray-allow-pending to wait for a future node",
         render(&request, "="),
-        if capacities.is_empty() {
-            "(no live nodes)"
-        } else {
-            &capacities
-        }
     )))
 }
 
@@ -134,7 +134,7 @@ mod tests {
             json!({"node_ip":"a","state":"DEAD","resources_total":{"CPU":8,"metal":4}}),
         ))
         .unwrap();
-        assert!(check_request("default", &RayResources::default(), &dead).is_err());
+        assert!(check_request("default", &RayResources::default(), &dead).is_ok());
     }
 
     #[test]
@@ -153,5 +153,12 @@ mod tests {
             snapshot(json!({"node_ip":"a","state":"ALIVE","resources_total":{"CPU":1}}));
         partial["data"]["result"]["partial_failure_warning"] = json!("GCS incomplete");
         assert!(parse_nodes(partial).is_err());
+    }
+
+    #[test]
+    fn empty_live_node_snapshot_is_not_proof_of_infeasibility() {
+        let request =
+            map_resources(&BTreeMap::from([("metal".into(), ResourceValue::Int(1))])).unwrap();
+        assert!(check_request("a", &request, &[]).is_ok());
     }
 }

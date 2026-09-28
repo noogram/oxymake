@@ -990,6 +990,12 @@ fn apply_profile_defaults(args: &mut RunArgs, profile: &ox_format::parse::Profil
             args.open_dashboard = true;
         }
     }
+    // ray_allow_pending: false by default; an explicit true flag wins over false.
+    if !args.ray_allow_pending {
+        if let Some(true) = profile.ray_allow_pending {
+            args.ray_allow_pending = true;
+        }
+    }
     // SLURM options: None by default
     if args.partition.is_none() {
         args.partition.clone_from(&profile.partition);

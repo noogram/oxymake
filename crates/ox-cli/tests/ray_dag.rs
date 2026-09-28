@@ -68,6 +68,13 @@ async fn driver_crash_without_results_is_visible_in_status_and_logs() {
         .success()
         .stdout(predicate::str::contains("1 failed"))
         .stdout(predicate::str::contains("0 pending"));
+    ox().current_dir(dir.path())
+        .args(["logs", "--failed"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "Traceback: driver import exploded",
+        ));
     let db = ox_state::db::StateDb::open(&dir.path().join(".oxymake/state.db")).unwrap();
     assert_eq!(db.job_status("a").unwrap().as_deref(), Some("failed"));
 }
@@ -149,6 +156,90 @@ async fn follow_reports_failure_after_submission_ack() {
             .iter()
             .any(|r| r.url.path() == "/api/v0/nodes")
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn empty_node_snapshot_warns_once_and_submits() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/version"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"ray_version":"2.40.0"})))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/v0/nodes"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"result":true,"data":{"result":{"total":0,"num_after_truncation":0,"num_filtered":0,"result":[],"partial_failure_warning":null}}})))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/jobs/"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"submission_id":"driver"})))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("Oxymakefile.toml"), "ox_version = \"0.1\"\n[rule.a]\noutput = [\"a.out\"]\nshell = \"touch a.out\"\nresources = {metal=1}\n").unwrap();
+    let output = ox()
+        .current_dir(dir.path())
+        .args([
+            "run",
+            "a.out",
+            "--executor",
+            "ray",
+            "--ray-address",
+            &server.uri(),
+            "--no-cache",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let warning = "resource feasibility could not be checked because no live node was visible";
+    assert_eq!(stderr.matches(warning).count(), 1, "{stderr}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn profile_can_allow_pending_and_explicit_flag_wins_over_false() {
+    for (profile_value, explicit_flag) in [(true, false), (false, true)] {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/version"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"ray_version":"2.40.0"})))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/jobs/"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(json!({"submission_id":"driver"})),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("Oxymakefile.toml"),
+            format!("ox_version = \"0.1\"\n[profile.ray]\nexecutor = \"ray\"\nray_allow_pending = {profile_value}\n[rule.a]\noutput = [\"a.out\"]\nshell = \"touch a.out\"\nresources = {{metal=1}}\n"),
+        ).unwrap();
+        let mut command = ox();
+        command.current_dir(dir.path()).args([
+            "run",
+            "a.out",
+            "--profile",
+            "ray",
+            "--ray-address",
+            &server.uri(),
+            "--no-cache",
+        ]);
+        if explicit_flag {
+            command.arg("--ray-allow-pending");
+        }
+        command.assert().success();
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
