@@ -374,6 +374,8 @@ pub enum WarmWorkerMode {
 /// The script imports all required libraries, registers codec readers/writers,
 /// then enters a dispatch loop. The `mode` parameter controls whether each
 /// dispatch forks a child (state isolation) or runs in-process (JIT persistence).
+/// Neither mode reports per-dispatch RSS or CPU: the shared template owns
+/// dispatch execution/reaping, outside the cold-launch `wait4` collector.
 pub(crate) fn generate_warmup_script_with_mode(
     job: &ConcreteJob,
     mode: WarmWorkerMode,

@@ -261,9 +261,21 @@ supplies a per-job measurement, and `cpu_time` is expressed in seconds.
 History's `peak_mem_mb` instead rounds up to whole MiB: 1500 KiB renders as
 1.46 in benchmark TSV and 2 in history. The round-up keeps a positive sub-MiB
 history observation distinguishable from zero. An unmeasured value is
-written as `-`; in particular, the local executor currently leaves both
-resource columns unmeasured rather than attributing process-wide counters to
-one job.
+written as `-`; a measured zero stays zero.
+
+On Linux and macOS, local cold launches (buffered and streaming output) use
+`wait4` on the job's own child process. RSS is that child's high-water mark,
+including already-reaped descendants; it is not a simultaneous process-tree
+memory total. Background or daemonised work can escape the observation.
+The collector converts Linux KiB and macOS bytes to bytes before formatting.
+CPU time is the same child's user plus system time, in seconds; no CPU/wall
+ratio is inferred. It is recorded in benchmark TSV, not in `job_history`.
+Failed and signalled children retain any measurements returned by `wait4` in
+their executor `JobResult`; scheduler publication rules still apply. A timed-out
+child is measured in the lower-level `ProcessResult`, but the executor returns
+a timeout error and drops that result, so no measurement reaches `JobResult`.
+Warm workers, including fork and persistent dispatch modes, and unsupported
+platforms leave RSS and CPU absent because dispatch attribution is unavailable.
 
 ### Conditional Guards
 

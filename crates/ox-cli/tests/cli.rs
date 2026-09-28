@@ -16,8 +16,8 @@ fn ox() -> Command {
     Command::cargo_bin("oxymake").expect("binary should exist")
 }
 
-#[cfg(unix)]
-fn assert_local_benchmark_is_unmeasured(path: &std::path::Path) {
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn local_benchmark_usage(path: &std::path::Path) -> (f64, f64) {
     let contents = fs::read_to_string(path).expect("benchmark file should be readable");
     let lines: Vec<&str> = contents.lines().collect();
     assert_eq!(
@@ -29,8 +29,10 @@ fn assert_local_benchmark_is_unmeasured(path: &std::path::Path) {
 
     let fields: Vec<&str> = lines[1].split('\t').collect();
     assert_eq!(fields.len(), 4, "benchmark row should keep four columns");
-    assert_eq!(fields[2], "-", "local max_rss must be unmeasured");
-    assert_eq!(fields[3], "-", "local cpu_time must be unmeasured");
+    (
+        fields[2].parse().expect("measured RSS"),
+        fields[3].parse().expect("measured CPU"),
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -2927,8 +2929,8 @@ shell = "echo d > d.txt"
 /// Process-wide child counters must not let an allocating job lend resource
 /// figures to a trivial neighbour running in the same `-j 2` window.
 #[test]
-#[cfg(unix)]
-fn concurrent_local_benchmarks_leave_resource_columns_unmeasured() {
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn concurrent_local_benchmarks_measure_each_child() {
     let dir = TempDir::new().unwrap();
     let base = dir.path();
 
@@ -2958,14 +2960,65 @@ shell = "touch trivial.started; while [ ! -f allocated.ready ]; do sleep 0.01; d
         .success()
         .stdout(predicates::str::contains("2 succeeded"));
 
-    assert_local_benchmark_is_unmeasured(&base.join("trivial.tsv"));
+    let (allocated, _) = local_benchmark_usage(&base.join("allocate.tsv"));
+    let (trivial, _) = local_benchmark_usage(&base.join("trivial.tsv"));
+    // 64 MiB touched allocation plus interpreter: accept 64..192 MiB on
+    // macOS and Linux, while the shell-only neighbour must stay below 32 MiB.
+    assert!(
+        (64.0..192.0).contains(&allocated),
+        "allocated: {allocated} MiB"
+    );
+    assert!((0.0..32.0).contains(&trivial), "trivial: {trivial} MiB");
+    assert!(trivial > 0.0);
+    let db = ox_state::db::StateDb::open(&base.join(".oxymake/state.db")).unwrap();
+    let run_id = db.list_runs().unwrap()[0].id.clone();
+    let history = ox()
+        .args(["history", "--run-id", &run_id, "--json"])
+        .current_dir(base)
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let rows: Vec<serde_json::Value> = String::from_utf8(history)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    for (rule, rss) in [("allocate", allocated), ("trivial", trivial)] {
+        let row = rows.iter().find(|r| r["rule_name"] == rule).unwrap();
+        let mib = row["peak_mem_mb"].as_u64().expect("history RSS");
+        assert!((mib as f64 - rss).abs() <= 1.01, "{row}");
+    }
+    let text = ox()
+        .args(["history", "--run-id", &run_id])
+        .current_dir(base)
+        .env("NO_COLOR", "1")
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let text = String::from_utf8(text).unwrap();
+    assert!(text.contains("MEM MiB"));
+    for row in rows {
+        let fields: Vec<_> = text
+            .lines()
+            .find(|line| line.starts_with(row["job_id"].as_str().unwrap()))
+            .unwrap()
+            .split_whitespace()
+            .collect();
+        assert_eq!(
+            fields[fields.len() - 2].parse::<u64>().unwrap(),
+            row["peak_mem_mb"].as_u64().unwrap()
+        );
+    }
 }
 
-/// Serial execution stays unmeasured too: `RUSAGE_CHILDREN::ru_maxrss` can
-/// retain a high-water mark from earlier children in the same process.
+/// Serial cold launches also publish measured RSS and CPU.
 #[test]
-#[cfg(unix)]
-fn serial_local_benchmark_leaves_resource_columns_unmeasured() {
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn serial_local_benchmark_measures_child() {
     let dir = TempDir::new().unwrap();
     let base = dir.path();
 
@@ -2987,7 +3040,10 @@ shell = "printf serial > serial.txt"
         .success()
         .stdout(predicates::str::contains("1 succeeded"));
 
-    assert_local_benchmark_is_unmeasured(&base.join("serial.tsv"));
+    // Parsing both fields rejects missing measurements ("-"). A short child
+    // may legitimately have CPU time rounded to zero in the TSV.
+    let (rss, _) = local_benchmark_usage(&base.join("serial.tsv"));
+    assert!(rss > 0.0);
 }
 
 // ---------------------------------------------------------------------------

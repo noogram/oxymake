@@ -7,7 +7,12 @@
 use std::path::Path;
 use std::time::{Duration, Instant};
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+use std::os::unix::process::CommandExt;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+use std::process::Command;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 use tokio::process::Command;
 use tokio::sync::mpsc;
 
@@ -40,13 +45,15 @@ pub struct ProcessResult {
     pub killed_by_timeout: bool,
     /// Peak resident set size in bytes, if measured for this child.
     ///
-    /// The local executor does not currently have a per-child measurement,
-    /// so cold launches leave this absent.
+    /// On Linux/macOS, `wait4` reports the high-water mark of this child and
+    /// its already-reaped descendants, not a simultaneous process-tree total.
+    /// Background or daemonised work can escape this observation. Other
+    /// platforms and warm-worker dispatches leave this absent.
     pub peak_memory_bytes: Option<u64>,
     /// CPU time (user + system), if measured for this child.
     ///
-    /// The local executor does not currently have a per-child measurement,
-    /// so cold launches leave this absent.
+    /// Taken from the same `wait4` result as RSS on Linux/macOS. Background
+    /// or daemonised work can escape it. Warm dispatches remain unmeasured.
     pub cpu_time: Option<Duration>,
 }
 
@@ -165,7 +172,7 @@ pub async fn spawn_shell_with_callback(
         cmd.env(key, value);
     }
 
-    let mut child = cmd.spawn().map_err(ExecLocalError::SpawnFailed)?;
+    let mut child = spawn_child(&mut cmd).map_err(ExecLocalError::SpawnFailed)?;
 
     // Notify the caller of the child PID for cancellation tracking.
     if let Some(pid) = child.id() {
@@ -212,38 +219,8 @@ pub async fn spawn_shell_with_callback(
         Ok::<(), std::io::Error>(())
     });
 
-    // Wait for the child, with an optional timeout.
-    let (killed_by_timeout, status) = if let Some(dur) = timeout {
-        match tokio::time::timeout(dur, child.wait()).await {
-            Ok(result) => (false, result?),
-            Err(_elapsed) => {
-                // Timeout expired — kill the entire process group so
-                // grandchildren (e.g. from shell pipelines) are also
-                // terminated.
-                #[cfg(unix)]
-                {
-                    if let Some(pid) = child.id() {
-                        // Safety: killpg with a valid PGID is a standard
-                        // POSIX syscall.  The process group was created by
-                        // process_group(0) above.
-                        unsafe {
-                            libc::killpg(pid as libc::pid_t, libc::SIGKILL);
-                        }
-                    }
-                }
-                #[cfg(not(unix))]
-                {
-                    child.kill().await.ok();
-                }
-                // Still wait so the OS can reap the zombie.
-                let status = child.wait().await?;
-                (true, status)
-            }
-        }
-    } else {
-        let status = child.wait().await?;
-        (false, status)
-    };
+    let (killed_by_timeout, observed) = wait_child(&mut child, timeout).await?;
+    let status = observed.status;
 
     // Wait for the pipe drain and log-copy task to finish.  The child has
     // already exited so its pipe ends are closed — our readers should reach
@@ -269,8 +246,8 @@ pub async fn spawn_shell_with_callback(
         exit_code,
         duration,
         killed_by_timeout,
-        peak_memory_bytes: None,
-        cpu_time: None,
+        peak_memory_bytes: observed.peak_memory_bytes,
+        cpu_time: observed.cpu_time,
     })
 }
 
@@ -311,7 +288,7 @@ pub async fn spawn_shell_streaming(
         cmd.env(key, value);
     }
 
-    let mut child = cmd.spawn().map_err(ExecLocalError::SpawnFailed)?;
+    let mut child = spawn_child(&mut cmd).map_err(ExecLocalError::SpawnFailed)?;
 
     if let Some(pid) = child.id() {
         on_spawn(pid);
@@ -373,31 +350,8 @@ pub async fn spawn_shell_streaming(
         Ok::<(), std::io::Error>(())
     });
 
-    // Wait for the child, with an optional timeout.
-    let (killed_by_timeout, status) = if let Some(dur) = timeout {
-        match tokio::time::timeout(dur, child.wait()).await {
-            Ok(result) => (false, result?),
-            Err(_elapsed) => {
-                #[cfg(unix)]
-                {
-                    if let Some(pid) = child.id() {
-                        unsafe {
-                            libc::killpg(pid as libc::pid_t, libc::SIGKILL);
-                        }
-                    }
-                }
-                #[cfg(not(unix))]
-                {
-                    child.kill().await.ok();
-                }
-                let status = child.wait().await?;
-                (true, status)
-            }
-        }
-    } else {
-        let status = child.wait().await?;
-        (false, status)
-    };
+    let (killed_by_timeout, observed) = wait_child(&mut child, timeout).await?;
+    let status = observed.status;
 
     // Wait for the pipe drain with a timeout (same rationale as
     // spawn_shell_with_callback — child has exited, drain should be fast).
@@ -420,7 +374,351 @@ pub async fn spawn_shell_streaming(
         exit_code,
         duration,
         killed_by_timeout,
-        peak_memory_bytes: None,
-        cpu_time: None,
+        peak_memory_bytes: observed.peak_memory_bytes,
+        cpu_time: observed.cpu_time,
     })
+}
+
+struct ChildExit {
+    status: std::process::ExitStatus,
+    peak_memory_bytes: Option<u64>,
+    cpu_time: Option<Duration>,
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+use measured_child::ColdChild;
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+type ColdChild = tokio::process::Child;
+
+fn spawn_child(cmd: &mut Command) -> std::io::Result<ColdChild> {
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    {
+        ColdChild::spawn(cmd)
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        cmd.spawn()
+    }
+}
+
+async fn observe_child(child: &mut ColdChild) -> std::io::Result<ChildExit> {
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    {
+        child.wait().await
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        Ok(ChildExit {
+            status: child.wait().await?,
+            peak_memory_bytes: None,
+            cpu_time: None,
+        })
+    }
+}
+
+/// Shared by buffered and streaming cold launches. A timeout cancels only the
+/// async wait, never the reaper ownership, then collects the killed child's usage.
+async fn wait_child(
+    child: &mut ColdChild,
+    timeout: Option<Duration>,
+) -> std::io::Result<(bool, ChildExit)> {
+    if let Some(dur) = timeout {
+        match tokio::time::timeout(dur, observe_child(child)).await {
+            Ok(result) => return Ok((false, result?)),
+            Err(_) => {
+                #[cfg(unix)]
+                if let Some(pid) = child.id() {
+                    // SAFETY: this unreaped child owns the process group created
+                    // at spawn; no other code in this module can reap it.
+                    unsafe {
+                        libc::killpg(pid as libc::pid_t, libc::SIGKILL);
+                    }
+                }
+                #[cfg(not(unix))]
+                child.kill().await.ok();
+                return Ok((true, observe_child(child).await?));
+            }
+        }
+    }
+    Ok((false, observe_child(child).await?))
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+mod measured_child {
+    use super::{ChildExit, Command, Duration};
+    use std::io;
+    use std::os::unix::process::ExitStatusExt;
+    use std::task::Poll;
+    use tokio::signal::unix::{Signal, SignalKind, signal};
+
+    /// Sole reaper for a cold child. `std::process` spawns but never waits;
+    /// Tokio owns only the nonblocking pipes, never a process handle.
+    pub(super) struct ColdChild {
+        pid: Option<libc::pid_t>,
+        exited: Signal,
+        pub stdout: Option<tokio::process::ChildStdout>,
+        pub stderr: Option<tokio::process::ChildStderr>,
+    }
+
+    impl ColdChild {
+        pub fn spawn(cmd: &mut Command) -> io::Result<Self> {
+            // Subscribe before spawning: even an immediate exit must wake us.
+            // This listener only notifies; wait4 below remains the sole reaper.
+            let exited = signal(SignalKind::child())?;
+            let mut process = cmd.spawn()?;
+            let mut child = Self {
+                pid: Some(process.id() as libc::pid_t),
+                exited,
+                stdout: None,
+                stderr: None,
+            };
+            // Install reaper ownership before any fallible pipe conversion.
+            child.stdout = process
+                .stdout
+                .take()
+                .map(tokio::process::ChildStdout::from_std)
+                .transpose()?;
+            child.stderr = process
+                .stderr
+                .take()
+                .map(tokio::process::ChildStderr::from_std)
+                .transpose()?;
+            // Dropping std::process::Child neither kills nor reaps it.
+            Ok(child)
+        }
+
+        pub fn id(&self) -> Option<u32> {
+            self.pid.map(|pid| pid as u32)
+        }
+
+        pub async fn wait(&mut self) -> io::Result<ChildExit> {
+            let pid = self
+                .pid
+                .ok_or_else(|| io::Error::other("child already reaped"))?;
+            std::future::poll_fn(|cx| {
+                loop {
+                    // Register the waker BEFORE checking wait4, as Tokio's reaper
+                    // does, so an exit between the check and Pending cannot be lost.
+                    // Signals may coalesce or belong to another child; always check
+                    // this PID, and re-register after consuming a notification.
+                    let registered = self.exited.poll_recv(cx).is_pending();
+                    match reap(pid, libc::WNOHANG) {
+                        Ok(Some(result)) => {
+                            self.pid = None;
+                            return Poll::Ready(Ok(result));
+                        }
+                        Ok(None) => {
+                            if registered {
+                                return Poll::Pending;
+                            }
+                        }
+                        Err(err) if err.kind() == io::ErrorKind::Interrupted => continue,
+                        Err(err) => {
+                            if err.raw_os_error() == Some(libc::ECHILD) {
+                                self.pid = None;
+                            }
+                            return Poll::Ready(Err(err));
+                        }
+                    }
+                }
+            })
+            .await
+        }
+    }
+
+    impl Drop for ColdChild {
+        fn drop(&mut self) {
+            if let Some(pid) = self.pid.take() {
+                // An aborted async caller must not leave a zombie. Transfer
+                // ownership (do not duplicate it) to a detached cleanup thread.
+                // Unlike spawn_blocking, it cannot hold Tokio shutdown open
+                // while a surviving child runs. Like Tokio Child drop, it
+                // does not kill the child.
+                let cleanup = std::thread::Builder::new()
+                    .name("ox-child-reaper".into())
+                    .spawn(move || {
+                        loop {
+                            match reap(pid, 0) {
+                                Err(err) if err.kind() == io::ErrorKind::Interrupted => continue,
+                                _ => break,
+                            }
+                        }
+                    });
+                if let Err(error) = cleanup {
+                    tracing::warn!(pid, %error, "could not start abandoned child reaper");
+                }
+            }
+        }
+    }
+
+    fn reap(pid: libc::pid_t, options: i32) -> io::Result<Option<ChildExit>> {
+        let mut status = 0;
+        let mut usage = std::mem::MaybeUninit::<libc::rusage>::uninit();
+        // SAFETY: pid names our unreaped child. Both output pointers are valid;
+        // usage is read only when wait4 reports that this child was reaped.
+        let result = unsafe { libc::wait4(pid, &mut status, options, usage.as_mut_ptr()) };
+        if result < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        if result == 0 {
+            return Ok(None);
+        }
+        // SAFETY: successful wait4 initialized the rusage output above.
+        let usage = unsafe { usage.assume_init() };
+        #[cfg(target_os = "macos")]
+        let unit = RssUnit::Bytes;
+        #[cfg(target_os = "linux")]
+        let unit = RssUnit::Kibibytes;
+        Ok(Some(ChildExit {
+            status: std::process::ExitStatus::from_raw(status),
+            peak_memory_bytes: rss_bytes(usage.ru_maxrss, unit),
+            cpu_time: timeval_duration(usage.ru_utime)
+                .and_then(|user| user.checked_add(timeval_duration(usage.ru_stime)?)),
+        }))
+    }
+
+    enum RssUnit {
+        #[cfg(any(target_os = "macos", test))]
+        Bytes,
+        #[cfg(any(target_os = "linux", test))]
+        Kibibytes,
+    }
+
+    fn rss_bytes(raw: libc::c_long, unit: RssUnit) -> Option<u64> {
+        let raw = u64::try_from(raw).ok()?;
+        match unit {
+            #[cfg(any(target_os = "macos", test))]
+            RssUnit::Bytes => Some(raw),
+            #[cfg(any(target_os = "linux", test))]
+            RssUnit::Kibibytes => raw.checked_mul(1024),
+        }
+    }
+
+    fn timeval_duration(value: libc::timeval) -> Option<Duration> {
+        let seconds = u64::try_from(value.tv_sec).ok()?;
+        let micros = u32::try_from(value.tv_usec).ok()?;
+        if micros >= 1_000_000 {
+            return None;
+        }
+        Some(Duration::new(seconds, micros * 1000))
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[tokio::test(start_paused = true)]
+        async fn child_exit_wakes_without_advancing_a_poll_timer() {
+            use std::future::Future;
+            use std::io::Write;
+            use std::os::fd::OwnedFd;
+            use std::os::unix::net::UnixStream;
+
+            let (reader, mut writer) = UnixStream::pair().unwrap();
+            let mut command = Command::new("/bin/bash");
+            command.args(["-c", "read line; exit 0"]);
+            command.stdin(OwnedFd::from(reader));
+            let mut child = ColdChild::spawn(&mut command).unwrap();
+            let mut waiting = Box::pin(child.wait());
+            // The child cannot exit until we release stdin. First establish a
+            // pending wait, so even a slow host cannot skip the old poll sleep.
+            std::future::poll_fn(|cx| {
+                assert!(waiting.as_mut().poll(cx).is_pending());
+                Poll::Ready(())
+            })
+            .await;
+            writer.write_all(b"go\n").unwrap();
+            let start = tokio::time::Instant::now();
+            assert!(waiting.await.unwrap().status.success());
+            // Paused Tokio time auto-advances to pending timers. SIGCHLD should
+            // finish this wait without any clock advance, regardless of the
+            // real shell startup time. Restoring the polling loop fails here.
+            assert_eq!(start.elapsed(), Duration::ZERO);
+        }
+
+        #[tokio::test]
+        async fn exit_before_wait_is_reaped_once() {
+            let mut command = Command::new("/bin/bash");
+            command.args(["-c", "exit 7"]);
+            let mut child = ColdChild::spawn(&mut command).unwrap();
+            // Observe exit without reaping, independently of signal delivery.
+            tokio::time::timeout(Duration::from_secs(5), async {
+                loop {
+                    let mut info = std::mem::MaybeUninit::<libc::siginfo_t>::zeroed();
+                    // SAFETY: info is valid writable storage. WNOWAIT preserves
+                    // this owned child's status and usage for the sole reaper.
+                    let result = unsafe {
+                        libc::waitid(
+                            libc::P_PID,
+                            child.id().unwrap() as libc::id_t,
+                            info.as_mut_ptr(),
+                            libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+                        )
+                    };
+                    assert_eq!(result, 0);
+                    // SAFETY: waitid succeeded and initialized the zeroed info.
+                    if unsafe { info.assume_init().si_pid() } != 0 {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(1)).await;
+                }
+            })
+            .await
+            .unwrap();
+            let result = tokio::time::timeout(Duration::from_secs(1), child.wait())
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(result.status.code(), Some(7));
+            assert!(result.peak_memory_bytes.is_some());
+            assert!(result.cpu_time.is_some());
+            assert!(child.id().is_none());
+            assert!(child.wait().await.is_err());
+        }
+
+        #[test]
+        fn rss_units_and_missing_are_distinct_from_zero() {
+            assert_eq!(rss_bytes(65_536, RssUnit::Bytes), Some(65_536));
+            assert_eq!(rss_bytes(65_536, RssUnit::Kibibytes), Some(67_108_864));
+            for unit in [RssUnit::Bytes, RssUnit::Kibibytes] {
+                assert_eq!(rss_bytes(0, unit), Some(0));
+            }
+            assert_eq!(rss_bytes(-1, RssUnit::Bytes), None);
+            assert_eq!(rss_bytes(-1, RssUnit::Kibibytes), None);
+            #[cfg(target_pointer_width = "64")]
+            assert_eq!(rss_bytes(libc::c_long::MAX, RssUnit::Kibibytes), None);
+        }
+
+        #[test]
+        fn cpu_timeval_preserves_zero_and_rejects_invalid_values() {
+            assert_eq!(
+                timeval_duration(libc::timeval {
+                    tv_sec: 0,
+                    tv_usec: 0
+                }),
+                Some(Duration::ZERO)
+            );
+            assert_eq!(
+                timeval_duration(libc::timeval {
+                    tv_sec: 2,
+                    tv_usec: 500_000
+                }),
+                Some(Duration::from_millis(2500))
+            );
+            assert_eq!(
+                timeval_duration(libc::timeval {
+                    tv_sec: -1,
+                    tv_usec: 0
+                }),
+                None
+            );
+            assert_eq!(
+                timeval_duration(libc::timeval {
+                    tv_sec: 0,
+                    tv_usec: 1_000_000
+                }),
+                None
+            );
+        }
+    }
 }
