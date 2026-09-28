@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Ray dashboard token authentication is enabled with `RAY_AUTH_MODE=token`.
+  OxyMake uses Ray's token precedence, authenticates submission and lifecycle
+  requests, trims surrounding token whitespace, reports unreadable or malformed
+  sources directly, and passes only the mode (never the token) to native DAG
+  and call-mode drivers (issue #27).
 - Rust callers can validate local admission before skipping cached execution
   with the unstable `ox_core::scheduler::validate_resource_budget` API (#26).
 - `ox run --resource-budget KEY=VALUE` now opts the local executor into

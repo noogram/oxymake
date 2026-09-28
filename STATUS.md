@@ -313,7 +313,7 @@ unstable admission validation for callers that may skip cached execution.
 
 ---
 
-## 6. Environment variables (`OX_*`)
+## 6. Environment variables
 
 OxyMake reads a small, documented set of environment variables. The
 canonical list lives in `docs/format/env-vars.md`.
@@ -332,6 +332,15 @@ canonical list lives in `docs/format/env-vars.md`.
 - `NO_COLOR` — disables ANSI colour output.
 - `TERM=dumb` — disables ANSI colour output.
 - `CI` — used for colour and verbosity heuristics.
+
+### Honoured by executor backends (subject to backend stability)
+
+- `RAY_AUTH_MODE` — enables Ray dashboard token authentication when set to
+  `token` (case-insensitive).
+- `RAY_AUTH_TOKEN` — supplies the Ray dashboard bearer token directly.
+- `RAY_AUTH_TOKEN_PATH` — selects a file containing the Ray dashboard bearer
+  token.
+- `SLURM_JWT` — supplies the JWT used by the SLURM REST executor.
 
 ### Unstable
 
