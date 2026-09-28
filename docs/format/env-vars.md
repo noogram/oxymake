@@ -33,6 +33,9 @@ not own them.
 
 | Name | Where | Effect |
 |------|-------|--------|
+| `RAY_AUTH_MODE` | Ray executor | Enables dashboard token authentication when set to `token` (case-insensitive). |
+| `RAY_AUTH_TOKEN` | Ray executor | Ray dashboard bearer token. Takes precedence over file sources; surrounding whitespace is ignored. |
+| `RAY_AUTH_TOKEN_PATH` | Ray executor | Path to a Ray dashboard bearer-token file. Takes precedence over `~/.ray/auth_token`; surrounding whitespace in the file is ignored. An unreadable explicit path is an error. |
 | `SLURM_JWT` | SLURM REST executor | JWT token for `slurmrestd`. If set, overrides `token_cmd`. |
 | `USER` / `SLURM_USER` | SLURM CLI executor | User identity for job submission. |
 | `XDG_CONFIG_HOME` | `ox run` | Config file lookup root. Defaults to `$HOME/.config`. |
