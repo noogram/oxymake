@@ -1654,19 +1654,19 @@ fn test_resource_mapper_aliases() {
     // Test 'cpus' alias
     let mut resources = BTreeMap::new();
     resources.insert("cpus".to_string(), ResourceValue::Int(8));
-    let mapped = map_resources(&resources);
+    let mapped = map_resources(&resources).unwrap();
     assert_eq!(mapped.num_cpus, Some(8.0));
 
     // Test 'gpus' alias
     let mut resources = BTreeMap::new();
     resources.insert("gpus".to_string(), ResourceValue::Float(2.0.into()));
-    let mapped = map_resources(&resources);
+    let mapped = map_resources(&resources).unwrap();
     assert_eq!(mapped.num_gpus, Some(2.0));
 
     // Test 'mem' alias
     let mut resources = BTreeMap::new();
     resources.insert("mem".to_string(), ResourceValue::Str("4G".into()));
-    let mapped = map_resources(&resources);
+    let mapped = map_resources(&resources).unwrap();
     assert_eq!(mapped.memory_bytes, Some(4 * 1024 * 1024 * 1024));
 }
 
@@ -1676,7 +1676,7 @@ fn test_resource_mapper_string_cpu() {
 
     let mut resources = BTreeMap::new();
     resources.insert("cpu".to_string(), ResourceValue::Str("4.5".into()));
-    let mapped = map_resources(&resources);
+    let mapped = map_resources(&resources).unwrap();
     assert_eq!(mapped.num_cpus, Some(4.5));
 }
 
@@ -1685,7 +1685,7 @@ fn test_resource_mapper_empty() {
     use ox_exec_ray::resource_mapper::map_resources;
 
     let resources = BTreeMap::new();
-    let mapped = map_resources(&resources);
+    let mapped = map_resources(&resources).unwrap();
     assert!(mapped.num_cpus.is_none());
     assert!(mapped.num_gpus.is_none());
     assert!(mapped.memory_bytes.is_none());
@@ -1698,7 +1698,7 @@ fn test_resource_mapper_unprefixed_custom() {
 
     let mut resources = BTreeMap::new();
     resources.insert("tpu".to_string(), ResourceValue::Int(4));
-    let mapped = map_resources(&resources);
+    let mapped = map_resources(&resources).unwrap();
     // 'tpu' without 'custom:' prefix should still be treated as custom
     assert_eq!(mapped.custom.get("tpu"), Some(&4.0));
 }
@@ -2198,7 +2198,7 @@ fn test_parse_memory_string_kib() {
 
     let mut resources = BTreeMap::new();
     resources.insert("memory".to_string(), ResourceValue::Str("1KiB".into()));
-    let mapped = map_resources(&resources);
+    let mapped = map_resources(&resources).unwrap();
     assert_eq!(mapped.memory_bytes, Some(1024));
 }
 
@@ -2208,7 +2208,7 @@ fn test_parse_memory_string_fractional() {
 
     let mut resources = BTreeMap::new();
     resources.insert("memory".to_string(), ResourceValue::Str("1.5G".into()));
-    let mapped = map_resources(&resources);
+    let mapped = map_resources(&resources).unwrap();
     let expected = (1.5 * 1024.0 * 1024.0 * 1024.0) as u64;
     assert_eq!(mapped.memory_bytes, Some(expected));
 }
@@ -2219,7 +2219,7 @@ fn test_parse_memory_int_value() {
 
     let mut resources = BTreeMap::new();
     resources.insert("memory".to_string(), ResourceValue::Int(4096));
-    let mapped = map_resources(&resources);
+    let mapped = map_resources(&resources).unwrap();
     assert_eq!(mapped.memory_bytes, Some(4096));
 }
 
@@ -2229,6 +2229,5 @@ fn test_parse_memory_float_value() {
 
     let mut resources = BTreeMap::new();
     resources.insert("memory".to_string(), ResourceValue::Float(2048.5.into()));
-    let mapped = map_resources(&resources);
-    assert_eq!(mapped.memory_bytes, Some(2048));
+    assert!(map_resources(&resources).is_err());
 }

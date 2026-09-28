@@ -85,10 +85,15 @@ max_submit = 10
 
 | OxyMake | Ray | Notes |
 |---------|-----|-------|
-| `cpu` | `num_cpus` | Direct mapping |
-| `mem` | `memory` | Bytes |
-| `gpu` | `num_gpus` | Fractional GPUs supported (`gpu = 0.5`) |
-| `custom:*` | Custom resources | Arbitrary Ray custom resources |
+| `cpu` / `cpus` | `num_cpus` | Exact to `0.0001` before Ray conversion |
+| `mem` / `memory` | runtime environment | Bytes or a binary-unit string |
+| `mem_mb` / `mem_gb` | runtime environment | MiB / GiB converted to bytes |
+| `gpu` / `gpus` | `num_gpus` | Fractional GPUs up to one, or whole multi-GPU counts |
+| any custom key / `custom:*` | Custom resources | Case-sensitive custom resources |
+
+The native Ray DAG driver currently forwards CPU and GPU only. Memory and
+custom resources are normalized and validated here but are not yet emitted in
+Ray task options.
 
 ### Memory Passing
 

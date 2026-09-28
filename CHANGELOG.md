@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Resource keys and values now have one checked normalization path for Ray and
+  future local admission: `mem_mb` and `mem_gb` are binary memory aliases,
+  duplicate aliases and malformed values fail instead of overwriting or
+  falling back, and token counts retain four decimal places exactly. Raw rule
+  and job declarations, serialization, and cache keys are unchanged (issue
+  #25).
+
 ## [0.5.0] - 2026-09-17
 
 Three cache and resolution defects found while using 0.4.0: a uv interpreter

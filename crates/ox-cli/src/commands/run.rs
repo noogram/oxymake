@@ -2660,8 +2660,10 @@ fn print_failure_summary(
 
 #[cfg(test)]
 mod cache_key_tests {
+    use std::collections::BTreeMap;
+
     use super::*;
-    use ox_core::model::{EnvSpec, RuleName};
+    use ox_core::model::{EnvSpec, ResourceValue, RuleName};
 
     fn make_job(execution: ExecutionBlock) -> ConcreteJob {
         ConcreteJob {
@@ -2719,6 +2721,28 @@ mod cache_key_tests {
             lang: None,
         });
         assert_eq!(job_cache_key(&job, None), None);
+    }
+
+    /// Resource normalization is a side-car operation: adding it must not
+    /// change the established cache identity of a concrete job whose raw
+    /// resource declarations are already present.
+    #[test]
+    fn resource_normalization_does_not_move_concrete_job_cache_key() {
+        let mut job = make_job(ExecutionBlock::Shell {
+            command: "echo resource-stable".into(),
+        });
+        job.resources = BTreeMap::from([
+            ("cpus".into(), ResourceValue::Int(4)),
+            ("mem_gb".into(), ResourceValue::Int(16)),
+            ("metal".into(), ResourceValue::Float(0.5.into())),
+        ]);
+
+        let key = job_cache_key(&job, None).unwrap();
+        assert_eq!(
+            key.as_str(),
+            "af8c2cf6ef33969b09e535b27ce0dae2ec525942060f2252ef9ba38eb44dc196",
+            "resource side-car normalization moved the concrete-job cache key"
+        );
     }
 
     #[test]

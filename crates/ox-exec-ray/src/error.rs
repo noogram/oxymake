@@ -3,6 +3,10 @@
 /// Errors that can occur during Ray job submission, polling, or cancellation.
 #[derive(Debug, thiserror::Error)]
 pub enum RayError {
+    /// A declared resource cannot be represented by Ray.
+    #[error("invalid Ray resource declaration: {0}")]
+    ResourceMapping(#[from] crate::resource_mapper::ResourceMapError),
+
     /// HTTP request to the Ray Jobs API failed.
     #[error("Ray API request failed: {0}")]
     ApiRequest(#[from] reqwest::Error),
