@@ -383,7 +383,8 @@ async fn interrupt_follow_stops_queued_driver() {
             "--follow",
         ])
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
         .spawn()
         .unwrap();
     let start = Instant::now();
@@ -411,7 +412,16 @@ async fn interrupt_follow_stops_queued_driver() {
     let start = Instant::now();
     loop {
         if let Some(status) = child.try_wait().unwrap() {
-            assert!(!status.success());
+            assert_eq!(status.code(), Some(130));
+            let output = child.wait_with_output().unwrap();
+            let text = format!(
+                "{}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(text.contains("Ray driver stopped"), "{text}");
+            assert!(!text.contains("NOT cancelled"), "{text}");
+            assert!(!text.contains("Completed:"), "{text}");
             break;
         }
         if start.elapsed() > Duration::from_secs(8) {
