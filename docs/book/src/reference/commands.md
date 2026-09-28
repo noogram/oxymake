@@ -268,8 +268,12 @@ does not collect this accounting.
 Local cold launches on Linux and macOS record the child's `wait4` RSS in
 history, rounded up to MiB. This includes already-reaped descendants but
 is not a simultaneous process-tree total; background or daemonised work can
-escape it. Local warm-worker dispatches remain `null`. CPU time is measured
-for cold children too, but appears only in benchmark TSV, not history.
+escape it. Fork-mode warm workers also record the child each dispatch forks
+and reaps, so the same retained template can publish distinct peaks for
+successive jobs. Persistent-mode warm workers remain `null`: one process serves
+every dispatch, so a per-dispatch RSS peak does not exist. CPU time is measured
+for cold and warm-fork children too, but appears only in benchmark TSV, not
+history.
 
 The figure belongs to the attempt that finished the job; earlier failed
 attempts are not accumulated. Failures and cancellations leave memory `null`.

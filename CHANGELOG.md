@@ -15,7 +15,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   include `peak_memory_bytes`. The observation includes already-reaped
   descendants, not a simultaneous tree total; background or daemonised work
   can escape it. Collection wakes on SIGCHLD without a fixed polling delay in
-  short jobs' wall times. Warm-worker dispatches remain unmeasured (issue #24).
+  short jobs' wall times (issue #24).
+- Local `--warm-workers fork` dispatches now record the forked child's peak RSS
+  and user + system CPU time from the template's `os.wait4`, publishing them to
+  benchmark TSV and peak RSS to history. Two dispatches through one retained
+  template remain separately attributed, but each child's RSS high-water mark
+  includes the warm template footprint inherited at fork. Only the memory above
+  that baseline was added by the dispatch; a large NumPy or PyTorch import can
+  dominate a small dispatch's reported peak. `--warm-workers persistent` stays
+  unmeasured because one process serves every dispatch and has no per-dispatch
+  RSS peak or independently attributable CPU interval (issue #24).
 - `ox-exec-slurm`: the unstable `SlurmExecutor::poll_status_with_record` API
   preserves accounting alongside status, including absence on squeue fallback
   (issue #24).
@@ -44,6 +53,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   memory reservations (issue #25).
 
 ### Changed
+- `ox-exec-local`'s unstable `WorkerPool::dispatch` Rust API now returns the new
+  public `DispatchUsage` struct instead of `()`, and
+  `WorkerError::PythonError(String)` is now the struct variant
+  `PythonError { message }`. Successful fork dispatches expose optional child
+  peak RSS and CPU time; callers must continue treating absent values as
+  unmeasured (issue #24).
 - `ox-state`: `StateDb::finalize_job_history` and the unstable `StateBackend`
   method now accept a per-job peak-memory byte map (issue #24).
 - **A resource declaration that Ray cannot honour is now an error instead of a

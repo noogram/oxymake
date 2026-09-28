@@ -152,9 +152,87 @@ async fn dispatch_on_unknown_env_returns_error_not_hang() {
         .await;
 
     assert!(
-        matches!(result, Err(WorkerError::PythonError(_))),
-        "expected PythonError(\"no warm worker\"), got: {result:?}"
+        matches!(result, Err(WorkerError::PythonError { .. })),
+        "expected PythonError for missing warm worker, got: {result:?}"
     );
+}
+
+/// A new binary can dispatch to an already-running old template. Missing
+/// usage fields are absence, never a fabricated zero.
+#[tokio::test]
+async fn legacy_success_reply_keeps_usage_absent() {
+    let dir = TempDir::new().unwrap();
+    let work_dir = dir.path().to_path_buf();
+    let script = "\
+#!/bin/sh
+printf '{\"status\":\"ready\"}\\n'
+while read -r payload; do
+  case \"$payload\" in *shutdown*) exit 0 ;; esac
+  printf '{\"status\":\"ok\"}\\n'
+done
+";
+    let script_path = write_executable_script(&work_dir, "legacy_worker.sh", script);
+    let dummy = work_dir.join("unused.sh");
+    let argv = vec![
+        "/bin/sh".to_string(),
+        script_path,
+        dummy.to_string_lossy().into_owned(),
+    ];
+    let pool = WorkerPool::new(work_dir);
+    pool.ensure_warm("legacy", &argv, "# unused\n")
+        .await
+        .unwrap();
+
+    let usage = pool
+        .dispatch(
+            "legacy",
+            &serde_json::json!({"cmd": "exec"}),
+            Duration::from_secs(1),
+        )
+        .await
+        .unwrap();
+    assert_eq!(usage.peak_memory_bytes, None);
+    assert_eq!(usage.cpu_time, None);
+    pool.shutdown().await;
+}
+
+/// Optional usage fields are parsed independently. Bad values do not reject
+/// an otherwise valid old/new protocol reply and do not become zero.
+#[tokio::test]
+async fn malformed_usage_fields_stay_absent() {
+    let dir = TempDir::new().unwrap();
+    let work_dir = dir.path().to_path_buf();
+    let script = "\
+#!/bin/sh
+printf '{\"status\":\"ready\"}\\n'
+while read -r payload; do
+  case \"$payload\" in *shutdown*) exit 0 ;; esac
+  printf '{\"status\":\"ok\",\"peak_rss\":\"unknown\",\"cpu_time_seconds\":-1}\\n'
+done
+";
+    let script_path = write_executable_script(&work_dir, "malformed_worker.sh", script);
+    let dummy = work_dir.join("unused.sh");
+    let argv = vec![
+        "/bin/sh".to_string(),
+        script_path,
+        dummy.to_string_lossy().into_owned(),
+    ];
+    let pool = WorkerPool::new(work_dir);
+    pool.ensure_warm("malformed", &argv, "# unused\n")
+        .await
+        .unwrap();
+
+    let usage = pool
+        .dispatch(
+            "malformed",
+            &serde_json::json!({"cmd": "exec"}),
+            Duration::from_secs(1),
+        )
+        .await
+        .unwrap();
+    assert_eq!(usage.peak_memory_bytes, None);
+    assert_eq!(usage.cpu_time, None);
+    pool.shutdown().await;
 }
 
 /// Document the contract: a worker that emits a *non-ready* status line at

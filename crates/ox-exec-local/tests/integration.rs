@@ -1599,37 +1599,167 @@ async fn resource_budget_rejects_before_output_deletion_or_subprocess() {
     }
 }
 
-/// A warm template serves multiple dispatches: none gets template-wide usage.
+/// A persistent worker has no per-dispatch process boundary, so usage stays absent.
 #[tokio::test]
 #[serial]
-async fn warm_dispatch_keeps_usage_unavailable() {
+async fn persistent_warm_dispatch_has_no_per_dispatch_peak_to_report() {
     use ox_exec_local::call_mode::WarmWorkerMode;
     use ox_exec_local::worker_pool::WorkerPool;
     use std::sync::Arc;
 
-    for mode in [WarmWorkerMode::Fork, WarmWorkerMode::Persistent] {
-        let tmp = tempfile::tempdir().unwrap();
-        let pool = Arc::new(WorkerPool::new_with_mode(tmp.path().to_path_buf(), mode));
-        let exec = LocalExecutor::new().with_worker_pool(Arc::clone(&pool));
-        let mut ctx = test_ctx(tmp.path());
-        ctx.project_dir = tmp.path().to_path_buf();
-        let mut job = shell_job("warm-usage", "unused");
+    let tmp = tempfile::tempdir().unwrap();
+    let pool = Arc::new(WorkerPool::new_with_mode(
+        tmp.path().to_path_buf(),
+        WarmWorkerMode::Persistent,
+    ));
+    let exec = LocalExecutor::new().with_worker_pool(Arc::clone(&pool));
+    let mut ctx = test_ctx(tmp.path());
+    ctx.project_dir = tmp.path().to_path_buf();
+    let mut job = shell_job("persistent-warm-usage", "unused");
+    job.execution = ExecutionBlock::Call {
+        function: "builtins:print".into(),
+        lang: "python".into(),
+    };
+    job.timeout = Some(Duration::from_secs(5));
+    for _ in 0..2 {
+        let ws = exec.prepare_workspace(&job, &ctx).await.unwrap();
+        let result = exec.execute(&job, &ws, &ctx).await.unwrap();
+        assert_eq!(result.exit_code, 0);
+        assert!(
+            result.log_path.is_none(),
+            "must use warm path, not cold fallback"
+        );
+        assert!(result.peak_memory_bytes.is_none());
+        assert!(result.cpu_time.is_none());
+    }
+    pool.shutdown().await;
+}
+
+/// Fork dispatches are separate children of one retained template. In both
+/// execution orders, the larger dispatch must add to the inherited template
+/// baseline without contaminating the neighbouring trivial dispatch.
+#[tokio::test]
+#[serial]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+async fn fork_warm_dispatch_reports_child_local_rss_and_cpu() {
+    use ox_exec_local::call_mode::WarmWorkerMode;
+    use ox_exec_local::worker_pool::WorkerPool;
+    use std::sync::Arc;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let _cwd = CwdGuard::set(tmp.path());
+    std::fs::write(
+        tmp.path().join("warm_usage.py"),
+        r#"import time
+
+def allocate(megabytes):
+    allocation = bytearray(megabytes * 1024 * 1024)
+    for offset in range(0, len(allocation), 4096):
+        allocation[offset] = 1
+    return len(allocation)
+
+def trivial():
+    return 1
+
+def busy(seconds):
+    deadline = time.process_time() + seconds
+    value = 0
+    while time.process_time() < deadline:
+        value += 1
+    return value
+
+def sleeping(seconds):
+    time.sleep(seconds)
+    return 1
+"#,
+    )
+    .unwrap();
+
+    let pool = Arc::new(WorkerPool::new_with_mode(
+        tmp.path().to_path_buf(),
+        WarmWorkerMode::Fork,
+    ));
+    let exec = LocalExecutor::new().with_worker_pool(Arc::clone(&pool));
+    let mut ctx = test_ctx(tmp.path());
+    ctx.project_dir = tmp.path().to_path_buf();
+
+    let run = |id: &str, function: &str, params: &[(&str, &str)]| {
+        let mut job = shell_job(id, "unused");
         job.execution = ExecutionBlock::Call {
-            function: "builtins:print".into(),
+            function: format!("warm_usage:{function}"),
             lang: "python".into(),
         };
         job.timeout = Some(Duration::from_secs(5));
-        for _ in 0..2 {
-            let ws = exec.prepare_workspace(&job, &ctx).await.unwrap();
-            let result = exec.execute(&job, &ws, &ctx).await.unwrap();
-            assert_eq!(result.exit_code, 0);
-            assert!(
-                result.log_path.is_none(),
-                "must use warm path, not cold fallback"
-            );
-            assert!(result.peak_memory_bytes.is_none());
-            assert!(result.cpu_time.is_none());
-        }
-        pool.shutdown().await;
+        job.params.extend(
+            params
+                .iter()
+                .map(|(key, value)| ((*key).to_string(), (*value).to_string())),
+        );
+        job
+    };
+
+    let trivial_before_job = run("warm-trivial-before", "trivial", &[]);
+    let trivial_before_ws = exec
+        .prepare_workspace(&trivial_before_job, &ctx)
+        .await
+        .unwrap();
+    let trivial_before = exec
+        .execute(&trivial_before_job, &trivial_before_ws, &ctx)
+        .await
+        .unwrap();
+    let allocated_job = run("warm-allocate", "allocate", &[("megabytes", "64")]);
+    let allocated_ws = exec.prepare_workspace(&allocated_job, &ctx).await.unwrap();
+    let allocated = exec
+        .execute(&allocated_job, &allocated_ws, &ctx)
+        .await
+        .unwrap();
+    let trivial_after_job = run("warm-trivial-after", "trivial", &[]);
+    let trivial_after_ws = exec
+        .prepare_workspace(&trivial_after_job, &ctx)
+        .await
+        .unwrap();
+    let trivial_after = exec
+        .execute(&trivial_after_job, &trivial_after_ws, &ctx)
+        .await
+        .unwrap();
+
+    assert!(
+        trivial_before.log_path.is_none()
+            && allocated.log_path.is_none()
+            && trivial_after.log_path.is_none()
+    );
+    let allocated_rss = allocated.peak_memory_bytes.expect("allocated child RSS");
+    for (order, trivial_rss) in [
+        (
+            "trivial-then-allocate",
+            trivial_before
+                .peak_memory_bytes
+                .expect("leading trivial child RSS"),
+        ),
+        (
+            "allocate-then-trivial",
+            trivial_after
+                .peak_memory_bytes
+                .expect("trailing trivial child RSS"),
+        ),
+    ] {
+        assert!(
+            allocated_rss > trivial_rss + 32 * 1024 * 1024,
+            "{order} attribution failed: allocated={allocated_rss}, trivial={trivial_rss}"
+        );
     }
+
+    let busy_job = run("warm-busy", "busy", &[("seconds", "0.3")]);
+    let busy_ws = exec.prepare_workspace(&busy_job, &ctx).await.unwrap();
+    let busy = exec.execute(&busy_job, &busy_ws, &ctx).await.unwrap();
+    let sleep_job = run("warm-sleep", "sleeping", &[("seconds", "0.3")]);
+    let sleep_ws = exec.prepare_workspace(&sleep_job, &ctx).await.unwrap();
+    let sleeping = exec.execute(&sleep_job, &sleep_ws, &ctx).await.unwrap();
+    assert!(
+        busy.cpu_time.expect("busy child CPU")
+            > sleeping.cpu_time.expect("sleeping child CPU") + Duration::from_millis(150),
+        "busy dispatch must consume more CPU than an equal-duration sleep"
+    );
+
+    pool.shutdown().await;
 }
