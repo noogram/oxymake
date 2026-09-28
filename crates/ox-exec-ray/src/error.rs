@@ -9,6 +9,21 @@ pub enum RayError {
     )]
     AuthTokenMissing,
 
+    /// A configured token source could not be read.
+    #[error("failed to read Ray authentication token from {token_source} ({path}): {reason}")]
+    AuthTokenRead {
+        token_source: String,
+        path: std::path::PathBuf,
+        reason: String,
+    },
+
+    /// A loaded token cannot be represented as an HTTP header value.
+    #[error("Ray authentication token from {token_source} is malformed: {reason}")]
+    AuthTokenMalformed {
+        token_source: String,
+        reason: String,
+    },
+
     /// The dashboard rejected a request because token authentication is required.
     #[error(
         "Ray dashboard returned 401: the cluster requires a Ray token; RAY_AUTH_MODE is {mode}; token sources consulted: {sources}"

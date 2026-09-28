@@ -121,50 +121,76 @@ impl RayAuth {
         token_path: Option<PathBuf>,
         home: Option<PathBuf>,
     ) -> Result<Self, RayError> {
-        if mode.as_deref() != Some("token") {
+        if !mode
+            .as_deref()
+            .is_some_and(|mode| mode.eq_ignore_ascii_case("token"))
+        {
             return Ok(Self::Disabled { mode });
         }
 
         let mut sources_consulted = vec!["RAY_AUTH_TOKEN"];
-        if let Some(token) = env_token.filter(|token| !token.is_empty()) {
-            return Ok(Self::Token {
-                token,
-                sources_consulted,
-            });
+        if let Some(token) = env_token {
+            if let Some(token) = Self::normalize_token(token, "RAY_AUTH_TOKEN")? {
+                return Ok(Self::Token {
+                    token,
+                    sources_consulted,
+                });
+            }
         }
 
         sources_consulted.push("RAY_AUTH_TOKEN_PATH");
-        if let Some(token) = token_path
-            .as_deref()
-            .and_then(Self::read_nonempty_token_file)
-        {
-            return Ok(Self::Token {
-                token,
-                sources_consulted,
-            });
+        if let Some(path) = token_path.as_deref() {
+            if let Some(token) = Self::read_token_file(path, "RAY_AUTH_TOKEN_PATH", false)? {
+                return Ok(Self::Token {
+                    token,
+                    sources_consulted,
+                });
+            }
         }
 
         sources_consulted.push("~/.ray/auth_token");
-        if let Some(token) = home
-            .as_deref()
-            .map(|home| home.join(".ray/auth_token"))
-            .as_deref()
-            .and_then(Self::read_nonempty_token_file)
-        {
-            return Ok(Self::Token {
-                token,
-                sources_consulted,
-            });
+        if let Some(path) = home.as_deref().map(|home| home.join(".ray/auth_token")) {
+            if let Some(token) = Self::read_token_file(&path, "~/.ray/auth_token", true)? {
+                return Ok(Self::Token {
+                    token,
+                    sources_consulted,
+                });
+            }
         }
 
         Err(RayError::AuthTokenMissing)
     }
 
-    fn read_nonempty_token_file(path: &std::path::Path) -> Option<String> {
-        std::fs::read_to_string(path)
-            .ok()
-            .map(|token| token.trim_end().to_string())
-            .filter(|token| !token.is_empty())
+    fn read_token_file(
+        path: &std::path::Path,
+        source: &str,
+        missing_is_absent: bool,
+    ) -> Result<Option<String>, RayError> {
+        match std::fs::read_to_string(path) {
+            Ok(token) => Self::normalize_token(token, &format!("{source} ({})", path.display())),
+            Err(error) if missing_is_absent && error.kind() == std::io::ErrorKind::NotFound => {
+                Ok(None)
+            }
+            Err(error) => Err(RayError::AuthTokenRead {
+                token_source: source.to_string(),
+                path: path.to_path_buf(),
+                reason: error.to_string(),
+            }),
+        }
+    }
+
+    fn normalize_token(token: String, source: &str) -> Result<Option<String>, RayError> {
+        let token = token.trim().to_string();
+        if token.is_empty() {
+            return Ok(None);
+        }
+        reqwest::header::HeaderValue::from_str(&token).map_err(|error| {
+            RayError::AuthTokenMalformed {
+                token_source: source.to_string(),
+                reason: error.to_string(),
+            }
+        })?;
+        Ok(Some(token))
     }
 
     fn is_token(&self) -> bool {
@@ -499,12 +525,12 @@ mod inspection_tests {
         let explicit = root.path().join("explicit-token");
         let default = root.path().join(".ray/auth_token");
         std::fs::create_dir_all(default.parent().unwrap()).unwrap();
-        std::fs::write(&explicit, "path-token\n").unwrap();
-        std::fs::write(&default, "home-token\n").unwrap();
+        std::fs::write(&explicit, " \tpath-token\n").unwrap();
+        std::fs::write(&default, "\nhome-token \t\n").unwrap();
 
         let from_env = RayAuth::resolve(
             Some("token".into()),
-            Some("env-token".into()),
+            Some(" \tenv-token\r\n".into()),
             Some(explicit.clone()),
             Some(root.path().into()),
         )
@@ -526,12 +552,93 @@ mod inspection_tests {
     }
 
     #[test]
+    fn token_mode_is_case_insensitive() {
+        let auth =
+            RayAuth::resolve(Some("TOKEN".into()), Some("secret".into()), None, None).unwrap();
+        assert!(auth.is_token());
+        assert_eq!(token_value(&auth), Some("secret"));
+    }
+
+    #[test]
+    fn malformed_env_token_names_its_source_without_leaking_the_token() {
+        let malformed = "secret\nvalue";
+        let error =
+            RayAuth::resolve(Some("token".into()), Some(malformed.into()), None, None).unwrap_err();
+        let rendered = error.to_string();
+        assert!(matches!(error, RayError::AuthTokenMalformed { .. }));
+        assert!(rendered.contains("malformed"));
+        assert!(rendered.contains("RAY_AUTH_TOKEN"));
+        assert!(!rendered.contains(malformed));
+    }
+
+    #[test]
+    fn unreadable_explicit_token_path_is_not_ignored() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("missing-explicit-token");
+        let default = root.path().join(".ray/auth_token");
+        std::fs::create_dir_all(default.parent().unwrap()).unwrap();
+        std::fs::write(default, "different-token").unwrap();
+        let error = RayAuth::resolve(
+            Some("token".into()),
+            None,
+            Some(path.clone()),
+            Some(root.path().into()),
+        )
+        .unwrap_err();
+        let rendered = error.to_string();
+        let RayError::AuthTokenRead {
+            token_source,
+            path: error_path,
+            reason,
+        } = &error
+        else {
+            panic!("unexpected error: {error}");
+        };
+        assert_eq!(token_source, "RAY_AUTH_TOKEN_PATH");
+        assert_eq!(error_path, &path);
+        assert!(!reason.is_empty());
+        assert!(rendered.contains("RAY_AUTH_TOKEN_PATH"));
+        assert!(rendered.contains(&path.display().to_string()));
+        assert!(rendered.contains(reason));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unreadable_default_token_is_distinct_from_an_absent_token() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join(".ray/auth_token");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "secret").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+        let error = RayAuth::resolve(Some("token".into()), None, None, Some(root.path().into()))
+            .unwrap_err();
+        let rendered = error.to_string();
+        let RayError::AuthTokenRead {
+            token_source,
+            path: error_path,
+            reason,
+        } = &error
+        else {
+            panic!("unexpected error: {error}");
+        };
+        assert_eq!(token_source, "~/.ray/auth_token");
+        assert_eq!(error_path, &path);
+        assert!(!reason.is_empty());
+        assert!(rendered.contains("~/.ray/auth_token"));
+        assert!(rendered.contains(&path.display().to_string()));
+        assert!(rendered.contains(reason));
+    }
+
+    #[test]
     fn token_mode_without_a_token_fails_before_a_request_can_be_built() {
         let root = tempfile::tempdir().unwrap();
         let error = RayAuth::resolve(
             Some("token".into()),
             None,
-            Some(root.path().join("missing-explicit-token")),
+            None,
             Some(root.path().join("missing-home")),
         )
         .unwrap_err();

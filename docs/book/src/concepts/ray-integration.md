@@ -128,11 +128,14 @@ authentication. OxyMake then loads the client token using Ray's precedence:
 2. the file named by `RAY_AUTH_TOKEN_PATH`
 3. `~/.ray/auth_token`
 
-Trailing whitespace in token files is ignored. If none of those sources
-provides a token, OxyMake stops before making a dashboard request. The bearer
-token is used for submission, status, logs, cancellation, and the
-pre-submission node inspection. It is not written to the generated driver,
-run metadata, reports, or logs.
+Leading and trailing whitespace in environment and file tokens is ignored. If
+none of those sources provides a token, OxyMake stops before making a dashboard
+request. The bearer token is used for submission, status, logs, cancellation,
+and the pre-submission node inspection. It is not written to the generated
+driver, run metadata, reports, or logs.
+
+A bearer token sent over plain HTTP is readable on the wire; put any Ray
+dashboard reachable beyond loopback behind TLS.
 
 Native DAG submissions pass `RAY_AUTH_MODE=token` to the driver, but never the
 token itself. The driver runs on the cluster and must be able to load its own
@@ -140,8 +143,9 @@ token using Ray's cluster-local configuration. If a dashboard answers 401,
 OxyMake reports the observed mode and the token sources it consulted without
 printing any part of the token.
 
-When `RAY_AUTH_MODE` is unset or has any other value, OxyMake performs no token
-lookup and sends no authorization header.
+The `token` value is case-insensitive. When `RAY_AUTH_MODE` is unset or has any
+other value, OxyMake performs no token lookup and sends no authorization
+header.
 
 Custom names with surrounding whitespace are rejected. Names colliding with
 Ray built-ins or reserved prefixes are also rejected; see the

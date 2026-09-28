@@ -412,12 +412,19 @@ impl Executor for RayExecutor {
         metadata.insert("oxymake_run_id".to_string(), ctx.run_id.clone());
 
         // Build runtime_env with environment variables for call-mode jobs.
-        let runtime_env = if matches!(job.execution, ExecutionBlock::Call { .. }) {
+        let call_mode = matches!(job.execution, ExecutionBlock::Call { .. });
+        let call_runtime = if call_mode {
             let mut env_vars = serde_json::Map::new();
             env_vars.insert(
                 "OXYMAKE_WORKSPACE".to_string(),
                 serde_json::Value::String(workspace.work_dir.display().to_string()),
             );
+            if self.client.token_mode() {
+                env_vars.insert(
+                    "RAY_AUTH_MODE".to_string(),
+                    serde_json::Value::String("token".to_string()),
+                );
+            }
 
             // Object refs for InMemory inputs are passed via the job's params.
             // The scheduler populates these from the upstream job's object manifest.
@@ -436,6 +443,7 @@ impl Executor for RayExecutor {
         } else {
             None
         };
+        let runtime_env = runtime_env::merge_runtime_env(merged_runtime, call_runtime);
 
         let request = JobSubmitRequest {
             entrypoint,
@@ -447,7 +455,7 @@ impl Executor for RayExecutor {
             } else {
                 Some(resources.custom.into_iter().collect())
             },
-            runtime_env: runtime_env.or(merged_runtime),
+            runtime_env,
             metadata: Some(metadata),
         };
 
@@ -1019,5 +1027,71 @@ mod tests {
         ] {
             assert!(!rendered.contains(TOKEN), "token leaked through {surface}");
         }
+    }
+
+    #[tokio::test]
+    async fn token_mode_reaches_per_job_call_wrapper_without_leaking_token() {
+        const TOKEN: &str = "distinctive-call-token-b28f";
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/jobs/"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({"submission_id": "call-id"})),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/jobs/call-id"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "status": "SUCCEEDED"
+            })))
+            .mount(&server)
+            .await;
+
+        let root = tempfile::tempdir().unwrap();
+        let config = RayConfig {
+            dashboard_address: server.uri(),
+            working_dir: root.path().join("staging"),
+            poll_interval_min: Duration::from_millis(1),
+            poll_interval_max: Duration::from_millis(2),
+            ..RayConfig::default()
+        };
+        let client = RayClient::with_test_token(server.uri(), reqwest::Client::new(), TOKEN);
+        let executor = RayExecutor::with_client(config, client);
+        let mut job = test_job("call-token-job", "");
+        job.execution = ExecutionBlock::Call {
+            function: "pipeline.features:compute".into(),
+            lang: "python".into(),
+        };
+        let context = ExecContext {
+            global_job_limit: 1,
+            run_id: "call-token-run".into(),
+            log_dir: root.path().join("logs"),
+            project_dir: root.path().into(),
+            trusted_dirs: vec![],
+            input_data: HashMap::new(),
+            memory_map: None,
+        };
+
+        let workspace = executor.prepare_workspace(&job, &context).await.unwrap();
+        executor.execute(&job, &workspace, &context).await.unwrap();
+
+        let requests = server.received_requests().await.unwrap();
+        let submission = requests
+            .iter()
+            .find(|request| request.url.path() == "/api/jobs/")
+            .unwrap();
+        let payload: serde_json::Value = serde_json::from_slice(&submission.body).unwrap();
+        assert_eq!(
+            payload.pointer("/runtime_env/env_vars/RAY_AUTH_MODE"),
+            Some(&serde_json::Value::String("token".into()))
+        );
+        assert!(
+            payload
+                .pointer("/runtime_env/env_vars/OXYMAKE_WORKSPACE")
+                .is_some()
+        );
+        assert!(!serde_json::to_string(&payload).unwrap().contains(TOKEN));
     }
 }
