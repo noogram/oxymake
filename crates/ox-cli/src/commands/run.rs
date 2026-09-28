@@ -35,6 +35,7 @@ use ox_exec_slurm::executor::{SlurmConfig, SlurmExecutor};
 use ox_plan::critical_path::CriticalPathPass;
 
 use super::common;
+use super::remote_follow::{self, FollowPolicy, FollowRequest, FollowStop};
 
 /// Lightweight phase timer for `--timings` output.
 struct PhaseTimer {
@@ -1863,6 +1864,8 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
     // with cancellations.
     let interrupted = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let interrupted_outer = interrupted.clone();
+    let mut remote_stop = None;
+    let remote_following = args.follow && matches!(args.executor.as_str(), "ray" | "slurm");
     let result = rt.block_on(async {
         let interrupted = interrupted_outer;
         // Set up graceful shutdown: SIGINT (Ctrl+C) notifies the scheduler
@@ -2098,7 +2101,11 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
                 if let Some(ref multi) = progress_multi {
                     let _ = multi.clear();
                 }
-                eprintln!("\nInterrupted — waiting for running jobs to exit…");
+                if remote_following {
+                    eprintln!("\nInterrupted — stopping remote follow…");
+                } else {
+                    eprintln!("\nInterrupted — waiting for running jobs to exit…");
+                }
                 shutdown.notify_waiters();
 
                 // Second signal: force-exit. Without this, tokio's signal
@@ -2112,7 +2119,7 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
                 // Scoped to our own session_id: a live peer's row is never
                 // ours to terminalize (ADR-012). The session keeps the
                 // `interrupted` status written on the first signal.
-                if let Some(sid) = &interrupted_session {
+                if !remote_following && let Some(sid) = &interrupted_session {
                     if let Ok(db) = ox_state::db::StateDb::open(&db_path) {
                         if let Ok(ids) = db.running_job_ids_for_session(sid) {
                             let _ = db.cancel_job_ids_for_session(&ids, sid);
@@ -2212,6 +2219,8 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
                         .unwrap_or_default(),
                     ..SlurmConfig::default()
                 };
+                let endpoint = slurm_config.api_url.clone()
+                    .unwrap_or_else(|| "SLURM scheduler via local sacct/squeue".into());
                 let executor = SlurmExecutor::new(slurm_config, event_bus.clone());
                 // Pre-flight: verify SLURM CLI tools are available before
                 // scheduling any jobs. Without this, a missing `sbatch`
@@ -2267,112 +2276,63 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
                 );
 
                 if args.follow {
-                    // Poll until all jobs reach a terminal state.
                     eprintln!("Following execution progress…\n");
-                    let follow_start = std::time::Instant::now();
-                    let poll_interval = std::time::Duration::from_secs(5);
-                    let mut completed = 0usize;
-                    let mut failed = 0usize;
-
-                    loop {
-                        tokio::time::sleep(poll_interval).await;
-
-                        let mut still_running = false;
-                        for job_id_str in dag_result.job_submissions.keys() {
+                    let (result, stop) = remote_follow::follow(FollowRequest {
+                        jobs: dag_result.job_submissions.keys().cloned().collect(),
+                        total: dag_result.total_jobs, skipped: dag_result.skipped,
+                        endpoint: &endpoint,
+                        policy: FollowPolicy::new(std::time::Duration::from_secs(5)),
+                        interrupted: &interrupted, shutdown: &shutdown,
+                    }, |job_id_str| {
+                        let executor = &executor;
+                        let state_db = &state_db;
+                        let session_id = &session_id;
+                        let job_durations = &job_durations;
+                        let job_peak_memory_bytes = &job_peak_memory_bytes;
+                        async move {
+                            use ox_core::traits::executor::JobStatus;
                             let jid = JobId::from(job_id_str.as_str());
-                            // DAG submission bypasses the core scheduler and its
-                            // JobCompleted events. Persist this poll's accounting
-                            // and terminal state directly for history finalization.
-                            match executor.poll_status_with_record(&jid).await {
-                                Ok((status, record)) => {
-                                    use ox_core::traits::executor::JobStatus;
-                                    if let (Some(db), Some(sid)) = (&state_db, &session_id) {
-                                        match &status {
-                                            JobStatus::Completed
-                                            | JobStatus::Failed(_)
-                                            | JobStatus::Running => {
-                                                let _ = db.claim_job(job_id_str, sid);
-                                            }
-                                            _ => {}
-                                        }
-                                        match &status {
-                                            JobStatus::Completed => {
-                                                let _ = db.complete_job(job_id_str, sid, 0, "");
-                                            }
-                                            JobStatus::Failed(_) => {
-                                                let exit = record.as_ref()
-                                                    .map(|r| r.exit_code)
-                                                    .filter(|c| *c != 0)
-                                                    .unwrap_or(1);
-                                                let _ = db.fail_job(job_id_str, sid, exit);
-                                            }
-                                            JobStatus::Cancelled => {
-                                                let _ = db.cancel_job_ids_for_session(
-                                                    std::slice::from_ref(job_id_str), sid,
-                                                );
-                                            }
-                                            _ => {}
-                                        }
+                            let (status, record) = executor.poll_status_with_record(&jid).await?;
+                            if let (Some(db), Some(sid)) = (&state_db, &session_id) {
+                                match &status {
+                                    JobStatus::Completed
+                                    | JobStatus::Failed(_)
+                                    | JobStatus::Running => {
+                                        let _ = db.claim_job(&job_id_str, sid);
                                     }
-                                    match status {
-                                        JobStatus::Completed => {
-                                            completed += 1;
-                                            if let Some(record) = record {
-                                                job_durations.lock().await.insert(
-                                                    job_id_str.clone(), record.elapsed.as_millis() as u64,
-                                                );
-                                                if let Some(bytes) = record.peak_memory_bytes {
-                                                    job_peak_memory_bytes.lock().await
-                                                        .insert(job_id_str.clone(), bytes);
-                                                }
-                                            }
-                                        }
-                                        JobStatus::Failed(msg) => {
-                                            eprintln!("  FAILED: {} — {}", job_id_str, msg);
-                                            failed += 1;
-                                        }
-                                        JobStatus::Cancelled => {
-                                            failed += 1;
-                                        }
-                                        _ => still_running = true,
-                                    }
+                                    _ => {}
                                 }
-                                Err(e) => {
-                                    eprintln!("  Warning: failed to poll {}: {}", job_id_str, e);
-                                    still_running = true;
+                                match &status {
+                                    JobStatus::Completed => {
+                                        let _ = db.complete_job(&job_id_str, sid, 0, "");
+                                    }
+                                    JobStatus::Failed(_) => {
+                                        let exit = record.as_ref()
+                                            .map(|r| r.exit_code)
+                                            .filter(|c| *c != 0)
+                                            .unwrap_or(1);
+                                        let _ = db.fail_job(&job_id_str, sid, exit);
+                                    }
+                                    JobStatus::Cancelled => {
+                                        let _ = db.cancel_job_ids_for_session(
+                                            std::slice::from_ref(&job_id_str), sid,
+                                        );
+                                    }
+                                    _ => {}
                                 }
                             }
+
+                            if matches!(status, JobStatus::Completed) && let Some(record) = record {
+                                job_durations.lock().await.insert(job_id_str.clone(), record.elapsed.as_millis() as u64);
+                                if let Some(bytes) = record.peak_memory_bytes {
+                                    job_peak_memory_bytes.lock().await.insert(job_id_str, bytes);
+                                }
+                            }
+                            Ok::<_, ox_exec_slurm::error::SlurmError>(status)
                         }
-
-                        let total = dag_result.total_jobs;
-                        let done = completed + failed;
-                        eprintln!(
-                            "  Progress: {}/{} ({} succeeded, {} failed)",
-                            done, total, completed, failed
-                        );
-
-                        if !still_running || done >= total {
-                            break;
-                        }
-
-                        // Reset counters for next poll cycle (we re-poll all).
-                        completed = 0;
-                        failed = 0;
-                    }
-
-                    // Build a SchedulerResult from the final state.
-                    let duration = follow_start.elapsed();
-                    Ok(scheduler::SchedulerResult {
-                        total_jobs: dag_result.total_jobs,
-                        succeeded: completed,
-                        failed,
-                        skipped: dag_result.skipped,
-                        cancelled: 0,
-                        duration,
-                        failed_details: vec![],
-                        root_cause: None,
-                        memory_stats: None,
-                    })
+                    }, |line| eprintln!("{line}")).await;
+                    remote_stop = stop;
+                    Ok(result)
                 } else {
                     // Fire-and-forget: return immediately.
                     eprintln!("Use 'ox status' to check progress.");
@@ -2471,80 +2431,35 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
                 }
 
                 if args.follow {
-                    // Poll until all jobs reach a terminal state.
                     eprintln!("Following execution progress…\n");
-                    let follow_start = std::time::Instant::now();
-                    let poll_interval = std::time::Duration::from_secs(3);
-                    let mut completed = 0usize;
-                    let mut failed = 0usize;
-
-                    loop {
-                        if interrupted.load(std::sync::atomic::Ordering::SeqCst) {
-                            executor.cancel(&JobId::from(ctx.run_id.as_str())).await.map_err(|e| {
-                                ox_core::error::OxError::Exec(ox_core::error::ExecError::Executor { message: format!("Ray driver cancellation failed: {e}") })
-                            })?;
-                            if let Some(ref db) = state_db {
-                                let ids = dag_result.job_submissions.keys().cloned().collect::<Vec<_>>();
-                                let _ = db.cancel_job_ids(&ids);
-                            }
-                            failed = active;
-                            break;
+                    let (result, stop) = remote_follow::follow(FollowRequest {
+                        jobs: dag_result.job_submissions.keys().cloned().collect(),
+                        total: dag_result.total_jobs, skipped: dag_result.skipped,
+                        endpoint: dashboard_url,
+                        policy: FollowPolicy::new(std::time::Duration::from_secs(3)),
+                        interrupted: &interrupted, shutdown: &shutdown,
+                    }, |job| {
+                        let executor = &executor;
+                        async move { executor.poll_status(&JobId::from(job.as_str())).await }
+                    }, |line| eprintln!("{line}")).await;
+                    // The controller drops an in-flight poll on the first signal.
+                    // Restore Ray's driver cancellation before leaving follow;
+                    // a failed stop must not claim or record cancellation.
+                    remote_stop = if matches!(stop, Some(FollowStop::Interrupted)) {
+                        let cancellation_error = executor
+                            .cancel(&JobId::from(dag_result.run_id.as_str()))
+                            .await
+                            .err()
+                            .map(|error| error.to_string());
+                        if cancellation_error.is_none() && let Some(db) = &state_db {
+                            let ids = dag_result.job_submissions.keys().cloned().collect::<Vec<_>>();
+                            let _ = db.cancel_job_ids(&ids);
                         }
-                        tokio::time::sleep(poll_interval).await;
-
-                        let mut still_running = false;
-                        for job_id_str in dag_result.job_submissions.keys() {
-                            let jid = JobId::from(job_id_str.as_str());
-                            match executor.poll_status(&jid).await {
-                                Ok(ox_core::traits::executor::JobStatus::Completed) => {
-                                    completed += 1;
-                                }
-                                Ok(ox_core::traits::executor::JobStatus::Failed(msg)) => {
-                                    eprintln!("  FAILED: {} — {}", job_id_str, msg);
-                                    failed += 1;
-                                }
-                                Ok(ox_core::traits::executor::JobStatus::Cancelled) => {
-                                    failed += 1;
-                                }
-                                Ok(_) => {
-                                    still_running = true;
-                                }
-                                Err(e) => {
-                                    eprintln!("  Warning: failed to poll {}: {}", job_id_str, e);
-                                    still_running = true;
-                                }
-                            }
-                        }
-
-                        let total = dag_result.total_jobs;
-                        let done = completed + failed;
-                        eprintln!(
-                            "  Progress: {}/{} ({} succeeded, {} failed)",
-                            done, total, completed, failed
-                        );
-
-                        if !still_running || done >= total {
-                            break;
-                        }
-
-                        // Reset counters for next poll cycle (we re-poll all).
-                        completed = 0;
-                        failed = 0;
-                    }
-
-                    // Build a SchedulerResult from the final state.
-                    let duration = follow_start.elapsed();
-                    Ok(scheduler::SchedulerResult {
-                        total_jobs: dag_result.total_jobs,
-                        succeeded: completed,
-                        failed,
-                        skipped: dag_result.skipped,
-                        cancelled: 0,
-                        duration,
-                        failed_details: vec![],
-                        root_cause: None,
-                        memory_stats: None,
-                    })
+                        Some(FollowStop::RayInterrupted { cancellation_error })
+                    } else {
+                        stop
+                    };
+                    Ok(result)
                 } else {
                     // Fire-and-forget: return immediately.
                     eprintln!("Use 'ox status' or 'ox run --follow' to track progress.");
@@ -2589,7 +2504,7 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
         // result is misleading; the real summary is printed later (ox-x2jm).
         let skip_reporter_finish =
             (args.executor == "ray" || args.executor == "slurm") && !args.follow;
-        if !skip_reporter_finish {
+        if !skip_reporter_finish && remote_stop.is_none() {
             if let (Some(reporter), Ok(r)) = (&term_reporter, &sched_result) {
                 use ox_core::traits::reporter::{Reporter, RunSummary};
                 let summary = RunSummary {
@@ -2648,7 +2563,9 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
         // Scoped to this run's session: in cooperative multi-session mode
         // another live session's running jobs are not ours to terminalize
         // (H16 / ADR-012).
-        if let Some(sid) = &session_id {
+        if remote_stop.is_none()
+            && let Some(sid) = &session_id
+        {
             if was_interrupted {
                 // An interrupted run's leftovers are cancellations, not
                 // failures: the scheduler asked these jobs to stop (#4).
@@ -2684,11 +2601,16 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
             &cache_provenance,
         );
 
-        // Close the session (a session interrupted by a signal keeps that
-        // status): its terminal rows are then history to the next run,
+        // A stopped follow did not complete, even without a signal. Close it
+        // as interrupted; completed sessions also preserve prior interruption.
+        // In either case, its terminal rows are then history to the next run,
         // which re-evaluates them instead of consuming them as a peer's.
         if let Some(sid) = &session_id {
-            let _ = db.complete_session(sid);
+            if remote_stop.is_some() {
+                let _ = db.interrupt_session(sid);
+            } else {
+                let _ = db.complete_session(sid);
+            }
         }
     }
 
@@ -2720,6 +2642,33 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
                     sched_result.failed,
                     sched_result.skipped,
                 );
+            }
+
+            if let Some(stop) = &remote_stop {
+                let message = stop.message();
+                if args.json {
+                    println!(
+                        "{}",
+                        serde_json::json!({
+                            "event": "run_follow_stopped", "executor": args.executor,
+                            "reason": if stop.exit_code() == 130 { "interrupted" } else { "endpoint_unreachable" },
+                            "message": message, "exit_code": stop.exit_code(),
+                            "succeeded": sched_result.succeeded, "failed": sched_result.failed,
+                            "skipped": sched_result.skipped,
+                        })
+                    );
+                } else {
+                    println!("{message}");
+                    println!(
+                        "Last known: {} succeeded, {} failed, {} skipped ({} total)",
+                        sched_result.succeeded,
+                        sched_result.failed,
+                        sched_result.skipped,
+                        sched_result.total_jobs
+                    );
+                }
+                timer.print();
+                std::process::exit(stop.exit_code());
             }
 
             // Fire-and-forget remote executors: show "Submitted" not "Completed".

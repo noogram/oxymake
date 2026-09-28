@@ -1055,3 +1055,13 @@ Failed jobs and cancellations do not record memory. Submission without
 See [history](../reference/commands.md#ox-history) for attempt semantics and
 its rounding difference from benchmark TSV. Persistence is covered by mock
 SLURM commands; verification on a live cluster remains with a cluster operator.
+
+### Stopping remote follow
+
+With `--follow`, the first Ctrl+C or `SIGTERM` stops the client promptly with exit
+code `130`. It does **not** cancel submitted SLURM allocations. Use `ox status`
+to check them and `ox cancel` to cancel them. Three consecutive poll rounds with
+errors end follow with exit code `1`, naming the REST endpoint (or local
+`sacct`/`squeue` scheduler access) and last error. An error-free round resets the
+counter. Both stopped outcomes report last known counts without claiming the
+run completed. See [remote follow](../reference/commands.md#ox-run).
