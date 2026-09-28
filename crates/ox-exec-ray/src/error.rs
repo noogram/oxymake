@@ -3,6 +3,19 @@
 /// Errors that can occur during Ray job submission, polling, or cancellation.
 #[derive(Debug, thiserror::Error)]
 pub enum RayError {
+    /// The live State API snapshot could not be decoded safely.
+    #[error("Ray node inspection malformed or unknown payload: {0}")]
+    NodeInspectionPayload(String),
+    /// The bounded node inspection deadline elapsed.
+    #[error("Ray node inspection timed out after {0:?}")]
+    NodeInspectionTimeout(std::time::Duration),
+    /// The node inspection request could not reach the dashboard.
+    #[error("Ray node inspection connection error: {0}")]
+    NodeInspectionConnection(String),
+    /// No node has the task's complete logical resource request.
+    #[error("{0}")]
+    InfeasibleRequest(String),
+
     /// A declared resource cannot be represented by Ray.
     #[error("invalid Ray resource declaration: {0}")]
     ResourceMapping(#[from] crate::resource_mapper::ResourceMapError),

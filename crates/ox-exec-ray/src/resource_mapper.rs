@@ -28,6 +28,14 @@ pub struct RayResources {
 /// A checked resource declaration cannot be represented by Ray.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ResourceMapError {
+    /// Custom names must be unambiguous Ray scheduling tokens.
+    #[error("invalid Ray custom resource `{name}`: {reason}")]
+    CustomName {
+        /// Rejected resource name.
+        name: String,
+        /// Why the name cannot be forwarded.
+        reason: &'static str,
+    },
     /// Shared key or value normalization failed.
     #[error(transparent)]
     InvalidDeclaration(#[from] ResourceError),
@@ -52,6 +60,28 @@ pub fn map_resources(
         return Err(ResourceMapError::FractionalGpuAboveOne { amount: gpu });
     }
 
+    for name in normalized.custom.keys() {
+        let lower = name.to_ascii_lowercase();
+        let reason = if name.trim() != name {
+            Some("leading or trailing whitespace is not allowed")
+        } else if matches!(
+            lower.as_str(),
+            "cpu" | "cpus" | "gpu" | "gpus" | "memory" | "object_store_memory"
+        ) || lower.starts_with("node:")
+            || lower.starts_with("accelerator_type:")
+        {
+            Some("collides with a Ray built-in resource or reserved prefix")
+        } else {
+            None
+        };
+        if let Some(reason) = reason {
+            return Err(ResourceMapError::CustomName {
+                name: name.clone(),
+                reason,
+            });
+        }
+    }
+
     Ok(RayResources {
         num_cpus: normalized.cpu.map(TokenAmount::as_f64),
         num_gpus: normalized.gpu.map(TokenAmount::as_f64),
@@ -68,6 +98,31 @@ pub fn map_resources(
 mod tests {
     use super::*;
     use ox_core::OrderedFloat;
+
+    #[test]
+    fn rejects_reserved_and_padded_custom_names() {
+        for name in [
+            "cpu",
+            "cpus",
+            "CPU",
+            "gpu",
+            "gpus",
+            "GPU",
+            "memory",
+            "object_store_memory",
+            "node:abc",
+            "accelerator_type:A100",
+            " metal",
+            "metal ",
+        ] {
+            let resources = BTreeMap::from([
+                ("cpu".into(), ResourceValue::Int(1)),
+                (format!("custom:{name}"), ResourceValue::Int(1)),
+            ]);
+            let error = map_resources(&resources).unwrap_err().to_string();
+            assert!(error.contains(name), "{error}");
+        }
+    }
 
     #[test]
     fn maps_checked_cpu_and_fractional_gpu() {

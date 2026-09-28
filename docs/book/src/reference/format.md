@@ -181,7 +181,7 @@ output = ["results/{sample}.txt"]
 [rule.heavy_job]
 output = ["results/big.txt"]
 shell = "compute_heavy"
-resources = { cpus = 4, mem_gb = 16, gpu = 1, time_min = 60 }
+resources = { cpus = 4, mem_gb = 16, gpu = 1 }
 ```
 
 The portable resource vocabulary shared by Ray and the planned local
@@ -206,7 +206,19 @@ example), and a bare custom name may not be combined with its prefixed form
 fractional byte results, overflow, and token counts finer than `0.0001` are
 errors. These checks normalize a declaration without rewriting the original
 `resources` table. Executor-specific keys, including SLURM directives such as
-`time_min`, retain the vocabulary documented by that executor.
+`time_min`, retain the vocabulary documented by that executor. `time_min = 60`
+is a SLURM time limit; on Ray it would request a custom token named `time_min`
+and the default feasibility check rejects it unless a node advertises 60 units.
+Do not copy SLURM-only keys into a Ray workflow.
+
+Ray rejects custom names with leading or trailing whitespace, and names
+colliding (case-insensitively) with `cpu`, `cpus`, `gpu`, `gpus`, `memory`,
+`object_store_memory`, or the reserved prefixes `node:` and `accelerator_type:`.
+This also applies to explicit `custom:` names. Other names, including quotes,
+backslashes and non-ASCII characters, are forwarded as data.
+
+Ray currently accepts memory syntax but does **not** reserve memory. CPU, GPU
+and custom tokens are scheduling reservations; memory forwarding is deferred.
 
 ### Conditional Guards
 

@@ -191,6 +191,10 @@ pub fn run() -> i32 {
     };
 
     if let Err(e) = result {
+        if let Some(usage) = e.downcast_ref::<clap::Error>() {
+            let _ = usage.print();
+            return usage.exit_code();
+        }
         eprintln!("error: {e:#}");
         1
     } else {

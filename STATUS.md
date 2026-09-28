@@ -77,6 +77,10 @@ The `ox` binary exposes 27 subcommands today (see `crates/ox-cli/src/lib.rs`).
 
 ### Unstable
 
+- `ox run --ray-allow-pending` opts out of Ray's live-node capacity check;
+  it does not disable resource validation. Ray custom names reject surrounding
+  whitespace and collisions with built-in names or reserved prefixes.
+
 - **All other subcommands**: `dag`, `snapshot`, `gate`, `serve`,
   `subscribe`, `top`, `dashboard`, `test`, `check-consistency`,
   `cache-export`, `cache-import`, `logo`. These exist for exploration and
@@ -292,6 +296,10 @@ Explicit `ResolveRequest::existing_files` remain source leaves in these APIs.
 `ox_api::resolution::{discover_source_files, resolve, workflow_directory}` is the
 shared, unstable workflow-relative discovery and cache-provenance policy used by
 CLI, MCP and `SessionBuilder`.
+
+Ray's `RayConfig::allow_pending` and driver log API, and the state queries
+for remote submissions, cancellable jobs and current run membership are
+**unstable** Rust APIs.
 
 The resource-normalization Rust API in `ox_core::resource` is likewise
 **unstable**. It provides the checked canonical form shared by executor
