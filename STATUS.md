@@ -254,7 +254,8 @@ change was required — see the audit `fair-forward-compat.md`.
 The `run_follow_stopped` CLI JSON event is **unstable**. It distinguishes
 `interrupted` from `endpoint_unreachable` for remote follow and carries the exit
 code, message, executor, and last known succeeded/failed/skipped counts. It does
-not assert that unfinished remote jobs have stopped.
+not assert that unfinished remote jobs have stopped unless its message confirms
+successful Ray driver cancellation after an interrupt.
 
 ---
 

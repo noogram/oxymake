@@ -32,6 +32,9 @@ impl FollowPolicy {
 #[derive(Debug, PartialEq, Eq)]
 pub(super) enum FollowStop {
     Interrupted,
+    RayInterrupted {
+        cancellation_error: Option<String>,
+    },
     Unreachable {
         endpoint: String,
         last_error: String,
@@ -42,13 +45,21 @@ pub(super) enum FollowStop {
 impl FollowStop {
     pub fn exit_code(&self) -> i32 {
         match self {
-            Self::Interrupted => 130,
+            Self::Interrupted | Self::RayInterrupted { .. } => 130,
             Self::Unreachable { .. } => 1,
         }
     }
 
     pub fn message(&self) -> String {
         let reason = match self {
+            Self::RayInterrupted { cancellation_error } => {
+                return match cancellation_error {
+                    None => "Follow interrupted. Ray driver stopped.".to_string(),
+                    Some(error) => format!(
+                        "Follow interrupted; failed to stop Ray driver: {error}. Driver state is unknown. Use 'ox status' to check progress and 'ox cancel' to retry cancellation."
+                    ),
+                };
+            }
             Self::Interrupted => "Follow interrupted".to_string(),
             Self::Unreachable {
                 endpoint,

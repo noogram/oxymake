@@ -119,10 +119,14 @@ The summary names the endpoint and last error and reports last known job counts.
 
 The first Ctrl+C or `SIGTERM` stops following promptly, including during a poll
 request, and exits `130`. It reports `Follow interrupted` and last known counts.
-**Remote jobs are NOT cancelled**: unfinished Ray jobs or SLURM allocations may
-still be running. Use `ox status` to inspect them and `ox cancel` to stop them.
-Neither interruption nor endpoint loss is reported as `Completed`, and neither
-marks unfinished remote jobs failed or cancelled in the ledger. With `--json`,
+For Ray, interruption also stops the driver and records its unfinished jobs as
+cancelled after the stop succeeds. The message confirms the driver stopped or
+reports the cancellation error without claiming an outcome. SLURM interruption
+and endpoint loss do not cancel remote jobs; unfinished work may still be
+running. Use `ox status` to inspect it and `ox cancel` to stop it.
+Stopped follows record the session as `interrupted`, preserve requested
+`--timings`, and do not print `Completed`. Endpoint loss and failed cancellation
+leave unfinished job rows unchanged. With `--json`,
 these outcomes emit `run_follow_stopped` with reason `interrupted` or
 `endpoint_unreachable`, the exit code, message, and last known counts.
 

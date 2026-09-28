@@ -74,7 +74,8 @@ fn status(ray: bool, complete: bool) -> ResponseTemplate {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn both_commands_report_endpoint_loss_without_success() {
     for ray in [true, false] {
-        let (server, _dir, mut command, poll) = fixture(ray).await;
+        let (server, dir, mut command, poll) = fixture(ray).await;
+        command.arg("--timings");
         if !ray {
             command.arg("--json");
         }
@@ -101,6 +102,14 @@ async fn both_commands_report_endpoint_loss_without_success() {
         })
         .await
         .unwrap();
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let db = ox_state::db::StateDb::open(&dir.path().join(".oxymake/state.db")).unwrap();
+        let sessions = db.session_statuses().unwrap();
+        assert_eq!(sessions.len(), 1);
+        assert!(
+            stderr.contains("state_db_finalize") && sessions[0].1 == "interrupted",
+            "stopped follow must print timings and interrupt its session: stderr={stderr}, sessions={sessions:?}"
+        );
         let stdout = String::from_utf8_lossy(&output.stdout);
         assert!(stdout.contains("Follow failed: endpoint"), "{stdout}");
         assert!(
@@ -186,8 +195,18 @@ async fn both_commands_recover_and_keep_success_summary() {
 }
 
 #[cfg(unix)]
-async fn interrupt_in_flight_without_cancelling_remote_jobs(ray: bool) {
+async fn interrupt_in_flight(ray: bool, cancel_fails: bool) {
     let (server, dir, mut command, poll) = fixture(ray).await;
+    if ray {
+        command.arg("--json");
+        Mock::given(method("POST"))
+            .and(path("/api/jobs/driver/stop"))
+            .respond_with(ResponseTemplate::new(if cancel_fails { 503 } else { 200 }))
+            .expect(1)
+            .mount(&server)
+            .await;
+    }
+    command.arg("--timings");
     let polling = Arc::new(tokio::sync::Notify::new());
     let seen_polling = polling.clone();
     let calls = AtomicUsize::new(0);
@@ -239,23 +258,51 @@ async fn interrupt_in_flight_without_cancelling_remote_jobs(ray: bool) {
     assert_eq!(output.status.code(), Some(130));
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("Follow interrupted"), "{stdout}");
-    assert!(
-        stdout.contains("still be running") && stdout.contains("remote jobs are NOT cancelled"),
-        "{stdout}"
-    );
-    assert!(
-        stdout.contains("ox status") && stdout.contains("ox cancel"),
-        "{stdout}"
-    );
-    assert!(!stdout.contains("Completed:"), "{stdout}");
-    assert!(
-        !server
-            .received_requests()
-            .await
-            .unwrap()
+    assert!(String::from_utf8_lossy(&output.stderr).contains("state_db_finalize"));
+    if ray {
+        let events: Vec<serde_json::Value> = stdout
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        let event = events
             .iter()
-            .any(|r| r.method == "DELETE" || r.url.path().ends_with("/stop"))
-    );
+            .find(|e| e["event"] == "run_follow_stopped")
+            .unwrap();
+        assert_eq!(event["reason"], "interrupted");
+        assert_eq!(event["exit_code"], 130);
+        assert!(!events.iter().any(|e| e["event"] == "run_completed"));
+        if cancel_fails {
+            assert!(
+                stdout.contains("failed to stop Ray driver") && stdout.contains("503"),
+                "{stdout}"
+            );
+            assert!(
+                !stdout.contains("Ray driver stopped") && !stdout.contains("NOT cancelled"),
+                "{stdout}"
+            );
+        } else {
+            assert!(stdout.contains("Ray driver stopped"), "{stdout}");
+            assert!(!stdout.contains("NOT cancelled"), "{stdout}");
+        }
+    } else {
+        assert!(
+            stdout.contains("still be running") && stdout.contains("remote jobs are NOT cancelled"),
+            "{stdout}"
+        );
+        assert!(
+            stdout.contains("ox status") && stdout.contains("ox cancel"),
+            "{stdout}"
+        );
+        assert!(
+            !server
+                .received_requests()
+                .await
+                .unwrap()
+                .iter()
+                .any(|r| r.method == "DELETE" || r.url.path().ends_with("/stop"))
+        );
+    }
+    assert!(!stdout.contains("Completed:"), "{stdout}");
     let db = rusqlite::Connection::open(dir.path().join(".oxymake/state.db")).unwrap();
     let terminal: i64 = db
         .query_row(
@@ -265,19 +312,26 @@ async fn interrupt_in_flight_without_cancelling_remote_jobs(ray: bool) {
         )
         .unwrap();
     assert_eq!(
-        terminal, 0,
-        "interrupting the client must not terminalize remote jobs"
+        terminal,
+        if ray && !cancel_fails { 1 } else { 0 },
+        "only a successful Ray driver stop may terminalize remote jobs"
     );
 }
 
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn ray_interrupt_in_flight() {
-    interrupt_in_flight_without_cancelling_remote_jobs(true).await;
+    interrupt_in_flight(true, false).await;
 }
 
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn slurm_interrupt_in_flight() {
-    interrupt_in_flight_without_cancelling_remote_jobs(false).await;
+    interrupt_in_flight(false, false).await;
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ray_interrupt_reports_cancellation_failure() {
+    interrupt_in_flight(true, true).await;
 }

@@ -35,7 +35,7 @@ use ox_exec_slurm::executor::{SlurmConfig, SlurmExecutor};
 use ox_plan::critical_path::CriticalPathPass;
 
 use super::common;
-use super::remote_follow::{self, FollowPolicy, FollowRequest};
+use super::remote_follow::{self, FollowPolicy, FollowRequest, FollowStop};
 
 /// Lightweight phase timer for `--timings` output.
 struct PhaseTimer {
@@ -2442,7 +2442,23 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
                         let executor = &executor;
                         async move { executor.poll_status(&JobId::from(job.as_str())).await }
                     }, |line| eprintln!("{line}")).await;
-                    remote_stop = stop;
+                    // The controller drops an in-flight poll on the first signal.
+                    // Restore Ray's driver cancellation before leaving follow;
+                    // a failed stop must not claim or record cancellation.
+                    remote_stop = if matches!(stop, Some(FollowStop::Interrupted)) {
+                        let cancellation_error = executor
+                            .cancel(&JobId::from(dag_result.run_id.as_str()))
+                            .await
+                            .err()
+                            .map(|error| error.to_string());
+                        if cancellation_error.is_none() && let Some(db) = &state_db {
+                            let ids = dag_result.job_submissions.keys().cloned().collect::<Vec<_>>();
+                            let _ = db.cancel_job_ids(&ids);
+                        }
+                        Some(FollowStop::RayInterrupted { cancellation_error })
+                    } else {
+                        stop
+                    };
                     Ok(result)
                 } else {
                     // Fire-and-forget: return immediately.
@@ -2585,11 +2601,16 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
             &cache_provenance,
         );
 
-        // Close the session (a session interrupted by a signal keeps that
-        // status): its terminal rows are then history to the next run,
+        // A stopped follow did not complete, even without a signal. Close it
+        // as interrupted; completed sessions also preserve prior interruption.
+        // In either case, its terminal rows are then history to the next run,
         // which re-evaluates them instead of consuming them as a peer's.
         if let Some(sid) = &session_id {
-            let _ = db.complete_session(sid);
+            if remote_stop.is_some() {
+                let _ = db.interrupt_session(sid);
+            } else {
+                let _ = db.complete_session(sid);
+            }
         }
     }
 
@@ -2646,6 +2667,7 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
                         sched_result.total_jobs
                     );
                 }
+                timer.print();
                 std::process::exit(stop.exit_code());
             }
 
