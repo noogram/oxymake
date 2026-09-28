@@ -270,8 +270,10 @@ memory total. Background or daemonised work can escape the observation.
 The collector converts Linux KiB and macOS bytes to bytes before formatting.
 CPU time is the same child's user plus system time, in seconds; no CPU/wall
 ratio is inferred. It is recorded in benchmark TSV, not in `job_history`.
-Failed, signalled and timed-out children retain any measurements returned by
-`wait4` in their executor result; scheduler publication rules still apply.
+Failed and signalled children retain any measurements returned by `wait4` in
+their executor `JobResult`; scheduler publication rules still apply. A timed-out
+child is measured in the lower-level `ProcessResult`, but the executor returns
+a timeout error and drops that result, so no measurement reaches `JobResult`.
 Warm workers, including fork and persistent dispatch modes, and unsupported
 platforms leave RSS and CPU absent because dispatch attribution is unavailable.
 

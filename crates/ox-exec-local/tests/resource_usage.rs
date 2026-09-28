@@ -4,6 +4,88 @@
 use ox_exec_local::process::{ProcessResult, spawn_shell, spawn_shell_streaming};
 use std::time::Duration;
 
+/// Compare against the SIGCHLD-driven wait used before child accounting.
+/// Paired samples and medians tolerate unrelated scheduler outliers. Five ms
+/// allows log-file/pipe-drain overhead while rejecting the old 10 ms poll floor.
+#[tokio::test]
+#[serial_test::serial]
+async fn trivial_job_wall_time_stays_close_to_tokio_wait() {
+    async fn reference() -> Duration {
+        let start = std::time::Instant::now();
+        let output = tokio::process::Command::new("/bin/bash")
+            .args(["-c", "true"])
+            .output()
+            .await
+            .unwrap();
+        assert!(output.status.success());
+        start.elapsed()
+    }
+
+    for streaming in [false, true] {
+        let mut measured = Vec::new();
+        let mut baseline = Vec::new();
+        let mut excess = Vec::new();
+        for i in 0..31 {
+            if i % 2 == 0 {
+                baseline.push(reference().await);
+            }
+            let result = run("true", streaming, None).await;
+            assert_eq!(result.exit_code, 0);
+            assert!(result.peak_memory_bytes.is_some());
+            measured.push(result.duration);
+            if i % 2 != 0 {
+                baseline.push(reference().await);
+            }
+            excess.push(result.duration.as_secs_f64() - baseline[i].as_secs_f64());
+        }
+        measured.sort();
+        baseline.sort();
+        excess.sort_by(f64::total_cmp);
+        let actual = measured[15];
+        let reference = baseline[15];
+        eprintln!(
+            "streaming={streaming}: median local={actual:?}, Tokio={reference:?}, paired excess={} ms",
+            excess[15] * 1000.0
+        );
+        assert!(
+            excess[15] <= 0.005,
+            "trivial child wait added over 5 ms: local={actual:?}, Tokio={reference:?}"
+        );
+    }
+}
+
+/// SIGCHLD is shared and may coalesce: neighbouring Tokio children must not
+/// steal a cold child's wakeup or its wait4 observation.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[serial_test::serial]
+async fn concurrent_exits_keep_each_child_observation() {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        let mut tasks = tokio::task::JoinSet::new();
+        for i in 0..64 {
+            tasks.spawn(async move {
+                let command = format!("exit {}", i % 8);
+                let result = run(&command, i % 2 == 0, None).await;
+                assert_eq!(result.exit_code, i % 8);
+                assert!(result.peak_memory_bytes.is_some());
+                assert!(result.cpu_time.is_some());
+            });
+            tasks.spawn(async {
+                let status = tokio::process::Command::new("/bin/bash")
+                    .args(["-c", "true"])
+                    .status()
+                    .await
+                    .unwrap();
+                assert!(status.success());
+            });
+        }
+        while let Some(result) = tasks.join_next().await {
+            result.unwrap();
+        }
+    })
+    .await
+    .expect("every child must finish even when SIGCHLD notifications coalesce");
+}
+
 async fn run(command: &str, streaming: bool, timeout: Option<Duration>) -> ProcessResult {
     let dir = tempfile::tempdir().unwrap();
     let log = dir.path().join("job.log");
@@ -28,6 +110,7 @@ async fn run(command: &str, streaming: bool, timeout: Option<Duration>) -> Proce
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn allocation_has_child_peak_on_both_paths() {
     for streaming in [false, true] {
         let result = run(
@@ -49,6 +132,7 @@ async fn allocation_has_child_peak_on_both_paths() {
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn busy_child_uses_more_cpu_than_sleeping_neighbour() {
     for streaming in [false, true] {
         let busy = "exec python3 -c 'import time; end = time.monotonic() + 0.5\nwhile time.monotonic() < end: pass'";
@@ -64,6 +148,7 @@ async fn busy_child_uses_more_cpu_than_sleeping_neighbour() {
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn unsuccessful_children_keep_observed_usage() {
     for streaming in [false, true] {
         for (command, timeout, code) in [
@@ -100,6 +185,7 @@ async fn unsuccessful_children_keep_observed_usage() {
 }
 
 #[tokio::test]
+#[serial_test::serial]
 async fn aborted_caller_transfers_reaper_ownership() {
     let dir = tempfile::tempdir().unwrap();
     let work = dir.path().to_path_buf();

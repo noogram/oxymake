@@ -11,7 +11,7 @@ description = "Local process executor — runs jobs as child processes on the ho
 [dependencies]
 ox-core = { path = "../ox-core" }
 ox-codec-core = { path = "../ox-codec-core" }
-tokio = { workspace = true, features = ["fs", "process", "io-util", "rt", "macros", "time"] }
+tokio = { workspace = true, features = ["fs", "process", "io-util", "rt", "macros", "time", "signal"] }
 thiserror.workspace = true
 libc.workspace = true
 serde_json.workspace = true
@@ -20,5 +20,5 @@ tracing.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
-tokio = { workspace = true, features = ["test-util"] }
+tokio = { workspace = true, features = ["test-util", "rt-multi-thread"] }
 serial_test.workspace = true

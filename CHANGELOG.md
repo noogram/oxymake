@@ -11,9 +11,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Local cold launches on Linux and macOS now measure peak RSS and user + system
   CPU time with `wait4` on each child, including under concurrent execution.
   Buffered and streaming paths publish measurements in benchmark TSV; history
-  records peak RSS in whole MiB. The observation includes already-reaped
+  records peak RSS in whole MiB, and local `job_completed` JSON events now
+  include `peak_memory_bytes`. The observation includes already-reaped
   descendants, not a simultaneous tree total; background or daemonised work
-  can escape it. Warm-worker dispatches remain unmeasured (issue #24).
+  can escape it. Collection wakes on SIGCHLD without a fixed polling delay in
+  short jobs' wall times. Warm-worker dispatches remain unmeasured (issue #24).
 - `ox-exec-slurm`: the unstable `SlurmExecutor::poll_status_with_record` API
   preserves accounting alongside status, including absence on squeue fallback
   (issue #24).

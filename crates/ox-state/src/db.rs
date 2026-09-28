@@ -1506,10 +1506,10 @@ impl StateDb {
                     started_at: row.get(4)?,
                     completed_at: row.get(5)?,
                     wall_time_ms,
-                    // Store only the executor's per-job observation. The local
-                    // executor and SLURM REST report nothing. In particular,
-                    // the process-wide getrusage(RUSAGE_CHILDREN) figure stays
-                    // refused for the cross-job attribution reason from #12.
+                    // Store the executor's per-job observation: local cold
+                    // children via wait4, or SLURM CLI steps. Warm workers and
+                    // SLURM REST remain unmeasured; work that escapes the local
+                    // child is outside its observation.
                     peak_mem_mb,
                     exit_code,
                     reproducibility_class: prov.reproducibility_class,
