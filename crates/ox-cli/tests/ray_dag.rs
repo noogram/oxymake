@@ -344,7 +344,7 @@ async fn failed_remote_stop_leaves_pending_jobs_retryable() {
 
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn interrupt_follow_stops_queued_driver() {
+async fn interrupt_follow_leaves_remote_driver_running() {
     use std::time::{Duration, Instant};
     let server = MockServer::start().await;
     Mock::given(method("GET"))
@@ -365,7 +365,7 @@ async fn interrupt_follow_stops_queued_driver() {
     Mock::given(method("POST"))
         .and(path("/api/jobs/driver/stop"))
         .respond_with(ResponseTemplate::new(200))
-        .expect(1)
+        .expect(0)
         .mount(&server)
         .await;
     let dir = tempfile::tempdir().unwrap();
@@ -383,7 +383,8 @@ async fn interrupt_follow_stops_queued_driver() {
             "--follow",
         ])
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
         .spawn()
         .unwrap();
     let start = Instant::now();
@@ -411,7 +412,19 @@ async fn interrupt_follow_stops_queued_driver() {
     let start = Instant::now();
     loop {
         if let Some(status) = child.try_wait().unwrap() {
-            assert!(!status.success());
+            assert_eq!(status.code(), Some(130));
+            let output = child.wait_with_output().unwrap();
+            let text = format!(
+                "{}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(text.contains("remote jobs are NOT cancelled"), "{text}");
+            assert!(
+                text.contains("ox status") && text.contains("ox cancel"),
+                "{text}"
+            );
+            assert!(!text.contains("Completed:"), "{text}");
             break;
         }
         if start.elapsed() > Duration::from_secs(8) {

@@ -251,6 +251,11 @@ in `state.db.job_history`, and new event fields may be added at any time (no
 `forward_compat_tests` in `ox-report-json` and `ox-lock`. No pre-freeze contract
 change was required — see the audit `fair-forward-compat.md`.
 
+The `run_follow_stopped` CLI JSON event is **unstable**. It distinguishes
+`interrupted` from `endpoint_unreachable` for remote follow and carries the exit
+code, message, executor, and last known succeeded/failed/skipped counts. It does
+not assert that unfinished remote jobs have stopped.
+
 ---
 
 ## 5. Plugin Rule API (extension traits)

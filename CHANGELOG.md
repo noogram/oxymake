@@ -71,6 +71,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (issue #25).
 
 ### Fixed
+- Ray and SLURM `ox run --follow` now stop after three consecutive poll rounds
+  with errors (exit `1`, endpoint and last error included). Successful rounds
+  reset the retry counter. The first Ctrl+C or SIGTERM stops follow promptly
+  with exit `130` and last known counts; remote jobs are not cancelled. Use
+  `ox status` and `ox cancel` to inspect or stop them. Stopped follows no longer
+  print a completion summary; JSON output uses `run_follow_stopped` (#33).
 - Ray native-DAG driver submissions now use an absolute path under the
   Oxymakefile's `.oxymake/runs/` directory, including with `ox run -f PATH`.
   Paths are shell-quoted, including spaces, apostrophes and shell metacharacters,
