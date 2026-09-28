@@ -92,4 +92,10 @@ pub enum RayError {
     /// I/O error (file creation, etc.).
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
+
+    /// The generated driver cannot be submitted as a shared-filesystem path.
+    #[error(
+        "Ray DAG driver is unavailable at {path}; the Ray executor requires the cluster to see OxyMake's working directory through a shared filesystem"
+    )]
+    DriverUnavailable { path: std::path::PathBuf },
 }

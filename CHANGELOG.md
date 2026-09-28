@@ -58,6 +58,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (issue #25).
 
 ### Fixed
+- Ray native-DAG driver submissions now use an absolute path under the
+  Oxymakefile's `.oxymake/runs/` directory, including with `ox run -f PATH`.
+  The Ray cluster must share that working directory with OxyMake (issue #30).
 - `ox history` now records and displays the per-job peak memory reported by
   the SLURM CLI backend. Values are whole MiB rounded up; an unavailable
   measurement remains `-` in text and `null` in JSON (issue #24).
