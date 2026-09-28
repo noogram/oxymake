@@ -184,6 +184,30 @@ shell = "compute_heavy"
 resources = { cpus = 4, mem_gb = 16, gpu = 1, time_min = 60 }
 ```
 
+The portable resource vocabulary shared by Ray and the planned local
+admission path is:
+
+| Resource | Accepted keys | Value |
+|----------|---------------|-------|
+| CPU | `cpu`, `cpus` | Token count, exact to `0.0001` |
+| GPU | `gpu`, `gpus` | Token count, exact to `0.0001` |
+| Memory | `mem`, `memory` | Bytes, or a string using `K`/`KB`/`KiB` through `T`/`TB`/`TiB` |
+| Memory | `mem_mb` | MiB (2^20 bytes), including fractional MiB |
+| Memory | `mem_gb` | GiB (2^30 bytes), including fractional GiB |
+| Custom token | any other key, or `custom:<name>` | Case-sensitive token count, exact to `0.0001` |
+
+All memory suffixes above use binary scaling, so `"1GB"` and `"1GiB"`
+both mean 1,073,741,824 bytes. The explicit `custom:` prefix always names a
+custom token: `custom:mem_mb` is distinct from the memory key `mem_mb`.
+
+Aliases may not be combined for the same resource (`cpu` with `cpus`, for
+example), and a bare custom name may not be combined with its prefixed form
+(`metal` with `custom:metal`). Invalid units, negative or non-finite values,
+fractional byte results, overflow, and token counts finer than `0.0001` are
+errors. These checks normalize a declaration without rewriting the original
+`resources` table. Executor-specific keys, including SLURM directives such as
+`time_min`, retain the vocabulary documented by that executor.
+
 ### Conditional Guards
 
 ```toml

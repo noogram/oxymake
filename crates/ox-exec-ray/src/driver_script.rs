@@ -236,7 +236,7 @@ fn write_task_submission(
     let escaped_id = python_string_escape(job_id_str);
 
     // Build resource options string for .options() if resources are specified.
-    let resources = crate::resource_mapper::map_resources(&job.resources);
+    let resources = crate::resource_mapper::map_resources(&job.resources)?;
     let mut options_parts: Vec<String> = Vec::new();
     if let Some(cpus) = resources.num_cpus {
         options_parts.push(format!("num_cpus={cpus}"));

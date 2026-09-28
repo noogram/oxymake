@@ -293,6 +293,11 @@ Explicit `ResolveRequest::existing_files` remain source leaves in these APIs.
 shared, unstable workflow-relative discovery and cache-provenance policy used by
 CLI, MCP and `SessionBuilder`.
 
+The resource-normalization Rust API in `ox_core::resource` is likewise
+**unstable**. It provides the checked canonical form shared by executor
+adapters and future admission paths while leaving raw rule and job declarations
+unchanged.
+
 ---
 
 ## 6. Environment variables (`OX_*`)

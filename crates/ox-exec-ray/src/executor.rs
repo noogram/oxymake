@@ -373,7 +373,7 @@ impl Executor for RayExecutor {
         }
 
         // Map resources.
-        let resources = resource_mapper::map_resources(&job.resources);
+        let resources = resource_mapper::map_resources(&job.resources)?;
 
         // Build runtime_env from environment spec + memory resources.
         let env_runtime = job
