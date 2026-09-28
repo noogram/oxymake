@@ -556,10 +556,7 @@ pub async fn run_scheduler_with_claims<E: Executor + 'static>(
     let mut demands = HashMap::new();
     for job_id in &topo_order {
         let job = graph.get_job(job_id).expect("topological job exists");
-        let demand = resource_budget
-            .normalize_demand(&job.resources)
-            .map_err(|e| resource_config_error(format!("job {job_id}: {e}")))?;
-        resource_budget.validate(job_id, &demand)?;
+        let demand = resource_budget.validated_demand(job_id, &job.resources)?;
         demands.insert((*job_id).clone(), demand);
     }
     let mut sched_state = match config.resume_snapshot.as_ref() {
@@ -1297,6 +1294,26 @@ struct ResourceBudget {
     inner: Arc<std::sync::Mutex<ResourceBudgetInner>>,
 }
 
+/// Validate declarations in a selected DAG against a local admission budget.
+///
+/// Call before cache short-circuits or execution side effects. Only budgeted
+/// resources are interpreted; an empty budget leaves declarations unconstrained.
+/// The scheduler applies the same validation when used directly.
+pub fn validate_resource_budget(
+    graph: &JobGraph,
+    capacity: &BTreeMap<String, u64>,
+) -> Result<(), OxError> {
+    if capacity.is_empty() {
+        return Ok(());
+    }
+    let budget = ResourceBudget::try_new(capacity.clone())?;
+    for id in graph.job_ids() {
+        let job = graph.get_job(id).expect("graph job exists");
+        budget.validated_demand(id, &job.resources)?;
+    }
+    Ok(())
+}
+
 type ResourceAmounts = BTreeMap<CanonicalResource, u64>;
 
 fn resource_config_error(reason: String) -> OxError {
@@ -1309,8 +1326,7 @@ fn resource_config_error(reason: String) -> OxError {
 
 // C0 owns all parsing and conversion. Here we only expose the normalized
 // integer representation for comparison and accounting.
-/// Render an internal amount the way the user wrote it: memory in bytes,
-/// counts back from ten-thousandths of a token.
+/// Render canonical memory bytes or token counts from ten-thousandths.
 fn render_amount(key: &CanonicalResource, amount: u64) -> String {
     match key {
         CanonicalResource::Memory => amount.to_string(),
@@ -1388,20 +1404,37 @@ impl ResourceBudget {
         normalize_resources(&constrained).map(resource_amounts)
     }
 
-    fn validate(&self, job: &JobId, demand: &ResourceAmounts) -> Result<(), OxError> {
+    fn validated_demand(
+        &self,
+        job: &JobId,
+        raw: &BTreeMap<String, ResourceValue>,
+    ) -> Result<ResourceAmounts, OxError> {
+        let demand = self
+            .normalize_demand(raw)
+            .map_err(|e| resource_config_error(format!("job {job}: {e}")))?;
         let inner = self.inner.lock().expect("resource budget lock poisoned");
-        for (key, required) in demand {
+        for (key, required) in &demand {
             let capacity = inner.capacity[key];
             if *required > capacity {
+                let request = if *key == CanonicalResource::Memory {
+                    let (name, value) = raw
+                        .iter()
+                        .find(|(name, _)| {
+                            canonicalize_resource_key(name).ok().as_ref() == Some(key)
+                        })
+                        .expect("normalized memory has a raw declaration");
+                    format!("{name} = {value} ({required} bytes)")
+                } else {
+                    format!("{key} = {}", render_amount(key, *required))
+                };
                 return Err(resource_config_error(format!(
-                    "job {job} requests {key} = {}, more than the whole budget ({key} = {}). \
+                    "job {job} requests {request}, more than the whole budget ({key} = {}). \
                      Lower the rule's declaration or raise --resource-budget",
-                    render_amount(key, *required),
                     render_amount(key, capacity),
                 )));
             }
         }
-        Ok(())
+        Ok(demand)
     }
 
     fn fits_units(&self, demand: &ResourceAmounts) -> bool {
@@ -1465,6 +1498,8 @@ impl Drop for ResourceGuard {
         }
         // Recover poison during unwinding so another task's guard still returns
         // its own exact reservation. No saturating subtraction hides double release.
+        // Deliberately keep invariant failures strict, even during unwinding:
+        // a second panic may abort rather than continue with corrupt accounting.
         let mut inner = self.budget.lock().unwrap_or_else(|e| e.into_inner());
         for (key, amount) in &self.acquired {
             *inner.in_use.get_mut(key).expect("acquired resource exists") -= amount;
@@ -2827,17 +2862,13 @@ async fn handle_completion<E: Executor + ?Sized>(
                         Backoff::Exponential => base_ms * 2u64.saturating_pow(current_attempt - 1),
                     };
                     if delay_ms > 0 {
-                        if config.resource_budget.is_empty() {
-                            tokio::time::sleep(Duration::from_millis(delay_ms)).await;
-                        } else {
-                            // The attempt guard was dropped before completion. Keep
-                            // backoff in the frontier so shutdown and other completions
-                            // remain observable while this job owns no permit.
-                            state.lock().await.retry_ready_at.insert(
-                                msg.job_id.clone(),
-                                tokio::time::Instant::now() + Duration::from_millis(delay_ms),
-                            );
-                        }
+                        // The attempt guard was dropped before completion. Keep
+                        // backoff in the frontier so shutdown and other completions
+                        // remain observable while this job owns no permit.
+                        state.lock().await.retry_ready_at.insert(
+                            msg.job_id.clone(),
+                            tokio::time::Instant::now() + Duration::from_millis(delay_ms),
+                        );
                     }
                 } else {
                     event_bus.emit(Event::JobFailed {
@@ -7695,6 +7726,59 @@ mod tests {
             s.get_status(&JobId::from("A"))
         );
         assert!(!s.ready_frontier.contains(&JobId::from("A")));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn retry_completion_never_waits_for_backoff() {
+        for capacity in [BTreeMap::new(), BTreeMap::from([("cpu".into(), 1)])] {
+            let graph = JobGraph::build(vec![make_job_with_strategy(
+                "A",
+                "rA",
+                vec![],
+                vec!["a.txt"],
+                ErrorStrategy::Retry {
+                    count: 3,
+                    backoff: Backoff::Constant,
+                },
+            )])
+            .unwrap();
+            let state = Arc::new(Mutex::new(Frontier::new(
+                &graph.job_ids(),
+                &graph,
+                0,
+                None,
+                ResourceBudget::new(capacity.clone()),
+            )));
+            state
+                .lock()
+                .await
+                .set_status(JobId::from("A"), JobLifecycle::Running);
+            let config = SchedulerConfig {
+                resource_budget: capacity,
+                ..Default::default()
+            };
+            let started = tokio::time::Instant::now();
+            handle_completion(
+                &completion_msg_for(&graph, "A", 1),
+                &state,
+                &graph,
+                &config,
+                &EventBus::new(),
+                &default_ctx(),
+                &mut false,
+                &MockExecutor::new(),
+            )
+            .await;
+            assert_eq!(
+                started.elapsed(),
+                Duration::ZERO,
+                "completion blocked during backoff"
+            );
+            assert_eq!(
+                state.lock().await.retry_ready_at[&JobId::from("A")],
+                started + Duration::from_secs(1)
+            );
+        }
     }
 
     // -- H8: resource budget must not leak on task abort ----------------------

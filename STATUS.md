@@ -52,7 +52,8 @@ The `ox` binary exposes 27 subcommands today (see `crates/ox-cli/src/lib.rs`).
     default `mtime+hash`, content-verifying — ADR-006 amendment)
   - `--no-cache`
 
-  One `ox run` flag is shipped but **unstable**: `--cache-remote <dir>`
+  Three `ox run` flags are shipped but **unstable**: `--cache-remote <dir>`,
+  `--resource-budget KEY=VALUE`, and `--ray-allow-pending`. `--cache-remote`
   stores output blobs in and restores missing outputs from a shared
   directory, forcing content-hash validation. It is a blob transport: the
   local SQLite index mapping computation keys to outputs does not travel,
@@ -77,6 +78,9 @@ The `ox` binary exposes 27 subcommands today (see `crates/ox-cli/src/lib.rs`).
 
 ### Unstable
 
+- `ox run --resource-budget KEY=VALUE` enables per-run local admission with
+  repeatable, comma-separated capacities. It validates the selected DAG even
+  when all jobs are cached; it does not coordinate concurrent runs.
 - `ox run --ray-allow-pending` opts out of Ray's live-node capacity check;
   it does not disable resource validation. Ray custom names reject surrounding
   whitespace and collisions with built-in names or reserved prefixes.
@@ -304,7 +308,8 @@ for remote submissions, cancellable jobs and current run membership are
 The resource-normalization Rust API in `ox_core::resource` is likewise
 **unstable**. It provides the checked canonical form shared by executor
 adapters and local scheduler admission while leaving raw rule and job declarations
-unchanged.
+unchanged. `ox_core::scheduler::validate_resource_budget` exposes the same
+unstable admission validation for callers that may skip cached execution.
 
 ---
 

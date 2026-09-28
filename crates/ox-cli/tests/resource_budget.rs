@@ -245,3 +245,115 @@ shell = "touch b.started; for i in $(seq 1 500); do [ -f a.started ] && break; s
     assert!(dir.path().join("a.out").exists());
     assert!(dir.path().join("b.out").exists());
 }
+
+#[test]
+fn budget_usage_errors_have_exit_two_and_newline() {
+    let dir = TempDir::new().unwrap();
+    write_workflow(&dir, "cpu = 1", "cpu = 1");
+    for flags in [
+        vec!["--resource-budget", "cpu"],
+        vec!["--resource-budget", "cpu="],
+        vec!["--resource-budget", "=1"],
+        vec!["--resource-budget", "cpu=1,cpu=2"],
+        vec!["--resource-budget", "cpu=1,cpus=1"],
+        vec!["--resource-budget", "memory=1XB"],
+        vec!["--resource-budget", "gpu=0.5"],
+        vec!["--resource-budget", "cpu=1", "--executor", "ray"],
+        vec!["--ray-allow-pending"],
+    ] {
+        let output = ox()
+            .args(["run", "a.out"])
+            .args(&flags)
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(2), "{flags:?}: {output:?}");
+        assert!(output.stderr.ends_with(b"\n"), "{flags:?}: {output:?}");
+    }
+}
+
+#[test]
+fn impossible_declarations_fail_even_when_everything_is_cached() {
+    let dir = TempDir::new().unwrap();
+    write_workflow(&dir, "cpu = 999", "cpu = 999");
+    ox().args(["run", "a.out", "b.out"])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+    // Prove the fixture really takes the fully cached path without a budget.
+    ox().args(["run", "a.out", "b.out"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("2 job(s) up-to-date"));
+    ox().args(["run", "a.out", "b.out", "--resource-budget", "cpu=6"])
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("more than the whole budget"));
+}
+
+#[test]
+fn admission_failure_has_no_success_summary() {
+    let dir = TempDir::new().unwrap();
+    write_workflow(&dir, "cpu = 999", "cpu = 999");
+    let output = ox()
+        .args(["run", "a.out", "--resource-budget", "cpu=6"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(!combined.contains("Completed"), "{combined}");
+}
+
+#[test]
+fn admission_memory_error_preserves_declared_unit() {
+    let dir = TempDir::new().unwrap();
+    write_workflow(&dir, "mem_mb = 100", "");
+    ox().args(["run", "a.out", "--resource-budget", "mem_mb=50"])
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("mem_mb = 100 (104857600 bytes)"));
+}
+
+#[test]
+fn failed_logs_continue_past_missing_file() {
+    let dir = TempDir::new().unwrap();
+    let root = dir.path().join(".oxymake");
+    fs::create_dir_all(root.join("logs")).unwrap();
+    let db = ox_state::db::StateDb::open(&root.join("state.db")).unwrap();
+    let session = db
+        .create_session(std::process::id(), "localhost", None)
+        .unwrap();
+    for id in ["a_missing", "b_present"] {
+        db.register_jobs(&[ox_state::db::JobRecord {
+            id: id.into(),
+            rule_name: id.into(),
+            wildcards: "{}".into(),
+            cache_key: None,
+            run_id: None,
+        }])
+        .unwrap();
+        assert!(db.claim_job(id, &session).unwrap());
+        assert!(db.fail_job(id, &session, 1).unwrap());
+    }
+    fs::write(
+        root.join("logs/b_present.log"),
+        "surviving failure detail\n",
+    )
+    .unwrap();
+    ox().args(["logs", "--failed"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("==> a_missing <=="))
+        .stdout(predicate::str::contains("No log available"))
+        .stdout(predicate::str::contains("==> b_present <=="))
+        .stdout(predicate::str::contains("surviving failure detail"));
+}
