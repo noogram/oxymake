@@ -147,6 +147,54 @@ fn resolve_token(token_cmd: &Option<String>) -> Option<String> {
 }
 
 impl SlurmExecutor {
+    /// Poll status while preserving accounting from the same response.
+    ///
+    /// The CLI DAG follow loop uses this without entering the core scheduler.
+    /// The record is absent on squeue fallback; REST records lack peak memory.
+    pub async fn poll_status_with_record(
+        &self,
+        job_id: &JobId,
+    ) -> Result<(JobStatus, Option<slurm_cli::SacctRecord>), SlurmError> {
+        let running = self.running_jobs.lock().await;
+        let info = running
+            .get(job_id.as_str())
+            .ok_or_else(|| SlurmError::JobNotTracked {
+                job_id: job_id.to_string(),
+            })?;
+        let slurm_job_id = info.slurm_job_id;
+        drop(running); // Release lock before I/O.
+
+        if let Some(ref client) = self.rest_client {
+            // REST mode: poll via the REST API.
+            match client.get_job(slurm_job_id).await? {
+                Some(info) => {
+                    let record = SlurmRestClient::job_info_to_sacct_record(&info);
+                    Ok((
+                        status_parser::slurm_state_to_job_status(&record.state),
+                        Some(record),
+                    ))
+                }
+                None => Err(SlurmError::JobNotFound { slurm_job_id }),
+            }
+        } else {
+            // CLI mode: try sacct first.
+            if let Ok(records) = slurm_cli::sacct(&[slurm_job_id]).await {
+                if let Some(record) = records.into_iter().find(|r| r.job_id == slurm_job_id) {
+                    return Ok((
+                        status_parser::slurm_state_to_job_status(&record.state),
+                        Some(record),
+                    ));
+                }
+            }
+
+            // Fallback to squeue.
+            match slurm_cli::squeue(slurm_job_id).await? {
+                Some(state) => Ok((status_parser::slurm_state_to_job_status(&state), None)),
+                None => Err(SlurmError::JobNotFound { slurm_job_id }),
+            }
+        }
+    }
+
     /// Create a new SLURM executor with the given configuration and event bus.
     ///
     /// If `config.api_url` is set, the executor creates a REST client for
@@ -658,38 +706,9 @@ impl Executor for SlurmExecutor {
     }
 
     async fn poll_status(&self, job_id: &JobId) -> Result<JobStatus, Self::Error> {
-        let running = self.running_jobs.lock().await;
-        let info = running
-            .get(job_id.as_str())
-            .ok_or_else(|| SlurmError::JobNotTracked {
-                job_id: job_id.to_string(),
-            })?;
-        let slurm_job_id = info.slurm_job_id;
-        drop(running); // Release lock before I/O.
-
-        if let Some(ref client) = self.rest_client {
-            // REST mode: poll via the REST API.
-            match client.get_job(slurm_job_id).await? {
-                Some(info) => {
-                    let record = SlurmRestClient::job_info_to_sacct_record(&info);
-                    Ok(status_parser::slurm_state_to_job_status(&record.state))
-                }
-                None => Err(SlurmError::JobNotFound { slurm_job_id }),
-            }
-        } else {
-            // CLI mode: try sacct first.
-            if let Ok(records) = slurm_cli::sacct(&[slurm_job_id]).await {
-                if let Some(record) = records.into_iter().next() {
-                    return Ok(status_parser::slurm_state_to_job_status(&record.state));
-                }
-            }
-
-            // Fallback to squeue.
-            match slurm_cli::squeue(slurm_job_id).await? {
-                Some(state) => Ok(status_parser::slurm_state_to_job_status(&state)),
-                None => Err(SlurmError::JobNotFound { slurm_job_id }),
-            }
-        }
+        self.poll_status_with_record(job_id)
+            .await
+            .map(|(status, _)| status)
     }
 
     async fn submit_dag(

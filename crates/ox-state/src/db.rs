@@ -1442,17 +1442,21 @@ impl StateDb {
     /// Finalize audit-trail history from the post-flush jobs table.
     ///
     /// Reads all jobs for `run_id` that reached a terminal state
-    /// (completed, failed, skipped) and inserts a `job_history` row for
+    /// (completed, failed, skipped, cancelled) and inserts a `job_history` row for
     /// each.  This replaces the former in-memory finalization loop: after
     /// the EventSink (ADR-011 Stage 2 → Stage 3 transition, ex-"state-db
     /// bridge") has been awaited, the jobs table is authoritative and we
     /// can read it directly (hq-9in00).
     ///
     /// `wall_times` maps `job_id → duration_ms` and `peak_memory_bytes`
-    /// maps `job_id → bytes`, both collected from `Event::JobCompleted`
-    /// events. Peak bytes are stored as integer MiB rounded up, so a real
+    /// maps `job_id → bytes`, collected from `Event::JobCompleted` or the
+    /// SLURM CLI follow loop. Memory belongs to the finishing attempt, including
+    /// an ignored failure reported as completed; failed attempts and cancellations
+    /// do not populate the map. Peak bytes are stored as integer MiB rounded up, so a real
     /// sub-MiB observation remains distinguishable from an unmeasured job;
-    /// an observed zero remains zero. `provenance` maps `job_id →`
+    /// an observed zero remains zero (the SLURM parser treats its uninformative
+    /// zero as absent). Benchmark TSV instead renders MiB with two decimals.
+    /// `provenance` maps `job_id →`
     /// [`JobProvenance`], the hashes the cache layer computed for the job
     /// during this run; a job the cache layer never keyed (mtime-only
     /// validation, `--no-cache`) is simply absent and its provenance
@@ -1470,7 +1474,7 @@ impl StateDb {
         let mut stmt = self.conn.prepare(
             "SELECT id, rule_name, wildcards, status, started_at, completed_at, exit_code
              FROM jobs
-             WHERE run_id = ?1 AND status IN ('completed', 'failed', 'skipped')",
+             WHERE run_id = ?1 AND status IN ('completed', 'failed', 'skipped', 'cancelled')",
         )?;
         let entries: Vec<JobHistoryEntry> = stmt
             .query_map(rusqlite::params![run_id], |row| {

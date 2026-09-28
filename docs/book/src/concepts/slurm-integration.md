@@ -1041,3 +1041,17 @@ bash tests/slurm-docker/run-demo.sh
 - [The Three Graphs](./three-graphs.md) -- RuleGraph, JobGraph, ExecGraph
 - [OxyMake × Ray Deep Dive](./ray-integration.md) -- the Ray executor
 - [Content-Addressable Cache](./cache.md) -- how cache keys work
+
+### Peak memory in run history
+
+With `ox run --executor slurm --follow`, OxyMake records allocation status and
+elapsed time together with the maximum `sacct` MaxRSS across the job's steps.
+It does not sum step peaks. A zero or missing MaxRSS means accounting supplied
+no usable observation; `ox history` shows `-` (`null` in JSON). A successful
+finishing attempt with a positive measurement appears in whole MiB rounded up.
+Failed jobs and cancellations do not record memory. Submission without
+`--follow`, squeue fallback, and the REST backend do not supply memory.
+
+See [history](../reference/commands.md#ox-history) for attempt semantics and
+its rounding difference from benchmark TSV. Persistence is covered by mock
+SLURM commands; verification on a live cluster remains with a cluster operator.

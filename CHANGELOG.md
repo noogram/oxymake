@@ -8,8 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- Successful `job_completed` events optionally include the executor's
-  `peak_memory_bytes` observation (issue #24).
+- `ox-exec-slurm`: the unstable `SlurmExecutor::poll_status_with_record` API
+  preserves accounting alongside status, including absence on squeue fallback
+  (issue #24).
+- `job_completed` events optionally include the finishing attempt's executor
+  `peak_memory_bytes` observation. The scheduler also emits this event for
+  a failed attempt accepted by `ErrorStrategy::Ignore`; earlier failed
+  attempts and cancellations do not supply memory (issue #24).
 - Ray dashboard token authentication is enabled with `RAY_AUTH_MODE=token`.
   OxyMake uses Ray's token precedence, authenticates submission and lifecycle
   requests, trims surrounding token whitespace, reports unreadable or malformed
@@ -61,9 +66,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Ray native-DAG driver submissions now use an absolute path under the
   Oxymakefile's `.oxymake/runs/` directory, including with `ox run -f PATH`.
   The Ray cluster must share that working directory with OxyMake (issue #30).
-- `ox history` now records and displays the per-job peak memory reported by
-  the SLURM CLI backend. Values are whole MiB rounded up; an unavailable
-  measurement remains `-` in text and `null` in JSON (issue #24).
+- `ox run --executor slurm --follow` now persists terminal job state and
+  accounting for `ox history`. Memory uses the maximum `sacct` MaxRSS across
+  job steps, with allocation status retained. Zero or missing MaxRSS stays
+  unavailable (`-` in text, `null` in JSON). History labels whole MiB rounded
+  up as `MEM MiB`; benchmark TSV uses MiB with two decimals. Mock CLI tests
+  verify SQLite persistence; a live SLURM cluster has not verified this change
+  and that check remains with an operator who has one (issue #24).
 - Local benchmark TSV files no longer publish per-job memory and CPU figures
   derived from process-wide child counters. Those values could belong to other
   concurrent or earlier jobs, so `max_rss` and `cpu_time` are now `-` until a

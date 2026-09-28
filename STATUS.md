@@ -301,6 +301,10 @@ Explicit `ResolveRequest::existing_files` remain source leaves in these APIs.
 shared, unstable workflow-relative discovery and cache-provenance policy used by
 CLI, MCP and `SessionBuilder`.
 
+SLURM's `SlurmExecutor::poll_status_with_record` is an **unstable** Rust API.
+It returns allocation status with optional accounting from the same poll;
+squeue fallback has no record. The CLI follow loop uses it to persist history.
+
 Ray's `RayConfig::allow_pending` and driver log API, and the state queries
 for remote submissions, cancellable jobs and current run membership are
 **unstable** Rust APIs.

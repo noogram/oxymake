@@ -50,10 +50,12 @@
 //!
 //! ## `job_completed`
 //!
-//! Emitted when a job finishes successfully.
+//! Emitted when the scheduler accepts a finishing attempt as completed,
+//! including a failed attempt under `ErrorStrategy::Ignore`. Memory belongs
+//! to that attempt; earlier failed attempts and cancellations supply none.
 //!
 //! ```json
-//! {"event":"job_completed","job_id":"align_S001","duration_ms":272000,"outputs":["results/S001.bam"]}
+//! {"event":"job_completed","job_id":"align_S001","duration_ms":272000,"outputs":["results/S001.bam"],"peak_memory_bytes":1536000}
 //! ```
 //!
 //! | Field         | Type       | Description                       |
@@ -61,6 +63,7 @@
 //! | `job_id`      | `string`   | Unique job identifier             |
 //! | `duration_ms` | `u64`      | Wall-clock duration in ms         |
 //! | `outputs`     | `[string]` | Paths or IDs of produced outputs  |
+//! | `peak_memory_bytes` | `u64` (optional) | Executor observation for the finishing attempt, in bytes; omitted if unavailable |
 //!
 //! ## `job_failed`
 //!

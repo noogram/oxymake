@@ -2280,19 +2280,62 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
                         let mut still_running = false;
                         for job_id_str in dag_result.job_submissions.keys() {
                             let jid = JobId::from(job_id_str.as_str());
-                            match executor.poll_status(&jid).await {
-                                Ok(ox_core::traits::executor::JobStatus::Completed) => {
-                                    completed += 1;
-                                }
-                                Ok(ox_core::traits::executor::JobStatus::Failed(msg)) => {
-                                    eprintln!("  FAILED: {} — {}", job_id_str, msg);
-                                    failed += 1;
-                                }
-                                Ok(ox_core::traits::executor::JobStatus::Cancelled) => {
-                                    failed += 1;
-                                }
-                                Ok(_) => {
-                                    still_running = true;
+                            // DAG submission bypasses the core scheduler and its
+                            // JobCompleted events. Persist this poll's accounting
+                            // and terminal state directly for history finalization.
+                            match executor.poll_status_with_record(&jid).await {
+                                Ok((status, record)) => {
+                                    use ox_core::traits::executor::JobStatus;
+                                    if let (Some(db), Some(sid)) = (&state_db, &session_id) {
+                                        match &status {
+                                            JobStatus::Completed
+                                            | JobStatus::Failed(_)
+                                            | JobStatus::Running => {
+                                                let _ = db.claim_job(job_id_str, sid);
+                                            }
+                                            _ => {}
+                                        }
+                                        match &status {
+                                            JobStatus::Completed => {
+                                                let _ = db.complete_job(job_id_str, sid, 0, "");
+                                            }
+                                            JobStatus::Failed(_) => {
+                                                let exit = record.as_ref()
+                                                    .map(|r| r.exit_code)
+                                                    .filter(|c| *c != 0)
+                                                    .unwrap_or(1);
+                                                let _ = db.fail_job(job_id_str, sid, exit);
+                                            }
+                                            JobStatus::Cancelled => {
+                                                let _ = db.cancel_job_ids_for_session(
+                                                    std::slice::from_ref(job_id_str), sid,
+                                                );
+                                            }
+                                            _ => {}
+                                        }
+                                    }
+                                    match status {
+                                        JobStatus::Completed => {
+                                            completed += 1;
+                                            if let Some(record) = record {
+                                                job_durations.lock().await.insert(
+                                                    job_id_str.clone(), record.elapsed.as_millis() as u64,
+                                                );
+                                                if let Some(bytes) = record.peak_memory_bytes {
+                                                    job_peak_memory_bytes.lock().await
+                                                        .insert(job_id_str.clone(), bytes);
+                                                }
+                                            }
+                                        }
+                                        JobStatus::Failed(msg) => {
+                                            eprintln!("  FAILED: {} — {}", job_id_str, msg);
+                                            failed += 1;
+                                        }
+                                        JobStatus::Cancelled => {
+                                            failed += 1;
+                                        }
+                                        _ => still_running = true,
+                                    }
                                 }
                                 Err(e) => {
                                     eprintln!("  Warning: failed to poll {}: {}", job_id_str, e);

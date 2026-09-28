@@ -1953,7 +1953,8 @@ pub enum Event {
         #[serde(skip_serializing_if = "Option::is_none")]
         reason: Option<RunReason>,
     },
-    /// Emitted when a job finishes successfully.
+    /// Emitted when the scheduler accepts a finishing attempt as completed,
+    /// including a failed attempt under `ErrorStrategy::Ignore`.
     JobCompleted {
         /// The job that completed.
         job_id: JobId,
@@ -1961,7 +1962,8 @@ pub enum Event {
         duration_ms: u64,
         /// Paths or IDs of outputs produced.
         outputs: Vec<String>,
-        /// Peak memory measured by the executor, in bytes, when available.
+        /// Peak memory of the finishing attempt, measured by the executor in
+        /// bytes when available. Earlier failed attempts are not accumulated.
         #[serde(skip_serializing_if = "Option::is_none")]
         peak_memory_bytes: Option<u64>,
     },
