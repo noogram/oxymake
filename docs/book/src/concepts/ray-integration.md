@@ -76,6 +76,73 @@ Plan: 12 rules, 847 jobs, 1203 source files
 Only the **uncached subgraph** is sent to Ray.
 
 
+## Resource admission
+
+Each shell, script, inline `run`, and `call` task receives its checked CPU,
+GPU and custom resource request. For example, `resources = {cpu = 1, metal = 1}`
+reserves one logical CPU and one `metal` token. A cluster advertising one
+`metal` token serializes tasks requesting that token across concurrent DAG
+runs. The single DAG driver reserves **zero** logical CPUs and no task tokens;
+it still consumes real CPU while orchestrating.
+
+Before submitting the driver, OxyMake reads `/api/v0/nodes?detail=1` from the
+Ray dashboard and checks every active task against each live node's **total**
+capacity. One node must satisfy the complete request simultaneously. A task
+requiring CPU=2 and metal=1 cannot use nodes `{CPU: 8}` and `{CPU: 1, metal: 1}`
+by adding their capacities. Omitted CPU defaults to 1. Capacity already in use
+still counts: a busy but capable node queues the task normally.
+
+An impossible request fails before any recipe is submitted, with the rule,
+requested resources, observed live node capacities and this escape hatch:
+
+```sh
+ox run --executor ray --ray-allow-pending --follow
+```
+
+Use `--ray-allow-pending` when a future node will supply the missing resources.
+It skips node inspection but preserves resource value and name validation.
+Without it, inspection has a fixed **10-second deadline**, including the response
+body. Connection errors, timeouts and malformed/unknown payloads have distinct
+diagnostics. Partial or truncated node lists are rejected. Ray's dashboard
+must expose the detailed State API. This is a pre-submission snapshot; OxyMake
+does not monitor later topology changes or manage the autoscaler.
+
+Custom names with surrounding whitespace are rejected. Names colliding with
+Ray built-ins or reserved prefixes are also rejected; see the
+[resource reference](../reference/format.md#resources). `time_min` is a SLURM
+key, not a Ray time limit.
+
+**Memory syntax is accepted but memory is not yet reserved by Ray.** Memory
+forwarding is deferred; this admission check covers CPU, GPU and custom tokens.
+
+A submission acknowledgment means the driver was accepted. `--follow` reports
+its terminal failure, `ox status` refreshes failed driver state even without a
+results file, and `ox logs JOB` retrieves driver logs. `ox cancel` stops the
+shared Ray driver when any of its tasks is selected, cancelling the whole DAG,
+including queued tasks. Interrupting `--follow` also stops its driver.
+
+### Running the live scheduling witnesses
+
+The Rust test suite includes ignored tests that require an isolated real Ray
+cluster and a directory mounted at the same absolute path on the driver and
+workers. They check single-CPU completion, two drivers sharing one `metal`
+token with a no-token negative control, busy-node queueing, and cancellation
+before capacity frees. They do not start or reconfigure a cluster.
+
+```sh
+export OXYMAKE_RAY_LIVE_ADDRESS=http://127.0.0.1:8265
+export OXYMAKE_RAY_LIVE_DIR=/shared/oxymake-tests
+# Cluster with exactly one live node and one CPU:
+cargo test -p ox-exec-ray --test live_dag_resources single_cpu -- --ignored
+# Separate cluster with exactly one live node, two CPUs and metal=1:
+cargo test -p ox-exec-ray --test live_dag_resources two_drivers -- --ignored
+cargo test -p ox-exec-ray --test live_dag_resources busy_node -- --ignored
+```
+
+Ignored tests are **NOT RUN**, not passing scheduling evidence. HTTP contract
+tests exercise submission and cancellation requests but cannot prove Ray's
+actual scheduling behavior.
+
 ## Ray Job Packaging
 
 ### Why One Ray Job, Not N

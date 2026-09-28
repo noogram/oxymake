@@ -849,7 +849,7 @@ async fn test_job_with_all_resource_types() {
     job.resources
         .insert("custom:TPU".to_string(), ResourceValue::Int(1));
     job.resources.insert(
-        "custom:accelerator_type:A100".to_string(),
+        "custom:a100_token".to_string(),
         ResourceValue::Float(1.0.into()),
     );
 

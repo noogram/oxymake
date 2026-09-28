@@ -40,6 +40,7 @@ pub mod dashboard;
 pub mod driver_script;
 pub mod error;
 pub mod executor;
+mod feasibility;
 pub mod job_array;
 pub mod object_store;
 pub mod placement_group;

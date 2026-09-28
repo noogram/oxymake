@@ -150,6 +150,10 @@ pub struct RunArgs {
     #[arg(long)]
     pub ray_address: Option<String>,
 
+    /// Allow Ray tasks to wait for nodes with missing capacity (Ray only)
+    #[arg(long)]
+    pub ray_allow_pending: bool,
+
     /// Submit DAG to remote executor and stream progress (only with --executor ray)
     ///
     /// Without --follow, `ox run --executor ray` submits the DAG and returns
@@ -1004,7 +1008,21 @@ fn resolve_global_config_open_dashboard() -> Option<bool> {
     table.get("open_dashboard").and_then(|v| v.as_bool())
 }
 
+fn validate_ray_flags(args: &RunArgs) -> Result<()> {
+    if args.ray_allow_pending && args.executor != "ray" {
+        return Err(clap::Error::raw(
+            clap::error::ErrorKind::ArgumentConflict,
+            "--ray-allow-pending requires --executor ray",
+        )
+        .into());
+    }
+    Ok(())
+}
+
 pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
+    if args.profile.is_none() {
+        validate_ray_flags(&args)?;
+    }
     let mut timer = PhaseTimer::new(args.timings);
     let file_path = PathBuf::from(&args.file);
     if args.verbose >= 1 {
@@ -1026,6 +1044,8 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
         let profile = common::resolve_profile(&workflow, profile_name)?;
         apply_profile_defaults(&mut args, profile);
     }
+
+    validate_ray_flags(&args)?;
 
     // Apply global config for open_dashboard (lowest precedence).
     if !args.open_dashboard {
@@ -2195,6 +2215,7 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
             }
             "ray" => {
                 let ray_config = RayConfig {
+                    allow_pending: args.ray_allow_pending,
                     dashboard_address: args
                         .ray_address
                         .clone()
@@ -2279,6 +2300,17 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
                     let mut failed = 0usize;
 
                     loop {
+                        if interrupted.load(std::sync::atomic::Ordering::SeqCst) {
+                            executor.cancel(&JobId::from(ctx.run_id.as_str())).await.map_err(|e| {
+                                ox_core::error::OxError::Exec(ox_core::error::ExecError::Executor { message: format!("Ray driver cancellation failed: {e}") })
+                            })?;
+                            if let Some(ref db) = state_db {
+                                let ids = dag_result.job_submissions.keys().cloned().collect::<Vec<_>>();
+                                let _ = db.cancel_job_ids(&ids);
+                            }
+                            failed = active;
+                            break;
+                        }
                         tokio::time::sleep(poll_interval).await;
 
                         let mut still_running = false;
@@ -2506,7 +2538,11 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
     match result {
         Ok(sched_result) => {
             // Finalise the audit-trail run record.
-            if let Some(ref db) = state_db {
+            if let Some(ref db) = state_db
+                && (args.executor != "ray"
+                    || args.follow
+                    || sched_result.total_jobs == sched_result.skipped)
+            {
                 let _ = db.end_run(
                     &run_id,
                     sched_result.succeeded,

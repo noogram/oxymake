@@ -2033,6 +2033,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "toml",
+ "wiremock",
 ]
 
 [[package]]

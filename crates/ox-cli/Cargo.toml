@@ -56,3 +56,4 @@ predicates = "3"
 rusqlite.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true
+wiremock = "0.6"
