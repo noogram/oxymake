@@ -54,6 +54,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (issue #25).
 
 ### Fixed
+- Ray native-DAG driver submissions now use an absolute path under the
+  Oxymakefile's `.oxymake/runs/` directory, including with `ox run -f PATH`.
+  Paths are shell-quoted, including spaces, apostrophes and shell metacharacters,
+  and symlinks are resolved. Staging failures report the affected path and IO
+  error. The Ray cluster must share that working directory with OxyMake
+  (issue #30).
 - Local benchmark TSV files no longer publish per-job memory and CPU figures
   derived from process-wide child counters. Those values could belong to other
   concurrent or earlier jobs, so `max_rss` and `cpu_time` are now `-` until a

@@ -7,6 +7,7 @@ use std::time::Duration;
 use wiremock::matchers::{method, path, path_regex};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
+use ox_core::job_graph::JobGraph;
 use ox_core::model::*;
 use ox_core::traits::executor::*;
 use ox_exec_ray::object_store;
@@ -50,6 +51,172 @@ fn test_ctx(tmp: &tempfile::TempDir) -> ExecContext {
         trusted_dirs: vec![],
         input_data: std::collections::HashMap::new(),
         memory_map: None,
+    }
+}
+
+/// Capture the actual Jobs API payload, then exercise its shell boundary.
+async fn assert_driver_entrypoint(directory: &str, relative: bool) {
+    let mock_server = MockServer::start().await;
+    mount_capable_nodes(&mock_server).await;
+    Mock::given(method("POST"))
+        .and(path("/api/jobs/"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(serde_json::json!({"submission_id": "driver-path"})),
+        )
+        .expect(1)
+        .mount(&mock_server)
+        .await;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let staging = tmp.path().join(directory);
+    std::fs::create_dir_all(&staging).unwrap();
+    let staging = staging.canonicalize().unwrap();
+    let working_dir = if relative {
+        // Reach the filesystem root from cwd, then descend into the system
+        // temp directory. No test files or process-wide cwd changes in source.
+        let cwd = std::env::current_dir().unwrap();
+        let mut path = PathBuf::new();
+        for component in cwd.components() {
+            if matches!(component, std::path::Component::Normal(_)) {
+                path.push("..");
+            }
+        }
+        path.push(staging.strip_prefix("/").unwrap());
+        path
+    } else {
+        staging.clone()
+    };
+    let executor = RayExecutor::new(RayConfig {
+        dashboard_address: mock_server.uri(),
+        working_dir,
+        ..RayConfig::default()
+    })
+    .unwrap();
+    let ctx = test_ctx(&tmp);
+    executor
+        .submit_dag(
+            &JobGraph::build(vec![test_job("driver-path", "true")]).unwrap(),
+            &ctx,
+        )
+        .await
+        .unwrap();
+
+    let request = mock_server
+        .received_requests()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|request| request.method == "POST" && request.url.path() == "/api/jobs/")
+        .unwrap();
+    let payload: serde_json::Value = serde_json::from_slice(&request.body).unwrap();
+    let entrypoint = payload["entrypoint"].as_str().unwrap();
+    let driver_path = staging.join(&ctx.run_id).join("oxymake_dag_driver.py");
+    assert!(driver_path.is_absolute() && driver_path.is_file());
+    let expected = format!(
+        "python3 '{}'",
+        driver_path.to_str().unwrap().replace('\'', "'\\''")
+    );
+
+    // Replace the driver with a path probe so this shell-boundary test needs
+    // Python, but no Ray installation or live cluster. Execute the submitted
+    // string unchanged, from a different cwd, just as Ray's shell does.
+    std::fs::write(&driver_path, "print(__file__)\n").unwrap();
+    let output = std::process::Command::new("sh")
+        .args(["-c", entrypoint])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+    assert!(!tmp.path().join("PWNED").exists(), "shell command executed");
+    assert!(
+        output.status.success(),
+        "entrypoint: {entrypoint}; stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap().trim(),
+        driver_path.to_str().unwrap()
+    );
+    assert_eq!(entrypoint, expected, "submitted payload: {payload}");
+}
+
+#[tokio::test]
+async fn dag_driver_entrypoint_uses_an_absolute_existing_path() {
+    for relative in [true, false] {
+        assert_driver_entrypoint("staging", relative).await;
+    }
+}
+
+#[tokio::test]
+async fn dag_driver_entrypoint_quotes_spaces() {
+    assert_driver_entrypoint("project with spaces", false).await;
+}
+
+#[tokio::test]
+async fn dag_driver_entrypoint_quotes_command_substitution() {
+    assert_driver_entrypoint("p$(touch PWNED)d", false).await;
+}
+
+#[tokio::test]
+async fn dag_driver_entrypoint_quotes_apostrophes() {
+    assert_driver_entrypoint("project's files", false).await;
+}
+
+fn assert_staging_diagnostic(error: &RayError, path: &std::path::Path) {
+    let message = error.to_string();
+    assert!(message.contains(path.to_str().unwrap()), "{message}");
+    assert!(message.contains("shared filesystem"), "{message}");
+    assert!(message.contains("writable"), "{message}");
+    assert!(std::error::Error::source(error).is_some(), "{message}");
+}
+
+#[test]
+fn dag_driver_unwritable_staging_root_has_context() {
+    let tmp = tempfile::tempdir().unwrap();
+    let staging = tmp.path().join(".oxymake/runs");
+    std::fs::create_dir_all(staging.parent().unwrap()).unwrap();
+    // Deterministic even under root: a file prevents directory creation.
+    std::fs::write(&staging, "occupied").unwrap();
+    let error = RayExecutor::new(RayConfig {
+        working_dir: staging.clone(),
+        ..RayConfig::default()
+    })
+    .unwrap_err();
+    assert_staging_diagnostic(&error, &staging);
+}
+
+#[tokio::test]
+async fn dag_driver_unwritable_run_staging_has_context() {
+    for block_driver_write in [false, true] {
+        let mock_server = MockServer::start().await;
+        let tmp = tempfile::tempdir().unwrap();
+        let staging = tmp.path().canonicalize().unwrap().join("runs");
+        let executor = RayExecutor::new(RayConfig {
+            dashboard_address: mock_server.uri(),
+            working_dir: staging.clone(),
+            allow_pending: true,
+            ..RayConfig::default()
+        })
+        .unwrap();
+        let ctx = test_ctx(&tmp);
+        let run_staging = staging.join(&ctx.run_id);
+        let blocked_path = if block_driver_write {
+            let driver = run_staging.join("oxymake_dag_driver.py");
+            std::fs::create_dir_all(&driver).unwrap();
+            driver
+        } else {
+            std::fs::write(&run_staging, "occupied").unwrap();
+            run_staging
+        };
+        let error = executor
+            .submit_dag(
+                &JobGraph::build(vec![test_job("driver-path", "true")]).unwrap(),
+                &ctx,
+            )
+            .await
+            .unwrap_err();
+        assert_staging_diagnostic(&error, &blocked_path);
+        assert!(mock_server.received_requests().await.unwrap().is_empty());
     }
 }
 

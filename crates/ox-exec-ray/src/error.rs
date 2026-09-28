@@ -92,4 +92,20 @@ pub enum RayError {
     /// I/O error (file creation, etc.).
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
+
+    /// A staging directory or generated driver artifact could not be prepared.
+    #[error(
+        "Ray staging failed at {path}: {source}; OxyMake requires a writable staging directory and the Ray cluster must see it through a shared filesystem"
+    )]
+    StagingIo {
+        path: std::path::PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+
+    /// The generated driver cannot be submitted as a shared-filesystem path.
+    #[error(
+        "Ray DAG driver is unavailable at {path}; the Ray executor requires the cluster to see OxyMake's working directory through a shared filesystem"
+    )]
+    DriverUnavailable { path: std::path::PathBuf },
 }

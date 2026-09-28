@@ -9,6 +9,87 @@ fn ox() -> Command {
     Command::cargo_bin("ox").unwrap()
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn dash_f_file_submits_the_driver_written_beside_the_oxymakefile() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/version"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"ray_version":"2.54.1"})))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/jobs/"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"submission_id":"driver"})))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let invocation_dir = tempfile::tempdir().unwrap();
+    let project_dir = tempfile::Builder::new()
+        .prefix("ray project's ")
+        .tempdir()
+        .unwrap();
+    let oxymakefile = project_dir.path().join("Oxymakefile.toml");
+    std::fs::write(
+        &oxymakefile,
+        "ox_version = \"0.1\"\n[rule.a]\noutput = [\"a.out\"]\nshell = \"touch a.out\"\n",
+    )
+    .unwrap();
+
+    // A workflow selected through a symlink must submit the real staging path.
+    #[cfg(unix)]
+    let oxymakefile = {
+        let link = invocation_dir.path().join("project-link");
+        std::os::unix::fs::symlink(project_dir.path(), &link).unwrap();
+        link.join("Oxymakefile.toml")
+    };
+
+    ox().current_dir(invocation_dir.path())
+        .args([
+            "run",
+            "a.out",
+            "-f",
+            oxymakefile.to_str().unwrap(),
+            "--executor",
+            "ray",
+            "--ray-address",
+            &server.uri(),
+            "--ray-allow-pending",
+            "--no-cache",
+        ])
+        .assert()
+        .success();
+
+    let request = server
+        .received_requests()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|request| request.method == "POST" && request.url.path() == "/api/jobs/")
+        .unwrap();
+    let payload: serde_json::Value = serde_json::from_slice(&request.body).unwrap();
+    let run_id = payload["metadata"]["oxymake_run_id"].as_str().unwrap();
+    let driver_path = project_dir
+        .path()
+        .canonicalize()
+        .unwrap()
+        .join(".oxymake/runs")
+        .join(run_id)
+        .join("oxymake_dag_driver.py");
+    assert!(driver_path.is_absolute());
+    assert!(
+        driver_path.is_file(),
+        "{driver_path:?} must exist when submitted"
+    );
+    assert_eq!(
+        payload["entrypoint"],
+        format!(
+            "python3 '{}'",
+            driver_path.to_str().unwrap().replace('\'', "'\\''")
+        )
+    );
+}
+
 fn recorded_run(dir: &std::path::Path, address: &str) {
     let root = dir.join(".oxymake");
     std::fs::create_dir_all(root.join("runs/run-1")).unwrap();
