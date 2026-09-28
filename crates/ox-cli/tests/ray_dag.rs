@@ -344,7 +344,7 @@ async fn failed_remote_stop_leaves_pending_jobs_retryable() {
 
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn interrupt_follow_leaves_remote_driver_running() {
+async fn interrupt_follow_stops_queued_driver() {
     use std::time::{Duration, Instant};
     let server = MockServer::start().await;
     Mock::given(method("GET"))
@@ -365,7 +365,7 @@ async fn interrupt_follow_leaves_remote_driver_running() {
     Mock::given(method("POST"))
         .and(path("/api/jobs/driver/stop"))
         .respond_with(ResponseTemplate::new(200))
-        .expect(0)
+        .expect(1)
         .mount(&server)
         .await;
     let dir = tempfile::tempdir().unwrap();
@@ -419,11 +419,8 @@ async fn interrupt_follow_leaves_remote_driver_running() {
                 String::from_utf8_lossy(&output.stdout),
                 String::from_utf8_lossy(&output.stderr)
             );
-            assert!(text.contains("remote jobs are NOT cancelled"), "{text}");
-            assert!(
-                text.contains("ox status") && text.contains("ox cancel"),
-                "{text}"
-            );
+            assert!(text.contains("Ray driver stopped"), "{text}");
+            assert!(!text.contains("NOT cancelled"), "{text}");
             assert!(!text.contains("Completed:"), "{text}");
             break;
         }
