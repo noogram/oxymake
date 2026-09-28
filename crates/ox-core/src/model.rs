@@ -1359,7 +1359,9 @@ pub struct Rule {
     pub error_strategy: ErrorStrategy,
     /// Per-rule timeout (overrides global default).
     pub timeout: Option<Duration>,
-    /// Per-rule executor override (e.g., "local" to force local execution on a cluster).
+    /// Optional "local" override: execute on the submitting host.
+    /// Other backend names belong to the run, not the rule. Whole-DAG
+    /// backends without host routing reject this declaration.
     pub executor: Option<String>,
     /// Stdout/stderr capture configuration.
     pub log: LogConfig,

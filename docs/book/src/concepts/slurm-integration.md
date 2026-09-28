@@ -7,6 +7,30 @@ memory. This page explains how the two systems fit together — from job
 packaging through monitoring to real-cluster deployment.
 
 
+## Running a rule on the submitting host
+
+Set `executor = "local"` on a rule that must run on the host running `ox`:
+
+```toml
+[rule.prepare]
+output = ["prepared.txt"]
+executor = "local"
+shell = "echo ready > prepared.txt"
+```
+
+When a selected graph contains this override, `ox run --executor slurm`
+runs the graph through the scheduler and waits for completion. Other rules
+still use SLURM, one job at a time per available scheduler slot; native DAG
+submission and job arrays are not used for this mixed run. The usual cache,
+retry, logging and cancellation paths apply. A shared filesystem must make
+dependencies visible on both hosts; OxyMake does not transfer artifacts
+between them. `--json` job-start events and `ox history --run-id ... --json`
+report each executed job's actual backend.
+
+The only rule-level value is `"local"`; backend selection belongs to
+`ox run --executor`. Ray's whole-DAG path rejects the override. Site placement
+and multiple remote executors within one run are outside this feature's scope.
+
 ## The Three Graphs Meet SLURM
 
 Before any executor sees a job, OxyMake transforms the user's declarations

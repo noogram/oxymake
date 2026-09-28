@@ -75,6 +75,27 @@ artifacts, such as machine code, must use `"exact"`. The parser rejects
 `reproducibility = "non_reproducible"`; `"approximate"` and
 `"seed_deterministic"` are allowed.
 
+### Executor override
+
+A rule may declare `executor = "local"` to run on the host running `ox`.
+It is a no-op in a local run. In a SLURM run, selecting any such job uses
+the local scheduler for the selected graph: local rules execute on this host,
+other rules use SLURM, and `ox run` waits for completion even without
+`--follow`. Dependencies, cache checks, retries, logs, cancellation and
+the `--jobs` limit still go through the scheduler. Both hosts must already
+see the input and output files through a shared filesystem.
+
+Ray's whole-DAG driver cannot execute a task on the submitting host.
+A selected graph containing `executor = "local"` is therefore rejected
+before Ray submission, including with `--follow`. Use a separate local run
+for those targets.
+
+Only the exact value `"local"` is accepted. Other values are parse errors
+naming the rule; choose the run's backend with `ox run --executor`.
+Per-rule site placement, several remote backends in one run, and artifact
+transfer inside a run are outside this field's scope. Job-start events and
+history record the executor selected for each executed job.
+
 ### Output cleanup
 
 `clean_outputs` is an optional per-rule string (currently local-executor only):

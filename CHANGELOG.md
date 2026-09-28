@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Breaking changes
+- Rule `executor` accepts only `"local"`. Previously accepted values such as
+  `"ray"`, `"slurm"`, site names and typos now fail parsing (including
+  `ox lint`), naming the rule and directing backend selection to
+  `ox run --executor`. Bump the workspace minor version to 0.6.0 under the
+  stable-field policy (#37).
+
 ### Added
 - Local cold launches on Linux and macOS now measure peak RSS and user + system
   CPU time with `wait4` on each child, including under concurrent execution.
@@ -86,6 +93,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (issue #25).
 
 ### Fixed
+- `executor = "local"` actually runs on the submitting host in SLURM runs.
+  A mixed graph uses the scheduler and waits for completion, preserving its
+  cache, dependency, retry, logging and cancellation paths. Pure SLURM graphs
+  retain DAG submission. Local overrides in local runs remain a no-op.
+  Ray DAG runs reject local overrides before submission because the remote
+  driver cannot execute on the submitting host (#37).
+- Job-start events and JSON now identify the selected backend; history stores
+  that observation per executed job and its text view includes an executor
+  column. Unidentified third-party executors report `unknown` (#37).
 - Ray and SLURM `ox run --follow` now stop after three consecutive poll rounds
   with errors (exit `1`, endpoint and last error included). Successful rounds
   reset the retry counter. The first Ctrl+C or SIGTERM stops follow promptly

@@ -45,7 +45,10 @@ ox run --no-cache               # Ignore the cache, re-run everything
 - `--no-cache` -- Ignore cached outputs and re-execute
 - `--cache-remote DIR` -- Share output blobs through a directory blob store
   (forces `hash` validation; see below)
-- `--executor EXEC` -- Choose executor: `local` (default), `slurm`, `ray`
+- `--executor EXEC` -- Choose executor: `local` (default), `slurm`, `ray`.
+  A SLURM graph containing a rule with `executor = "local"` runs through the
+  scheduler and waits for completion, including without `--follow`. Ray DAG
+  runs reject that override. See [Executor override](format.md#executor-override).
 - `--ray-allow-pending` -- Ray only; skip the default live-node feasibility
   check and allow waiting for a future node. Resource values and names are
   still validated. Using this flag with another executor is a usage error. It
@@ -237,6 +240,11 @@ ox logs --failed            # Logs for all failed jobs
 ```
 
 ### `ox history`
+
+Per-job detail includes the executor selected for each executed job, including
+local overrides in SLURM runs. The text table has an `EXECUTOR` column; JSON
+uses `executor`.
+
 
 List past runs.
 
