@@ -195,7 +195,7 @@ fn show_run_detail(
         println!();
         let header = format!(
             "{:<24} {:<20} {:>10} {:>8} {:>6}",
-            "JOB", "RULE", "WALL TIME", "MEM MB", "EXIT"
+            "JOB", "RULE", "WALL TIME", "MEM MiB", "EXIT"
         );
         println!("{}", theme.header.apply_to(&header));
         println!("{}", theme.muted.apply_to("-".repeat(72)));

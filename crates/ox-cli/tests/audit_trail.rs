@@ -229,6 +229,96 @@ fn history_json_surfaces_the_provenance() {
     assert_eq!(seen, 2, "expected one JSON line per job:\n{out}");
 }
 
+/// Issue #24: the history reader preserves measured/unavailable values from
+/// StateDb. The actual CLI collection path is covered by slurm_history.rs.
+#[test]
+fn history_surfaces_measured_and_unavailable_peak_memory() {
+    let dir = TempDir::new().unwrap();
+    let state_dir = dir.path().join(".oxymake");
+    fs::create_dir_all(&state_dir).unwrap();
+    let db = ox_state::db::StateDb::open(&state_dir.join("state.db")).unwrap();
+    let run_id = "run-memory";
+    db.begin_run(run_id, None, 2, None).unwrap();
+    db.register_jobs(&[
+        ox_state::db::JobRecord {
+            id: "measured".into(),
+            rule_name: "measured_rule".into(),
+            wildcards: "{}".into(),
+            cache_key: None,
+            run_id: Some(run_id.into()),
+        },
+        ox_state::db::JobRecord {
+            id: "unavailable".into(),
+            rule_name: "unavailable_rule".into(),
+            wildcards: "{}".into(),
+            cache_key: None,
+            run_id: Some(run_id.into()),
+        },
+    ])
+    .unwrap();
+    let session = db.create_session(1, "slurm-host", None).unwrap();
+    for job_id in ["measured", "unavailable"] {
+        db.claim_job(job_id, &session).unwrap();
+        db.complete_job(job_id, &session, 0, "").unwrap();
+    }
+    db.finalize_job_history(
+        run_id,
+        "slurm",
+        "slurm-host",
+        &Default::default(),
+        &std::collections::HashMap::from([("measured".to_string(), 1u64)]),
+        &Default::default(),
+    )
+    .unwrap();
+    db.end_run(run_id, 2, 0, 0).unwrap();
+    drop(db);
+
+    let json = ox()
+        .args(["history", "--run-id", run_id, "--json"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let rows: Vec<serde_json::Value> = String::from_utf8(json)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    let measured = rows.iter().find(|row| row["job_id"] == "measured").unwrap();
+    let unavailable = rows
+        .iter()
+        .find(|row| row["job_id"] == "unavailable")
+        .unwrap();
+    assert_eq!(measured["peak_mem_mb"], 1);
+    assert!(unavailable["peak_mem_mb"].is_null());
+
+    let text = ox()
+        .args(["history", "--run-id", run_id])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let text = String::from_utf8(text).unwrap();
+    let measured_fields: Vec<_> = text
+        .lines()
+        .find(|line| line.starts_with("measured "))
+        .unwrap()
+        .split_whitespace()
+        .collect();
+    let unavailable_fields: Vec<_> = text
+        .lines()
+        .find(|line| line.starts_with("unavailable "))
+        .unwrap()
+        .split_whitespace()
+        .collect();
+    assert_eq!(measured_fields[3], "1");
+    assert_eq!(unavailable_fields[3], "-");
+}
+
 /// Issue #12 item 4: a run that aborts recorded `0/0/0`, so it was
 /// indistinguishable from a run in which nothing happened.
 #[test]

@@ -204,7 +204,7 @@ pub struct JobHistoryEntry {
     pub completed_at: Option<u64>,
     /// Wall-clock duration in milliseconds.
     pub wall_time_ms: Option<u64>,
-    /// Peak memory usage in megabytes.
+    /// Peak memory usage in MiB, rounded up from an executor's byte count.
     pub peak_mem_mb: Option<u64>,
     /// Process exit code.
     pub exit_code: Option<i32>,
@@ -212,6 +212,13 @@ pub struct JobHistoryEntry {
     pub reproducibility_class: Option<String>,
     /// JSON-encoded `ArtifactProvenance` (defined in `ox_core::model`) for cache correctness auditing.
     pub artifact_provenance_json: Option<String>,
+}
+
+const BYTES_PER_MIB: u64 = 1024 * 1024;
+
+/// Convert bytes to whole MiB, rounding upward without overflowing.
+fn bytes_to_mib_rounded_up(bytes: u64) -> u64 {
+    bytes / BYTES_PER_MIB + u64::from(bytes % BYTES_PER_MIB != 0)
 }
 
 /// Per-rule duration aggregate from a single run's job history.
@@ -1435,14 +1442,21 @@ impl StateDb {
     /// Finalize audit-trail history from the post-flush jobs table.
     ///
     /// Reads all jobs for `run_id` that reached a terminal state
-    /// (completed, failed, skipped) and inserts a `job_history` row for
+    /// (completed, failed, skipped, cancelled) and inserts a `job_history` row for
     /// each.  This replaces the former in-memory finalization loop: after
     /// the EventSink (ADR-011 Stage 2 → Stage 3 transition, ex-"state-db
     /// bridge") has been awaited, the jobs table is authoritative and we
     /// can read it directly (hq-9in00).
     ///
-    /// `wall_times` maps `job_id → duration_ms` collected from
-    /// `Event::JobCompleted` events.  `provenance` maps `job_id →`
+    /// `wall_times` maps `job_id → duration_ms` and `peak_memory_bytes`
+    /// maps `job_id → bytes`, collected from `Event::JobCompleted` or the
+    /// SLURM CLI follow loop. Memory belongs to the finishing attempt, including
+    /// an ignored failure reported as completed; failed attempts and cancellations
+    /// do not populate the map. Peak bytes are stored as integer MiB rounded up, so a real
+    /// sub-MiB observation remains distinguishable from an unmeasured job;
+    /// an observed zero remains zero (the SLURM parser treats its uninformative
+    /// zero as absent). Benchmark TSV instead renders MiB with two decimals.
+    /// `provenance` maps `job_id →`
     /// [`JobProvenance`], the hashes the cache layer computed for the job
     /// during this run; a job the cache layer never keyed (mtime-only
     /// validation, `--no-cache`) is simply absent and its provenance
@@ -1454,12 +1468,13 @@ impl StateDb {
         executor: &str,
         hostname: &str,
         wall_times: &std::collections::HashMap<String, u64>,
+        peak_memory_bytes: &std::collections::HashMap<String, u64>,
         provenance: &std::collections::HashMap<String, JobProvenance>,
     ) -> Result<usize, StateError> {
         let mut stmt = self.conn.prepare(
             "SELECT id, rule_name, wildcards, status, started_at, completed_at, exit_code
              FROM jobs
-             WHERE run_id = ?1 AND status IN ('completed', 'failed', 'skipped')",
+             WHERE run_id = ?1 AND status IN ('completed', 'failed', 'skipped', 'cancelled')",
         )?;
         let entries: Vec<JobHistoryEntry> = stmt
             .query_map(rusqlite::params![run_id], |row| {
@@ -1472,6 +1487,10 @@ impl StateDb {
                     _ => None,
                 });
                 let wall_time_ms = wall_times.get(job_id.as_str()).copied();
+                let peak_mem_mb = peak_memory_bytes
+                    .get(job_id.as_str())
+                    .copied()
+                    .map(bytes_to_mib_rounded_up);
                 let prov = provenance.get(job_id.as_str()).cloned().unwrap_or_default();
                 Ok(JobHistoryEntry {
                     run_id: run_id.to_string(),
@@ -1487,13 +1506,11 @@ impl StateDb {
                     started_at: row.get(4)?,
                     completed_at: row.get(5)?,
                     wall_time_ms,
-                    // Deliberately left NULL. The only peak-memory figure
-                    // this process has comes from getrusage(RUSAGE_CHILDREN),
-                    // which is process-wide: under `-j N` it aggregates every
-                    // child, so attributing it to one job would record a
-                    // plausible-looking wrong number. Populating this column
-                    // needs per-job accounting (a cgroup, or wait4 per child).
-                    peak_mem_mb: None,
+                    // Store only the executor's per-job observation. The local
+                    // executor and SLURM REST report nothing. In particular,
+                    // the process-wide getrusage(RUSAGE_CHILDREN) figure stays
+                    // refused for the cross-job attribution reason from #12.
+                    peak_mem_mb,
                     exit_code,
                     reproducibility_class: prov.reproducibility_class,
                     artifact_provenance_json: prov.artifact_provenance_json,
@@ -2327,9 +2344,17 @@ impl StateBackend for StateDb {
         executor: &str,
         hostname: &str,
         wall_times: &std::collections::HashMap<String, u64>,
+        peak_memory_bytes: &std::collections::HashMap<String, u64>,
         provenance: &std::collections::HashMap<String, JobProvenance>,
     ) -> Result<usize, StateError> {
-        self.finalize_job_history(run_id, executor, hostname, wall_times, provenance)
+        self.finalize_job_history(
+            run_id,
+            executor,
+            hostname,
+            wall_times,
+            peak_memory_bytes,
+            provenance,
+        )
     }
 
     fn job_history_for_run(&self, run_id: &str) -> Result<Vec<JobHistoryEntry>, StateError> {
@@ -2790,12 +2815,24 @@ mod tests {
     }
 
     #[test]
+    fn peak_memory_rounds_bytes_up_to_whole_mib() {
+        assert_eq!(bytes_to_mib_rounded_up(0), 0);
+        assert_eq!(bytes_to_mib_rounded_up(1), 1);
+        assert_eq!(bytes_to_mib_rounded_up(BYTES_PER_MIB), 1);
+        assert_eq!(bytes_to_mib_rounded_up(BYTES_PER_MIB + 1), 2);
+        assert_eq!(
+            bytes_to_mib_rounded_up(u64::MAX),
+            u64::MAX / BYTES_PER_MIB + 1
+        );
+    }
+
+    #[test]
     fn finalize_job_history_from_db() {
         let (_tmp, db) = temp_db();
         let sid = db.create_session(1, "localhost", None).unwrap();
         let run_id = "run-finalize";
 
-        db.begin_run(run_id, None, 3, None).unwrap();
+        db.begin_run(run_id, None, 4, None).unwrap();
 
         let jobs = vec![
             JobRecord {
@@ -2814,6 +2851,13 @@ mod tests {
             },
             JobRecord {
                 id: "j3".into(),
+                rule_name: "zero".into(),
+                wildcards: "{}".into(),
+                cache_key: None,
+                run_id: Some(run_id.into()),
+            },
+            JobRecord {
+                id: "j4".into(),
                 rule_name: "lint".into(),
                 wildcards: "{}".into(),
                 cache_key: None,
@@ -2822,14 +2866,24 @@ mod tests {
         ];
         db.register_jobs(&jobs).unwrap();
 
-        // Simulate event-bus transitions: j1 completed, j2 failed, j3 still pending.
+        // Simulate event-bus transitions: j1 completed, j2 failed, j3 completed,
+        // and j4 still pending.
         db.claim_job("j1", &sid).unwrap();
         db.complete_job("j1", &sid, 0, "").unwrap();
         db.claim_job("j2", &sid).unwrap();
         db.fail_job("j2", &sid, 1).unwrap();
+        db.claim_job("j3", &sid).unwrap();
+        db.complete_job("j3", &sid, 0, "").unwrap();
 
         let mut wall_times = std::collections::HashMap::new();
         wall_times.insert("j1".to_string(), 500u64);
+
+        let mut peak_memory_bytes = std::collections::HashMap::new();
+        // One observed byte rounds up to one MiB rather than silently
+        // becoming zero. An observed zero stays distinguishable from an
+        // absent observation.
+        peak_memory_bytes.insert("j1".to_string(), 1u64);
+        peak_memory_bytes.insert("j3".to_string(), 0u64);
 
         let mut provenance = std::collections::HashMap::new();
         provenance.insert(
@@ -2846,13 +2900,20 @@ mod tests {
         );
 
         let count = db
-            .finalize_job_history(run_id, "local", "localhost", &wall_times, &provenance)
+            .finalize_job_history(
+                run_id,
+                "local",
+                "localhost",
+                &wall_times,
+                &peak_memory_bytes,
+                &provenance,
+            )
             .unwrap();
-        // j1 (completed) and j2 (failed) — j3 is still pending so excluded.
-        assert_eq!(count, 2);
+        // j1 and j3 completed, j2 failed — j4 is pending so excluded.
+        assert_eq!(count, 3);
 
         let history = db.job_history_for_run(run_id).unwrap();
-        assert_eq!(history.len(), 2);
+        assert_eq!(history.len(), 3);
 
         let h1 = history.iter().find(|h| h.job_id == "j1").unwrap();
         assert_eq!(h1.rule_name, "build");
@@ -2887,11 +2948,16 @@ mod tests {
         assert_eq!(h1.wall_time_ms, Some(500));
         assert_eq!(h1.executor.as_deref(), Some("local"));
         assert_eq!(h1.hostname.as_deref(), Some("localhost"));
+        assert_eq!(h1.peak_mem_mb, Some(1));
 
         let h2 = history.iter().find(|h| h.job_id == "j2").unwrap();
         assert_eq!(h2.rule_name, "test");
         assert_eq!(h2.exit_code, Some(1));
         assert_eq!(h2.wall_time_ms, None); // no entry in wall_times map
+        assert_eq!(h2.peak_mem_mb, None); // backend reported nothing
+
+        let h3 = history.iter().find(|h| h.job_id == "j3").unwrap();
+        assert_eq!(h3.peak_mem_mb, Some(0)); // measured zero is not NULL
     }
 
     #[test]
@@ -2916,6 +2982,7 @@ mod tests {
                 run_id,
                 "local",
                 "localhost",
+                &std::collections::HashMap::new(),
                 &std::collections::HashMap::new(),
                 &std::collections::HashMap::new(),
             )

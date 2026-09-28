@@ -256,8 +256,11 @@ benchmark = "benchmarks/output.tsv"
 ```
 
 The columns are `s`, `h:m:s`, `max_rss`, and `cpu_time`, in that order.
-`max_rss` is expressed in MiB when the executor supplies a per-job
-measurement, and `cpu_time` is expressed in seconds. An unmeasured value is
+`max_rss` is expressed in MiB with two decimal places when the executor
+supplies a per-job measurement, and `cpu_time` is expressed in seconds.
+History's `peak_mem_mb` instead rounds up to whole MiB: 1500 KiB renders as
+1.46 in benchmark TSV and 2 in history. The round-up keeps a positive sub-MiB
+history observation distinguishable from zero. An unmeasured value is
 written as `-`; in particular, the local executor currently leaves both
 resource columns unmeasured rather than attributing process-wide counters to
 one job.

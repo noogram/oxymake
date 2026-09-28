@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `ox-exec-slurm`: the unstable `SlurmExecutor::poll_status_with_record` API
+  preserves accounting alongside status, including absence on squeue fallback
+  (issue #24).
+- `job_completed` events optionally include the finishing attempt's executor
+  `peak_memory_bytes` observation. The scheduler also emits this event for
+  a failed attempt accepted by `ErrorStrategy::Ignore`; earlier failed
+  attempts and cancellations do not supply memory (issue #24).
 - Ray dashboard token authentication is enabled with `RAY_AUTH_MODE=token`.
   OxyMake uses Ray's token precedence, authenticates submission and lifecycle
   requests, trims surrounding token whitespace, reports unreadable or malformed
@@ -29,6 +36,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   memory reservations (issue #25).
 
 ### Changed
+- `ox-state`: `StateDb::finalize_job_history` and the unstable `StateBackend`
+  method now accept a per-job peak-memory byte map (issue #24).
 - **A resource declaration that Ray cannot honour is now an error instead of a
   silent reinterpretation** (issue #25). Under `--executor ray`, these used to
   run and now stop the run: two spellings of one resource (`cpu` and `cpus`
@@ -60,6 +69,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and symlinks are resolved. Staging failures report the affected path and IO
   error. The Ray cluster must share that working directory with OxyMake
   (issue #30).
+- `ox run --executor slurm --follow` now persists terminal job state and
+  accounting for `ox history`. Memory uses the maximum `sacct` MaxRSS across
+  job steps, with allocation status retained. Zero or missing MaxRSS stays
+  unavailable (`-` in text, `null` in JSON). History labels whole MiB rounded
+  up as `MEM MiB`; benchmark TSV uses MiB with two decimals. Mock CLI tests
+  verify SQLite persistence; a live SLURM cluster has not verified this change
+  and that check remains with an operator who has one (issue #24).
 - Local benchmark TSV files no longer publish per-job memory and CPU figures
   derived from process-wide child counters. Those values could belong to other
   concurrent or earlier jobs, so `max_rss` and `cpu_time` are now `-` until a

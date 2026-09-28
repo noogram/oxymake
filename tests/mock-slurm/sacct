@@ -13,6 +13,7 @@ JOB_IDS=""
 FIELDS="JobID|State|ExitCode"
 PARSABLE2=false
 NOHEADER=false
+ALLOCATIONS_ONLY=false
 
 # Parse arguments
 while [[ $# -gt 0 ]]; do
@@ -23,7 +24,7 @@ while [[ $# -gt 0 ]]; do
         --noheader|-n) NOHEADER=true; shift ;;
         -o) FIELDS="$2"; shift 2 ;;
         -o=*) FIELDS="${1#*=}"; shift ;;
-        -X) shift ;; # ignore (no job steps)
+        -X) ALLOCATIONS_ONLY=true; shift ;;
         *) shift ;;
     esac
 done
@@ -67,27 +68,40 @@ for JOB_ID in "${IDS[@]}"; do
     # Simulate node assignment
     NODE="c1"
 
-    # Build output based on requested fields
-    OUTPUT=""
-    IFS=',' read -ra FIELD_LIST <<< "${FIELDS//|/,}"
-    # Also handle %-width specifiers like "nodelist%-256"
-    for field in "${FIELD_LIST[@]}"; do
-        # Strip width specifier
-        field_name=$(echo "$field" | sed 's/%.*//' | tr '[:upper:]' '[:lower:]')
-        if [ -n "$OUTPUT" ]; then
-            OUTPUT="${OUTPUT}|"
-        fi
-        case "$field_name" in
-            jobid) OUTPUT="${OUTPUT}${JOB_ID}" ;;
-            state) OUTPUT="${OUTPUT}${STATE}" ;;
-            exitcode) OUTPUT="${OUTPUT}${EXIT_FMT}" ;;
-            maxrss) OUTPUT="${OUTPUT}${MAX_RSS}" ;;
-            elapsed) OUTPUT="${OUTPUT}${ELAPSED_FMT}" ;;
-            nodelist) OUTPUT="${OUTPUT}${NODE}" ;;
-            jobname) OUTPUT="${OUTPUT}${JOB_NAME}" ;;
-            *) OUTPUT="${OUTPUT}?" ;;
+    # Real sacct leaves allocation MaxRSS blank and reports it on steps.
+    # Honour -X so callers requesting allocations see no invented measurement.
+    ROW_IDS=("$JOB_ID")
+    if [ "$ALLOCATIONS_ONLY" = false ]; then
+        ROW_IDS+=("$JOB_ID.batch" "$JOB_ID.0")
+    fi
+    for ROW_ID in "${ROW_IDS[@]}"; do
+        ROW_RSS=""
+        case "$ROW_ID" in
+            *.batch) ROW_RSS="$MAX_RSS" ;;
+            *.0) ROW_RSS="$((JOB_ID * 512))K" ;;
         esac
-    done
+        # Build output based on requested fields
+        OUTPUT=""
+        IFS=',' read -ra FIELD_LIST <<< "${FIELDS//|/,}"
+        # Also handle %-width specifiers like "nodelist%-256"
+        for field in "${FIELD_LIST[@]}"; do
+            # Strip width specifier
+            field_name=$(echo "$field" | sed 's/%.*//' | tr '[:upper:]' '[:lower:]')
+            if [ -n "$OUTPUT" ]; then
+                OUTPUT="${OUTPUT}|"
+            fi
+            case "$field_name" in
+                jobid) OUTPUT="${OUTPUT}${ROW_ID}" ;;
+                state) OUTPUT="${OUTPUT}${STATE}" ;;
+                exitcode) OUTPUT="${OUTPUT}${EXIT_FMT}" ;;
+                maxrss) OUTPUT="${OUTPUT}${ROW_RSS}" ;;
+                elapsed) OUTPUT="${OUTPUT}${ELAPSED_FMT}" ;;
+                nodelist) OUTPUT="${OUTPUT}${NODE}" ;;
+                jobname) OUTPUT="${OUTPUT}${JOB_NAME}" ;;
+                *) OUTPUT="${OUTPUT}?" ;;
+            esac
+        done
 
-    echo "$OUTPUT"
+        echo "$OUTPUT"
+    done
 done

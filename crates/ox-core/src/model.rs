@@ -1915,6 +1915,7 @@ impl fmt::Display for RunReason {
 ///     job_id: JobId("align-A".into()),
 ///     duration_ms: 1234,
 ///     outputs: vec!["results/A.bam".into()],
+///     peak_memory_bytes: Some(64 * 1024 * 1024),
 /// };
 /// if let Event::JobCompleted { duration_ms, .. } = &event {
 ///     assert_eq!(*duration_ms, 1234);
@@ -1952,7 +1953,8 @@ pub enum Event {
         #[serde(skip_serializing_if = "Option::is_none")]
         reason: Option<RunReason>,
     },
-    /// Emitted when a job finishes successfully.
+    /// Emitted when the scheduler accepts a finishing attempt as completed,
+    /// including a failed attempt under `ErrorStrategy::Ignore`.
     JobCompleted {
         /// The job that completed.
         job_id: JobId,
@@ -1960,6 +1962,10 @@ pub enum Event {
         duration_ms: u64,
         /// Paths or IDs of outputs produced.
         outputs: Vec<String>,
+        /// Peak memory of the finishing attempt, measured by the executor in
+        /// bytes when available. Earlier failed attempts are not accumulated.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        peak_memory_bytes: Option<u64>,
     },
     /// Emitted when a job fails.
     JobFailed {
@@ -3007,6 +3013,7 @@ mod tests {
             job_id: JobId::from("j1"),
             duration_ms: 500,
             outputs: vec!["out.txt".into()],
+            peak_memory_bytes: None,
         };
         assert_eq!(completed.to_string(), "completed j1 in 500ms");
 
@@ -3095,6 +3102,7 @@ mod tests {
                 job_id: JobId::from("j1"),
                 duration_ms: 500,
                 outputs: vec!["out.txt".into()],
+                peak_memory_bytes: Some(1024),
             },
             Event::JobFailed {
                 job_id: JobId::from("j1"),

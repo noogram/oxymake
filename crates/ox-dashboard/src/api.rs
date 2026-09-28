@@ -1534,6 +1534,7 @@ mod tests {
                 job_id: JobId::from("compile-X"),
                 duration_ms: 100,
                 outputs: vec![],
+                peak_memory_bytes: None,
             });
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 

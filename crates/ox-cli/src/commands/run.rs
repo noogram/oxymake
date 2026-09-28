@@ -652,6 +652,7 @@ fn record_fully_cached_run(
         executor,
         ox_state::host::hostname(),
         &HashMap::new(),
+        &HashMap::new(),
         provenance,
     );
     let _ = db.end_run(run_id, 0, 0, ids.len());
@@ -1852,6 +1853,10 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
 
     // Collect per-job duration_ms from events for the audit trail (ox-mnbb).
     let job_durations: Arc<Mutex<HashMap<String, u64>>> = Arc::new(Mutex::new(HashMap::new()));
+    // Preserve only executor-scoped peak-memory observations. Missing values
+    // stay absent so history can distinguish them from a measured zero (#24).
+    let job_peak_memory_bytes: Arc<Mutex<HashMap<String, u64>>> =
+        Arc::new(Mutex::new(HashMap::new()));
 
     // Set once the first shutdown signal is seen, so the post-scheduler
     // finalisation knows this run was interrupted rather than merely finished
@@ -2000,6 +2005,7 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
             let db_path = state_db_path.clone();
             let sid = session_id.clone().unwrap_or_default();
             let durations = Arc::clone(&job_durations);
+            let peak_memory = Arc::clone(&job_peak_memory_bytes);
             bridge_handles.push(tokio::spawn(async move {
                 let db = match ox_state::db::StateDb::open(&db_path) {
                     Ok(db) => db,
@@ -2014,6 +2020,7 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
                             Event::JobCompleted {
                                 ref job_id,
                                 duration_ms,
+                                peak_memory_bytes,
                                 ..
                             } => {
                                 // Claim first in case JobStarted was never received.
@@ -2023,6 +2030,12 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
                                     .lock()
                                     .await
                                     .insert(job_id.as_str().to_string(), duration_ms);
+                                if let Some(bytes) = peak_memory_bytes {
+                                    peak_memory
+                                        .lock()
+                                        .await
+                                        .insert(job_id.as_str().to_string(), bytes);
+                                }
                             }
                             Event::JobFailed {
                                 ref job_id,
@@ -2267,19 +2280,62 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
                         let mut still_running = false;
                         for job_id_str in dag_result.job_submissions.keys() {
                             let jid = JobId::from(job_id_str.as_str());
-                            match executor.poll_status(&jid).await {
-                                Ok(ox_core::traits::executor::JobStatus::Completed) => {
-                                    completed += 1;
-                                }
-                                Ok(ox_core::traits::executor::JobStatus::Failed(msg)) => {
-                                    eprintln!("  FAILED: {} — {}", job_id_str, msg);
-                                    failed += 1;
-                                }
-                                Ok(ox_core::traits::executor::JobStatus::Cancelled) => {
-                                    failed += 1;
-                                }
-                                Ok(_) => {
-                                    still_running = true;
+                            // DAG submission bypasses the core scheduler and its
+                            // JobCompleted events. Persist this poll's accounting
+                            // and terminal state directly for history finalization.
+                            match executor.poll_status_with_record(&jid).await {
+                                Ok((status, record)) => {
+                                    use ox_core::traits::executor::JobStatus;
+                                    if let (Some(db), Some(sid)) = (&state_db, &session_id) {
+                                        match &status {
+                                            JobStatus::Completed
+                                            | JobStatus::Failed(_)
+                                            | JobStatus::Running => {
+                                                let _ = db.claim_job(job_id_str, sid);
+                                            }
+                                            _ => {}
+                                        }
+                                        match &status {
+                                            JobStatus::Completed => {
+                                                let _ = db.complete_job(job_id_str, sid, 0, "");
+                                            }
+                                            JobStatus::Failed(_) => {
+                                                let exit = record.as_ref()
+                                                    .map(|r| r.exit_code)
+                                                    .filter(|c| *c != 0)
+                                                    .unwrap_or(1);
+                                                let _ = db.fail_job(job_id_str, sid, exit);
+                                            }
+                                            JobStatus::Cancelled => {
+                                                let _ = db.cancel_job_ids_for_session(
+                                                    std::slice::from_ref(job_id_str), sid,
+                                                );
+                                            }
+                                            _ => {}
+                                        }
+                                    }
+                                    match status {
+                                        JobStatus::Completed => {
+                                            completed += 1;
+                                            if let Some(record) = record {
+                                                job_durations.lock().await.insert(
+                                                    job_id_str.clone(), record.elapsed.as_millis() as u64,
+                                                );
+                                                if let Some(bytes) = record.peak_memory_bytes {
+                                                    job_peak_memory_bytes.lock().await
+                                                        .insert(job_id_str.clone(), bytes);
+                                                }
+                                            }
+                                        }
+                                        JobStatus::Failed(msg) => {
+                                            eprintln!("  FAILED: {} — {}", job_id_str, msg);
+                                            failed += 1;
+                                        }
+                                        JobStatus::Cancelled => {
+                                            failed += 1;
+                                        }
+                                        _ => still_running = true,
+                                    }
                                 }
                                 Err(e) => {
                                     eprintln!("  Warning: failed to poll {}: {}", job_id_str, e);
@@ -2580,6 +2636,7 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
     //   1. Mark any lingering "running" jobs as failed (crash / missing event).
     //   2. Record audit-trail history entries by reading final DB state (hq-9in00).
     let durations = job_durations.blocking_lock();
+    let peak_memory_bytes = job_peak_memory_bytes.blocking_lock();
     if let Some(db) = &state_db {
         // Mark any jobs still in 'running' state as failed. This catches
         // jobs that crashed without emitting a JobFailed event.
@@ -2623,6 +2680,7 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
             &args.executor,
             hostname,
             &durations,
+            &peak_memory_bytes,
             &cache_provenance,
         );
 
