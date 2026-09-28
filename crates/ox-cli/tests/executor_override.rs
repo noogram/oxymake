@@ -63,7 +63,12 @@ for arg do job_script="$arg"; done
 case "$job_script" in *local_work*) exit 91;; esac
 test "$(cat local.txt)" = host-witness || exit 92
 echo submitted >> submissions
-sh "$job_script" >&2 || exit 93
+# The generated script declares #!/bin/bash and uses bash-only features
+# (set -o pipefail). Honour its shebang: /bin/sh is dash on Debian-like
+# systems and bash on macOS, so `sh "$job_script"` passes locally and fails
+# on CI.
+chmod +x "$job_script"
+"$job_script" >&2 || exit 93
 echo 42
 "#,
     );
