@@ -63,6 +63,10 @@ mod tests {
     use std::time::Duration;
 
     #[test]
+    /// Characterises the formatter, which #24 did not change: it already
+    /// divided by 1024² and already wrote `-` for an absent value. What #24
+    /// changed is that the local executor now supplies `None`; the guards
+    /// for that live in the CLI and ox-exec-local test suites.
     fn formatter_keeps_schema_and_uses_mib_for_measured_rss() {
         let result = JobResult {
             job_id: JobId::from("measured"),
