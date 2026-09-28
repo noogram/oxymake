@@ -92,7 +92,7 @@ checkout pointing at the same directory re-executes unless that local index
 is transferred too. A remote computation-key manifest that removes this
 requirement is future work. See [Caching](../concepts/cache.md).
 
-**Interruption.** The first Ctrl+C (or `SIGTERM`, which is what
+**Local interruption.** The first Ctrl+C (or `SIGTERM`, which is what
 [`ox cancel`](#ox-cancel) sends) starts a graceful shutdown: the session is
 recorded `interrupted`, every in-flight job is marked `cancelled` in the
 ledger, and its process group gets `SIGTERM`. The shutdown is **bounded** —
@@ -108,6 +108,23 @@ A job failure without `--keep-going` is not an interruption: the run stops
 dispatching new jobs and lets the ones already running finish, then exits
 `1`. A Ctrl+C during that wait cancels them with the same bounded shutdown;
 the exit code stays `1`, since a job did fail.
+
+**Remote follow (`--executor ray|slurm --follow`).** Polling stops with exit
+code `1` after **three consecutive rounds containing a poll error**. An entirely
+successful round resets the counter, so one or two transient failures do not
+abort a long run. A successful poll of one job does not hide another job's
+persistent error. Ray waits 3 seconds between rounds and SLURM waits 5 seconds;
+request latency is additional, so this is a retry bound, not a wall-clock deadline.
+The summary names the endpoint and last error and reports last known job counts.
+
+The first Ctrl+C or `SIGTERM` stops following promptly, including during a poll
+request, and exits `130`. It reports `Follow interrupted` and last known counts.
+**Remote jobs are NOT cancelled**: unfinished Ray jobs or SLURM allocations may
+still be running. Use `ox status` to inspect them and `ox cancel` to stop them.
+Neither interruption nor endpoint loss is reported as `Completed`, and neither
+marks unfinished remote jobs failed or cancelled in the ledger. With `--json`,
+these outcomes emit `run_follow_stopped` with reason `interrupted` or
+`endpoint_unreachable`, the exit code, message, and last known counts.
 
 **Exit codes:**
 - `0` -- Success (all jobs succeeded or were cached)

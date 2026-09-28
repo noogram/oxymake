@@ -171,7 +171,11 @@ A submission acknowledgment means the driver was accepted. `--follow` reports
 its terminal failure, `ox status` refreshes failed driver state even without a
 results file, and `ox logs JOB` retrieves driver logs. `ox cancel` stops the
 shared Ray driver when any of its tasks is selected, cancelling the whole DAG,
-including queued tasks. Interrupting `--follow` also stops its driver.
+including queued tasks. Interrupting `--follow` stops the client with exit code
+`130`; it does **not** stop the driver. Use `ox status` to check remote work and
+`ox cancel` to stop it. Three consecutive poll rounds with errors end follow with
+exit code `1`, naming the dashboard and last error. An error-free round resets
+the counter. See [remote follow](../reference/commands.md#ox-run) for details.
 
 ### Running the live scheduling witnesses
 
