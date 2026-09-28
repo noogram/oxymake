@@ -15,3 +15,5 @@ pub mod optimization;
 pub mod remote_cache;
 pub mod reporter;
 pub mod storage;
+
+pub mod local_override;

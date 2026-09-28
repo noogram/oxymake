@@ -248,6 +248,10 @@ fn shell_quote(s: &str) -> String {
 }
 
 impl Executor for RayExecutor {
+    fn executor_name(&self, _job: &ConcreteJob) -> &str {
+        "ray"
+    }
+
     type Error = RayError;
 
     async fn init(&self) -> Result<(), Self::Error> {
@@ -636,6 +640,16 @@ impl Executor for RayExecutor {
         graph: &ox_core::job_graph::JobGraph,
         ctx: &ExecContext,
     ) -> Result<DagSubmission, Self::Error> {
+        let skip_jobs = self.skip_jobs.lock().await.clone();
+        for id in graph.job_ids() {
+            let job = graph.get_job(id).expect("graph job");
+            if !skip_jobs.contains(id) && job.executor.as_deref() == Some("local") {
+                return Err(RayError::CallModeError(format!(
+                    "rule '{}' declares executor = \"local\", which Ray DAG submission cannot honour; run these targets separately with ox run --executor local",
+                    job.rule
+                )));
+            }
+        }
         use std::collections::HashMap;
 
         let topo_order = graph
@@ -644,8 +658,6 @@ impl Executor for RayExecutor {
 
         let total_jobs = topo_order.len();
 
-        // Read cached jobs to skip.
-        let skip_jobs = self.skip_jobs.lock().await.clone();
         let skipped_count = topo_order
             .iter()
             .filter(|id| skip_jobs.contains(id))
@@ -900,6 +912,45 @@ fn take_captured_logs() -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
+
+    #[tokio::test]
+    async fn unsupported_local_override_dag() {
+        let mut job = ox_core::job_graph::make_test_job("on_host", &[], &["a"]);
+        job.executor = Some("local".into());
+        let graph = ox_core::job_graph::JobGraph::build(vec![job]).unwrap();
+        let executor = RayExecutor::new(RayConfig {
+            dashboard_address: "http://127.0.0.1:1".into(),
+            ..RayConfig::default()
+        })
+        .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = ExecContext {
+            global_job_limit: 1,
+            run_id: "override-test".into(),
+            log_dir: dir.path().into(),
+            project_dir: dir.path().into(),
+            trusted_dirs: vec![],
+            input_data: Default::default(),
+            memory_map: None,
+        };
+        let err = executor
+            .submit_dag(&graph, &ctx)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("on_host") && err.contains("local") && err.contains("DAG"),
+            "{err}"
+        );
+
+        executor
+            .set_skip_jobs(graph.job_ids().into_iter().cloned().collect())
+            .await;
+        let submission = executor.submit_dag(&graph, &ctx).await.unwrap();
+        assert_eq!(submission.submitted, 0);
+        assert_eq!(submission.skipped, 1);
+    }
+
     use super::*;
     use ox_core::job_graph::JobGraph;
     use ox_core::model::*;

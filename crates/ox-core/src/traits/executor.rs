@@ -216,6 +216,18 @@ pub trait Executor: Send + Sync + Debug {
     /// Error type specific to this executor.
     type Error: std::error::Error + Send + Sync + 'static;
 
+    /// Actual backend selected for a job, used by events and history.
+    /// Implementations that do not identify themselves report "unknown".
+    fn executor_name(&self, _job: &ConcreteJob) -> &str {
+        "unknown"
+    }
+
+    /// Whether this job consumes the scheduler's per-run resource budget.
+    /// Routing adapters can exclude jobs whose resources are admitted remotely.
+    fn uses_resource_budget(&self, _job: &ConcreteJob) -> bool {
+        true
+    }
+
     // -- Lifecycle --
 
     /// Initialize the executor (validate configuration, check connectivity).

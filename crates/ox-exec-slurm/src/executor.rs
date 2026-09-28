@@ -402,6 +402,10 @@ impl SlurmExecutor {
 }
 
 impl Executor for SlurmExecutor {
+    fn executor_name(&self, _job: &ConcreteJob) -> &str {
+        "slurm"
+    }
+
     type Error = SlurmError;
 
     async fn init(&self) -> Result<(), Self::Error> {
@@ -716,14 +720,22 @@ impl Executor for SlurmExecutor {
         graph: &ox_core::job_graph::JobGraph,
         ctx: &ExecContext,
     ) -> Result<DagSubmission, Self::Error> {
+        let skip_jobs = self.skip_jobs.lock().await.clone();
+        for id in graph.job_ids() {
+            let job = graph.get_job(id).expect("graph job");
+            if !skip_jobs.contains(id) && job.executor.as_deref() == Some("local") {
+                return Err(SlurmError::SubmitFailed(format!(
+                    "rule '{}' declares executor = \"local\"; SLURM DAG submission cannot honour it, use the scheduler with local routing",
+                    job.rule
+                )));
+            }
+        }
         let topo_order = graph
             .topological_order()
             .map_err(|e| SlurmError::SubmitFailed(format!("topological sort failed: {e}")))?;
 
         let total_jobs = topo_order.len();
 
-        // Read cached jobs to skip.
-        let skip_jobs = self.skip_jobs.lock().await.clone();
         let skipped_count = topo_order
             .iter()
             .filter(|id| skip_jobs.contains(id))
@@ -911,6 +923,41 @@ fn record_to_job_result(
 
 #[cfg(test)]
 mod tests {
+
+    #[tokio::test]
+    async fn unsupported_local_override_dag() {
+        let mut job = ox_core::job_graph::make_test_job("on_host", &[], &["a"]);
+        job.executor = Some("local".into());
+        let graph = ox_core::job_graph::JobGraph::build(vec![job]).unwrap();
+        let executor = SlurmExecutor::new(SlurmConfig::default(), ox_core::event::EventBus::new());
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = ExecContext {
+            global_job_limit: 1,
+            run_id: "override-test".into(),
+            log_dir: dir.path().into(),
+            project_dir: dir.path().into(),
+            trusted_dirs: vec![],
+            input_data: Default::default(),
+            memory_map: None,
+        };
+        let err = executor
+            .submit_dag(&graph, &ctx)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("on_host") && err.contains("local") && err.contains("DAG"),
+            "{err}"
+        );
+
+        executor
+            .set_skip_jobs(graph.job_ids().into_iter().cloned().collect())
+            .await;
+        let submission = executor.submit_dag(&graph, &ctx).await.unwrap();
+        assert_eq!(submission.submitted, 0);
+        assert_eq!(submission.skipped, 1);
+    }
+
     use super::*;
     use crate::slurm_cli::SacctRecord;
 

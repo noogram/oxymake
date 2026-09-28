@@ -693,6 +693,10 @@ impl LocalExecutor {
 }
 
 impl Executor for LocalExecutor {
+    fn executor_name(&self, _job: &ConcreteJob) -> &str {
+        "local"
+    }
+
     type Error = ExecLocalError;
 
     /// Initialize the executor.  No-op for local execution.

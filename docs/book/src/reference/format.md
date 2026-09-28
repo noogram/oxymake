@@ -75,6 +75,29 @@ artifacts, such as machine code, must use `"exact"`. The parser rejects
 `reproducibility = "non_reproducible"`; `"approximate"` and
 `"seed_deterministic"` are allowed.
 
+### Executor override
+
+A rule may declare `executor = "local"` to run on the host running `ox`.
+It is a no-op in a local run. In a SLURM run, selecting an uncached job with this override uses
+the local scheduler for the selected graph: local rules execute on this host,
+other rules use SLURM, and `ox run` waits for completion even without
+`--follow`. Dependencies, cache checks, retries, logs, cancellation and
+the `--jobs` limit still go through the scheduler. This limit also bounds
+cluster submissions and defaults to 1; `ox` must stay alive. Both hosts must already
+see the input and output files through a shared filesystem.
+
+Ray's whole-DAG driver cannot execute a task on the submitting host.
+An active job declaring `executor = "local"` is therefore rejected
+before Ray submission, including with `--follow`. Use a separate local run
+for those targets. Cached jobs and jobs excluded by target selection,
+`--until`, or `--omit-from` neither block Ray nor switch SLURM dispatch.
+
+Only the exact value `"local"` is accepted. Other values are parse errors
+naming the rule; choose the run's backend with `ox run --executor`.
+Per-rule site placement, several remote backends in one run, and artifact
+transfer inside a run are outside this field's scope. Job-start events and
+history record the executor selected for each executed job.
+
 ### Output cleanup
 
 `clean_outputs` is an optional per-rule string (currently local-executor only):
@@ -236,7 +259,10 @@ consumes no resource tokens and still uses one `-j` / `--jobs` slot. Zero
 demand fits zero capacity; a positive demand against zero capacity, or any
 demand exceeding total capacity, is a configuration error naming the job and
 resource before execution of the selected DAG starts, even when every job is
-cached. Rules outside that DAG do not participate in validation.
+cached. Rules excluded by target selection, `--until` or `--omit-from` do not
+participate in validation. In mixed SLURM runs, only locally routed jobs
+consume this budget; remote jobs retain their SLURM resource requests. Pure
+remote runs reject `--resource-budget`.
 
 `-j N` caps concurrent jobs, while `--resource-budget` caps resources held by
 those jobs. This is distinct from `--memory-budget`, which caps in-memory

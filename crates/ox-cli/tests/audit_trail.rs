@@ -315,8 +315,10 @@ fn history_surfaces_measured_and_unavailable_peak_memory() {
         .unwrap()
         .split_whitespace()
         .collect();
-    assert_eq!(measured_fields[3], "1");
-    assert_eq!(unavailable_fields[3], "-");
+    assert_eq!(measured_fields[2], "slurm");
+    assert_eq!(unavailable_fields[2], "slurm");
+    assert_eq!(measured_fields[4], "1");
+    assert_eq!(unavailable_fields[4], "-");
 }
 
 /// Issue #12 item 4: a run that aborts recorded `0/0/0`, so it was
