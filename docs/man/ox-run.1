@@ -19,7 +19,7 @@ Maximum concurrent jobs (must be at least 1)
 \fB\-\-resource\-budget\fR \fI<KEY=VALUE>\fR
 Per\-run local resource capacity for job admission (repeatable; comma\-separated).
 
-Uses the portable resource names and units, for example `\-\-resource\-budget cpu=6,mem_gb=32 \-\-resource\-budget metal=1`. This limits resources held by admitted jobs; it does not detect host capacity or coordinate with other `ox run` processes.
+Uses the portable resource names and units, for example `\-\-resource\-budget cpu=6,mem_gb=32 \-\-resource\-budget metal=1`. This limits resources held by admitted jobs; it does not detect host capacity or coordinate with other `ox run` processes. In mixed SLURM runs it applies only to jobs routed locally. Pure remote runs reject it.
 .TP
 \fB\-\-rule\fR \fI<RULE>\fR
 Filter by rule name (exact or /regex/)

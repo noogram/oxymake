@@ -35,7 +35,8 @@ ox run --no-cache               # Ignore the cache, re-run everything
 - `--resource-budget KEY=VALUE` -- Per-run local admission capacity; repeat
   the flag or separate pairs with commas, for example `cpu=6,mem_gb=32`.
   Uses the portable [resource aliases and units](format.md#resources), and is
-  only available with `--executor local`.
+  available with `--executor local` or for locally routed jobs in mixed SLURM
+  runs. Pure remote runs reject it.
 - `--rule RULE` -- Only run jobs from this rule (exact name or `/regex/`)
 - `-k`, `--keep-going` -- Continue independent jobs after a failure
 - `-n`, `--dry-run` -- Show what would run without executing
@@ -46,9 +47,11 @@ ox run --no-cache               # Ignore the cache, re-run everything
 - `--cache-remote DIR` -- Share output blobs through a directory blob store
   (forces `hash` validation; see below)
 - `--executor EXEC` -- Choose executor: `local` (default), `slurm`, `ray`.
-  A SLURM graph containing a rule with `executor = "local"` runs through the
-  scheduler and waits for completion, including without `--follow`. Ray DAG
-  runs reject that override. See [Executor override](format.md#executor-override).
+  A SLURM graph with an active rule declaring `executor = "local"` uses
+  scheduler dispatch and waits for completion, including without `--follow`.
+  `--jobs` bounds cluster submissions too (default: 1); `ox` must stay alive.
+  Ray DAG runs reject active local overrides. Pruned or cached local jobs do
+  not change dispatch. See [Executor override](format.md#executor-override).
 - `--ray-allow-pending` -- Ray only; skip the default live-node feasibility
   check and allow waiting for a future node. Resource values and names are
   still validated. Using this flag with another executor is a usage error. It
@@ -56,7 +59,7 @@ ox run --no-cache               # Ignore the cache, re-run everything
 
 `-j N` and `--resource-budget` control different limits. `-j N` limits the
 number of concurrently running jobs. `--resource-budget` limits the declared
-resources those admitted jobs may hold; it does not change the job count, so a
+local resources those admitted jobs may hold; it does not change the job count, so a
 rule with no resource declaration still uses one `-j` slot but reserves no
 resource tokens. `--memory-budget` is separate again: it controls how much
 completed output OxyMake keeps in memory, not whether a job may start.
@@ -241,12 +244,11 @@ ox logs --failed            # Logs for all failed jobs
 
 ### `ox history`
 
+List past runs.
+
 Per-job detail includes the executor selected for each executed job, including
 local overrides in SLURM runs. The text table has an `EXECUTOR` column; JSON
 uses `executor`.
-
-
-List past runs.
 
 ```bash
 ox history                     # Recent runs

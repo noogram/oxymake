@@ -222,6 +222,12 @@ pub trait Executor: Send + Sync + Debug {
         "unknown"
     }
 
+    /// Whether this job consumes the scheduler's per-run resource budget.
+    /// Routing adapters can exclude jobs whose resources are admitted remotely.
+    fn uses_resource_budget(&self, _job: &ConcreteJob) -> bool {
+        true
+    }
+
     // -- Lifecycle --
 
     /// Initialize the executor (validate configuration, check connectivity).

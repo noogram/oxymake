@@ -18,18 +18,35 @@ executor = "local"
 shell = "echo ready > prepared.txt"
 ```
 
-When a selected graph contains this override, `ox run --executor slurm`
-runs the graph through the scheduler and waits for completion. Other rules
-still use SLURM, one job at a time per available scheduler slot; native DAG
-submission and job arrays are not used for this mixed run. The usual cache,
-retry, logging and cancellation paths apply. A shared filesystem must make
-dependencies visible on both hosts; OxyMake does not transfer artifacts
-between them. `--json` job-start events and `ox history --run-id ... --json`
-report each executed job's actual backend.
+When the selected, uncached jobs contain this override, `ox run --executor
+slurm` uses scheduler dispatch instead of DAG submission and waits for
+completion, including without `--follow`. Other rules still use SLURM.
+`--jobs N` bounds concurrent jobs, including cluster submissions, and defaults
+to **1**: with default flags, independent cluster jobs run one at a time.
+Increase `--jobs` to allow concurrent submissions. **The `ox` process must stay
+alive until the run completes.** A notice at run start explains this switch
+and prints the current job limit. Native DAG submission and job arrays are
+not used for mixed runs.
+
+`--resource-budget` is allowed in a mixed SLURM run and applies only to jobs
+routed locally. For example, `--jobs 8 --resource-budget cpu=2` permits up to
+eight concurrent jobs while admitting at most two declared local CPU tokens.
+Remote jobs keep their SLURM resource requests and consume no local budget.
+Admission validates selected local declarations even when cached; rules
+excluded by `--until` or `--omit-from` do not participate. Pure remote runs
+reject this local admission flag.
+
+The usual cache, retry, logging and cancellation paths apply. A shared
+filesystem must make dependencies visible on both hosts; OxyMake does not
+transfer artifacts between them. `--json` job-start events and
+`ox history --run-id ... --json` report each executed job's actual backend.
 
 The only rule-level value is `"local"`; backend selection belongs to
-`ox run --executor`. Ray's whole-DAG path rejects the override. Site placement
-and multiple remote executors within one run are outside this feature's scope.
+`ox run --executor`. Ray's whole-DAG path rejects active local overrides.
+Overrides excluded by target selection, `--until`, `--omit-from`, or cache
+checks neither block Ray nor switch SLURM away from DAG submission. Forced
+reruns count as active work. Site placement and multiple remote executors
+within one run are outside this feature's scope.
 
 ## The Three Graphs Meet SLURM
 

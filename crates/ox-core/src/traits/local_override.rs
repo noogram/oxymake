@@ -44,14 +44,17 @@ impl<R: Executor, L: Executor> LocalOverrideExecutor<R, L> {
     }
 }
 
-fn error(e: impl std::fmt::Display) -> ExecError {
-    ExecError::Executor {
-        message: e.to_string(),
-    }
+/// Backend error preserved without adding another executor-error prefix.
+#[derive(Debug, thiserror::Error)]
+#[error(transparent)]
+pub struct LocalOverrideError(Box<dyn std::error::Error + Send + Sync>);
+
+fn error(e: impl std::error::Error + Send + Sync + 'static) -> LocalOverrideError {
+    LocalOverrideError(Box::new(e))
 }
 
 impl<R: Executor, L: Executor> Executor for LocalOverrideExecutor<R, L> {
-    type Error = ExecError;
+    type Error = LocalOverrideError;
 
     fn executor_name(&self, job: &ConcreteJob) -> &str {
         if self.is_local(&job.id) {
@@ -59,6 +62,9 @@ impl<R: Executor, L: Executor> Executor for LocalOverrideExecutor<R, L> {
         } else {
             self.remote.executor_name(job)
         }
+    }
+    fn uses_resource_budget(&self, job: &ConcreteJob) -> bool {
+        self.is_local(&job.id) && self.local.uses_resource_budget(job)
     }
     async fn init(&self) -> Result<(), Self::Error> {
         self.remote.init().await.map_err(error)?;
@@ -74,12 +80,20 @@ impl<R: Executor, L: Executor> Executor for LocalOverrideExecutor<R, L> {
         remote.and(local)
     }
     fn capabilities(&self) -> ExecutorCapabilities {
-        // Cross-executor memory passing, arrays and DAG submission are not
-        // supported by the adapter.
+        // These are graph-wide promises: neither backend's capabilities can
+        // establish that memory/streams/shadow workspaces cross the host
+        // boundary. Keep the conservative per-job path; each backend still
+        // handles its own GPU and timeout requests. Arrays and DAG submission
+        // would bypass routing, so they must remain disabled.
         ExecutorCapabilities::default()
     }
     fn max_concurrency(&self) -> Option<usize> {
-        None
+        // A single global cap cannot express independent backend limits.
+        // The stricter cap is conservative even if all jobs route to one side.
+        match (self.remote.max_concurrency(), self.local.max_concurrency()) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        }
     }
     async fn prepare_workspace(
         &self,
@@ -150,9 +164,10 @@ impl<R: Executor, L: Executor> Executor for LocalOverrideExecutor<R, L> {
         _graph: &JobGraph,
         _ctx: &ExecContext,
     ) -> Result<DagSubmission, Self::Error> {
-        Err(error(
-            "local overrides require per-job scheduler execution, not DAG submission",
-        ))
+        Err(error(ExecError::Executor {
+            message: "local overrides require per-job scheduler execution, not DAG submission"
+                .into(),
+        }))
     }
 }
 
@@ -194,7 +209,7 @@ mod tests {
             ExecutorCapabilities::default()
         }
         fn max_concurrency(&self) -> Option<usize> {
-            None
+            Some(if self.name == "local" { 2 } else { 4 })
         }
         async fn prepare_workspace(
             &self,
@@ -269,6 +284,41 @@ mod tests {
             input_data: Default::default(),
             memory_map: None,
         }
+    }
+
+    #[test]
+    fn adapter_keeps_backend_limits_and_scopes_admission() {
+        let mut local = make_test_job("local", &[], &["a"]);
+        local.executor = Some("local".into());
+        let remote = make_test_job("remote", &[], &["b"]);
+        let graph = JobGraph::build(vec![local.clone(), remote.clone()]).unwrap();
+        let router = LocalOverrideExecutor::new(
+            Witness {
+                name: "slurm",
+                calls: Default::default(),
+            },
+            Witness {
+                name: "local",
+                calls: Default::default(),
+            },
+            &graph,
+        );
+        assert_eq!(router.max_concurrency(), Some(2));
+        assert!(router.uses_resource_budget(&local));
+        assert!(!router.uses_resource_budget(&remote));
+        let caps = router.capabilities();
+        assert!(!caps.supports_dag_submission);
+        assert!(!caps.supports_job_arrays);
+        assert!(!caps.supports_memory_passing);
+    }
+
+    #[test]
+    fn adapter_preserves_error_display() {
+        let original = ExecError::Executor {
+            message: "job timed out".into(),
+        };
+        let expected = original.to_string();
+        assert_eq!(error(original).to_string(), expected);
     }
 
     #[tokio::test(start_paused = true)]

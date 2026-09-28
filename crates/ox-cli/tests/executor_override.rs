@@ -84,6 +84,14 @@ echo 42
         .timeout(Duration::from_secs(30))
         .assert()
         .success()
+        .stderr(
+            predicate::str::contains("local override")
+                .and(predicate::str::contains(
+                    "scheduler dispatch instead of DAG submission",
+                ))
+                .and(predicate::str::contains("--jobs=1"))
+                .and(predicate::str::contains("must stay alive")),
+        )
         .get_output()
         .stdout
         .clone();
@@ -326,4 +334,260 @@ shell = "touch started; sleep 30; touch out.txt"
         .unwrap();
     assert_eq!(status, "cancelled");
     assert_eq!(executor, "local");
+}
+
+fn mock_slurm(dir: &TempDir) -> std::ffi::OsString {
+    let bin = dir.path().join("bin");
+    fs::create_dir(&bin).unwrap();
+    script(&bin, "sinfo", "echo 'slurm 24.11'");
+    script(&bin, "sbatch", "echo submitted >> submissions; echo 42");
+    script(&bin, "sacct", "echo '42|COMPLETED|0:0||00:00:01|mock-node'");
+    script(&bin, "scancel", "exit 0");
+    std::env::join_paths(
+        std::iter::once(bin).chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
+    )
+    .unwrap()
+}
+
+#[test]
+fn ray_omitted_local_rule_does_not_refuse_remote_target() {
+    let dir = TempDir::new().unwrap();
+    workflow(&dir, "local");
+    let file = dir.path().join("Oxymakefile.toml");
+    fs::write(
+        &file,
+        fs::read_to_string(&file)
+            .unwrap()
+            .replace("input = [\"local.txt\"]", ""),
+    )
+    .unwrap();
+    Command::cargo_bin("ox")
+        .unwrap()
+        .args([
+            "run",
+            "local.txt",
+            "remote.txt",
+            "--executor",
+            "ray",
+            "--omit-from",
+            "local_work",
+            "--ray-address",
+            "http://127.0.0.1:1",
+        ])
+        .current_dir(dir.path())
+        .timeout(Duration::from_secs(10))
+        .assert()
+        .failure()
+        .stderr(
+            predicate::str::contains("executor = \"local\"")
+                .not()
+                .and(predicate::str::contains("127.0.0.1:1")),
+        );
+}
+
+#[test]
+fn cached_local_rule_preserves_slurm_dag_submission() {
+    let dir = TempDir::new().unwrap();
+    workflow(&dir, "local");
+    Command::cargo_bin("ox")
+        .unwrap()
+        .args(["run", "local.txt"])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+    Command::cargo_bin("ox")
+        .unwrap()
+        .args(["run", "remote.txt", "--executor", "slurm"])
+        .env("PATH", mock_slurm(&dir))
+        .current_dir(dir.path())
+        .timeout(Duration::from_secs(15))
+        .assert()
+        .success()
+        .stderr(
+            predicate::str::contains("DAG submitted to SLURM")
+                .and(predicate::str::contains("scheduler dispatch").not()),
+        );
+    assert_eq!(
+        fs::read_to_string(dir.path().join("submissions"))
+            .unwrap()
+            .lines()
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn mixed_budget_admits_only_local_jobs() {
+    let dir = TempDir::new().unwrap();
+    workflow(&dir, "local");
+    let file = dir.path().join("Oxymakefile.toml");
+    let source = fs::read_to_string(&file)
+        .unwrap()
+        .replace(
+            "[rule.local_work]",
+            "[rule.local_work]\nresources = { cpu = 1 }",
+        )
+        .replace(
+            "[rule.remote_work]",
+            "[rule.remote_work]\nresources = { cpu = 64 }",
+        );
+    fs::write(&file, &source).unwrap();
+    let path = mock_slurm(&dir);
+    // The remote demand must not be compared with the local capacity.
+    Command::cargo_bin("ox")
+        .unwrap()
+        .args([
+            "run",
+            "remote.txt",
+            "--executor",
+            "slurm",
+            "--resource-budget",
+            "cpu=1",
+        ])
+        .env("PATH", &path)
+        .current_dir(dir.path())
+        .timeout(Duration::from_secs(15))
+        .assert()
+        .success();
+    // A local demand above capacity must fail before any execution/submission.
+    fs::remove_file(dir.path().join("local.txt")).unwrap();
+    fs::remove_file(dir.path().join("submissions")).unwrap();
+    fs::write(&file, source.replace("cpu = 1", "cpu = 2")).unwrap();
+    Command::cargo_bin("ox")
+        .unwrap()
+        .args([
+            "run",
+            "remote.txt",
+            "--executor",
+            "slurm",
+            "--resource-budget",
+            "cpu=1",
+        ])
+        .env("PATH", path)
+        .current_dir(dir.path())
+        .timeout(Duration::from_secs(15))
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("more than the whole budget"));
+    assert!(!dir.path().join("local.txt").exists());
+    assert!(!dir.path().join("submissions").exists());
+}
+
+#[test]
+fn mixed_budget_serializes_local_demands_with_multiple_job_slots() {
+    let dir = TempDir::new().unwrap();
+    fs::write(
+        dir.path().join("Oxymakefile.toml"),
+        r#"
+[rule.a]
+output = ["a.txt"]
+executor = "local"
+resources = { cpu = 1 }
+shell = "sleep 1; touch a.txt"
+[rule.b]
+output = ["b.txt"]
+executor = "local"
+resources = { cpu = 1 }
+shell = "sleep 1; touch b.txt"
+[rule.omitted]
+output = ["omitted.txt"]
+executor = "local"
+resources = { cpu = 999 }
+shell = "exit 99"
+[rule.remote]
+output = ["remote.txt"]
+resources = { cpu = 64 }
+shell = "touch remote.txt"
+"#,
+    )
+    .unwrap();
+    let output = Command::cargo_bin("ox")
+        .unwrap()
+        .args([
+            "run",
+            "a.txt",
+            "b.txt",
+            "remote.txt",
+            "omitted.txt",
+            "--omit-from",
+            "omitted",
+            "--executor",
+            "slurm",
+            "-j",
+            "3",
+            "--resource-budget",
+            "cpu=1",
+            "--json",
+        ])
+        .env("PATH", mock_slurm(&dir))
+        .current_dir(dir.path())
+        .timeout(Duration::from_secs(15))
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("--jobs=3"))
+        .get_output()
+        .stdout
+        .clone();
+    let mut active_local = std::collections::HashSet::new();
+    let mut local_started = 0;
+    let mut remote_started = 0;
+    for event in events(&output) {
+        if event["event"] == "job_started" {
+            if event["executor"] == "local" {
+                assert!(active_local.is_empty(), "local budget exceeded: {output:?}");
+                active_local.insert(event["job_id"].as_str().unwrap().to_string());
+                local_started += 1;
+            } else {
+                remote_started += 1;
+            }
+        } else if event["event"] == "job_completed" {
+            active_local.remove(event["job_id"].as_str().unwrap());
+        }
+    }
+    assert_eq!(local_started, 2);
+    assert_eq!(remote_started, 1);
+    assert!(active_local.is_empty());
+}
+
+#[test]
+fn cached_local_rule_allows_ray_but_forcerun_restores_refusal() {
+    let dir = TempDir::new().unwrap();
+    workflow(&dir, "local");
+    Command::cargo_bin("ox")
+        .unwrap()
+        .args(["run", "local.txt"])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+    Command::cargo_bin("ox")
+        .unwrap()
+        .args([
+            "run",
+            "local.txt",
+            "--executor",
+            "ray",
+            "--ray-address",
+            "http://127.0.0.1:1",
+        ])
+        .current_dir(dir.path())
+        .timeout(Duration::from_secs(10))
+        .assert()
+        .success();
+    Command::cargo_bin("ox")
+        .unwrap()
+        .args([
+            "run",
+            "local.txt",
+            "--executor",
+            "ray",
+            "--forcerun",
+            "local_work",
+            "--ray-address",
+            "http://127.0.0.1:1",
+        ])
+        .current_dir(dir.path())
+        .timeout(Duration::from_secs(10))
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("executor = \"local\""));
 }
