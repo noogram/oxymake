@@ -1,6 +1,6 @@
 //! Checked normalization of declared resource keys and values.
 //!
-//! The raw [`ResourceValue`](crate::model::ResourceValue) maps remain part of
+//! The raw [`ResourceValue`] maps remain part of
 //! the workflow and job model. This module computes a canonical side-car form
 //! for admission and executor adapters without changing serialization or
 //! cache inputs.
