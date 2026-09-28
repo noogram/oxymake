@@ -303,7 +303,7 @@ for remote submissions, cancellable jobs and current run membership are
 
 The resource-normalization Rust API in `ox_core::resource` is likewise
 **unstable**. It provides the checked canonical form shared by executor
-adapters and future admission paths while leaving raw rule and job declarations
+adapters and local scheduler admission while leaving raw rule and job declarations
 unchanged.
 
 ---

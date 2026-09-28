@@ -88,10 +88,13 @@ use tokio::task::JoinSet;
 use tracing::{debug, info, warn};
 
 use crate::disk_writer::{DiskWriteRequest, DiskWriterHandle};
-use crate::error::{ExecError, OxError};
+use crate::error::{ExecError, OxError, ParseError};
 use crate::event::EventBus;
 use crate::job_graph::{JobGraph, output_ref_key};
 use crate::model::*;
+use crate::resource::{
+    CanonicalResource, NormalizedResources, canonicalize_resource_key, normalize_resources,
+};
 use crate::traits::benchmark::BenchmarkSink;
 use crate::traits::cache::{CacheCheck, OutputHashes};
 use crate::traits::claim::{ClaimOutcome, JobClaim, PeerJobState};
@@ -151,7 +154,10 @@ pub struct SchedulerConfig {
     /// Maximum concurrent jobs.
     pub max_jobs: usize,
     /// Resource budget (e.g., {"cpu": 16, "mem_mb": 32000}).
-    /// Not enforced in v0.1 — concurrency is bounded only by `max_jobs`.
+    /// Per-run admission capacity, using the checked resource alias contract.
+    /// Only listed resources are enforced; empty preserves unconstrained dispatch.
+    /// Counts use whole tokens here; demands may use 1/10000-token fractions.
+    /// Memory aliases are converted to whole bytes. This is not host containment.
     pub resource_budget: BTreeMap<String, u64>,
     /// Whether to continue on independent branches after failure.
     pub keep_going: bool,
@@ -542,7 +548,19 @@ pub async fn run_scheduler_with_claims<E: Executor + 'static>(
         })
     })?;
 
-    let resource_budget = ResourceBudget::new(config.resource_budget.clone());
+    let resource_budget = ResourceBudget::try_new(config.resource_budget.clone())?;
+    // Validate only this selected DAG, before cache checks, claims, events or
+    // executor preparation (which may delete outputs). Keep exact demands as
+    // side cars: raw declarations and cache keys are unchanged.
+    let mut demands = HashMap::new();
+    for job_id in &topo_order {
+        let job = graph.get_job(job_id).expect("topological job exists");
+        let demand = resource_budget
+            .normalize_demand(&job.resources)
+            .map_err(|e| resource_config_error(format!("job {job_id}: {e}")))?;
+        resource_budget.validate(job_id, &demand)?;
+        demands.insert((*job_id).clone(), demand);
+    }
     let mut sched_state = match config.resume_snapshot.as_ref() {
         Some(snapshot) => Frontier::resume(
             &topo_order,
@@ -750,7 +768,7 @@ pub async fn run_scheduler_with_claims<E: Executor + 'static>(
                         s.set_status(job_id.clone(), JobLifecycle::Skipped);
                         s.promote_downstream(job_id, graph);
                         DispatchOutcome::Skipped
-                    } else if !s.resource_budget.fits(&job.resources) {
+                    } else if !s.resource_budget.fits_units(&demands[job_id]) {
                         // 1. Resource budget gate — defer this job if it
                         //    doesn't fit; smaller jobs may still proceed.
                         s.ready_frontier.insert(job_id.clone());
@@ -773,7 +791,8 @@ pub async fn run_scheduler_with_claims<E: Executor + 'static>(
                                 //    under the same lock. The resource guard
                                 //    travels with the task and releases on
                                 //    Drop, even if the task is aborted (H8).
-                                let resource_guard = s.resource_budget.acquire(&job.resources);
+                                let resource_guard =
+                                    s.resource_budget.acquire_units(&demands[job_id]);
                                 s.set_status(job_id.clone(), JobLifecycle::Running);
                                 let input_data = s.collect_input_data(&job);
                                 DispatchOutcome::Go {
@@ -1011,6 +1030,23 @@ pub async fn run_scheduler_with_claims<E: Executor + 'static>(
             }
         }
 
+        let retry_at = if terminate_requested {
+            None
+        } else {
+            let s = state.lock().await;
+            s.retry_ready_at
+                .iter()
+                .filter(|(id, _)| matches!(s.get_status(id), Some(JobLifecycle::Pending)))
+                .map(|(_, at)| *at)
+                .min()
+        };
+        let retry_wait = async {
+            match retry_at {
+                Some(at) => tokio::time::sleep_until(at).await,
+                None => std::future::pending().await,
+            }
+        };
+
         // 3. Wait for at least one completion if jobs are in flight,
         //    while also monitoring for a shutdown signal (SIGINT).
         if !in_flight.is_empty() {
@@ -1074,6 +1110,8 @@ pub async fn run_scheduler_with_claims<E: Executor + 'static>(
                 // peer completion would only be noticed on our next local
                 // completion.
                 _ = tokio::time::sleep(GATE_POLL_INTERVAL), if !peer_waits.is_empty() && !terminate_requested => {}
+
+                _ = retry_wait => {}
 
                 // Normal completion path.
                 join_result = join_set.join_next() => {
@@ -1183,6 +1221,7 @@ pub async fn run_scheduler_with_claims<E: Executor + 'static>(
                     shutdown_received = true;
                     terminate_requested = true;
                 }
+                _ = retry_wait => {}
                 _ = tokio::time::sleep(GATE_POLL_INTERVAL) => {}
             }
         }
@@ -1257,75 +1296,140 @@ struct ResourceBudget {
     inner: Arc<std::sync::Mutex<ResourceBudgetInner>>,
 }
 
+type ResourceAmounts = BTreeMap<CanonicalResource, u64>;
+
+fn resource_config_error(reason: String) -> OxError {
+    ParseError::InvalidField {
+        field: "resource_budget".into(),
+        reason,
+    }
+    .into()
+}
+
+// C0 owns all parsing and conversion. Here we only expose the normalized
+// integer representation for comparison and accounting.
+fn resource_amounts(resources: NormalizedResources) -> ResourceAmounts {
+    let mut amounts = BTreeMap::new();
+    if let Some(cpu) = resources.cpu {
+        amounts.insert(CanonicalResource::Cpu, cpu.ten_thousandths());
+    }
+    if let Some(gpu) = resources.gpu {
+        amounts.insert(CanonicalResource::Gpu, gpu.ten_thousandths());
+    }
+    if let Some(bytes) = resources.memory_bytes {
+        amounts.insert(CanonicalResource::Memory, bytes);
+    }
+    amounts.extend(
+        resources
+            .custom
+            .into_iter()
+            .map(|(name, count)| (CanonicalResource::Custom(name), count.ten_thousandths())),
+    );
+    amounts
+}
+
 #[derive(Debug)]
 struct ResourceBudgetInner {
-    /// Total capacity per resource key (from config).
-    capacity: BTreeMap<String, u64>,
-    /// Currently consumed per resource key (sum of running jobs' resources).
-    in_use: BTreeMap<String, u64>,
+    capacity: ResourceAmounts,
+    in_use: ResourceAmounts,
+    #[cfg(test)]
+    history: Vec<(bool, ResourceAmounts)>,
 }
 
 impl ResourceBudget {
-    fn new(capacity: BTreeMap<String, u64>) -> Self {
-        Self {
+    fn try_new(capacity: BTreeMap<String, u64>) -> Result<Self, OxError> {
+        // Decimal strings preserve the entire u64 domain without an i64 cast.
+        let raw = capacity
+            .into_iter()
+            .map(|(key, value)| (key, ResourceValue::Str(value.to_string())))
+            .collect();
+        let capacity = resource_amounts(
+            normalize_resources(&raw).map_err(|e| resource_config_error(e.to_string()))?,
+        );
+        let budget = Self {
             inner: Arc::new(std::sync::Mutex::new(ResourceBudgetInner {
                 capacity,
                 in_use: BTreeMap::new(),
+                #[cfg(test)]
+                history: Vec::new(),
             })),
-        }
+        };
+        #[cfg(test)]
+        tests::c2_tests::observe(&budget);
+        Ok(budget)
     }
 
-    /// Check whether a job's resource requirements fit within the remaining
-    /// budget. Returns `true` if the job can be dispatched.
-    ///
-    /// For each resource key declared by the job:
-    /// - If the budget has a limit for that key, the job's requirement must fit
-    ///   within `capacity - in_use`.
-    /// - If the budget has no limit for that key, the resource is unconstrained.
-    ///
-    /// Resource values that cannot be converted to `u64` (unparseable strings)
-    /// are treated as unconstrained (logged but not blocking).
-    fn fits(&self, job_resources: &BTreeMap<String, ResourceValue>) -> bool {
+    fn normalize_demand(
+        &self,
+        raw: &BTreeMap<String, ResourceValue>,
+    ) -> Result<ResourceAmounts, crate::resource::ResourceError> {
         let inner = self.inner.lock().expect("resource budget lock poisoned");
         if inner.capacity.is_empty() {
-            return true;
+            return Ok(BTreeMap::new());
         }
-        for (key, value) in job_resources {
-            if let Some(&cap) = inner.capacity.get(key) {
-                let required = match value.as_u64() {
-                    Some(v) => v,
-                    None => continue, // Unparseable → unconstrained.
-                };
-                let used = inner.in_use.get(key).copied().unwrap_or(0);
-                if used.saturating_add(required) > cap {
-                    return false;
-                }
-            }
-        }
-        true
+        // An unbudgeted declaration is not interpreted, including its value.
+        let constrained = raw
+            .iter()
+            .filter(|(key, _)| {
+                canonicalize_resource_key(key).is_ok_and(|key| inner.capacity.contains_key(&key))
+            })
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect();
+        normalize_resources(&constrained).map(resource_amounts)
     }
 
-    /// Acquire resources for a dispatched job. The returned guard releases
-    /// exactly what was acquired when dropped — tie its lifetime to the
-    /// executing task so an abort cannot leak budget (H8).
-    #[must_use]
-    fn acquire(&self, job_resources: &BTreeMap<String, ResourceValue>) -> ResourceGuard {
-        let mut acquired = Vec::new();
-        {
-            let mut inner = self.inner.lock().expect("resource budget lock poisoned");
-            for (key, value) in job_resources {
-                if inner.capacity.contains_key(key) {
-                    if let Some(v) = value.as_u64() {
-                        *inner.in_use.entry(key.clone()).or_insert(0) += v;
-                        acquired.push((key.clone(), v));
-                    }
-                }
+    fn validate(&self, job: &JobId, demand: &ResourceAmounts) -> Result<(), OxError> {
+        let inner = self.inner.lock().expect("resource budget lock poisoned");
+        for (key, required) in demand {
+            if *required > inner.capacity[key] {
+                return Err(resource_config_error(format!(
+                    "job {job}: resource {key} demand exceeds total capacity"
+                )));
             }
+        }
+        Ok(())
+    }
+
+    fn fits_units(&self, demand: &ResourceAmounts) -> bool {
+        let inner = self.inner.lock().expect("resource budget lock poisoned");
+        demand.iter().all(|(key, required)| {
+            *required <= inner.capacity[key] - inner.in_use.get(key).copied().unwrap_or(0)
+        })
+    }
+
+    #[must_use]
+    fn acquire_units(&self, demand: &ResourceAmounts) -> ResourceGuard {
+        let mut inner = self.inner.lock().expect("resource budget lock poisoned");
+        for (key, required) in demand {
+            let used = inner.in_use.get(key).copied().unwrap_or(0);
+            assert!(
+                *required <= inner.capacity[key] - used,
+                "admission must precede acquisition"
+            );
+            inner.in_use.insert(key.clone(), used + required);
+        }
+        #[cfg(test)]
+        {
+            let used = inner.in_use.clone();
+            inner.history.push((true, used));
         }
         ResourceGuard {
             budget: Arc::clone(&self.inner),
-            acquired,
+            acquired: demand.clone(),
         }
+    }
+
+    #[cfg(test)]
+    fn new(capacity: BTreeMap<String, u64>) -> Self {
+        Self::try_new(capacity).unwrap()
+    }
+    #[cfg(test)]
+    fn fits(&self, raw: &BTreeMap<String, ResourceValue>) -> bool {
+        self.fits_units(&self.normalize_demand(raw).unwrap())
+    }
+    #[cfg(test)]
+    fn acquire(&self, raw: &BTreeMap<String, ResourceValue>) -> ResourceGuard {
+        self.acquire_units(&self.normalize_demand(raw).unwrap())
     }
 }
 
@@ -1336,22 +1440,25 @@ impl ResourceBudget {
 struct ResourceGuard {
     budget: Arc<std::sync::Mutex<ResourceBudgetInner>>,
     /// Exactly what `acquire` added, as parsed (key, u64) pairs.
-    acquired: Vec<(String, u64)>,
+    acquired: ResourceAmounts,
 }
 
 impl Drop for ResourceGuard {
     fn drop(&mut self) {
+        #[cfg(not(test))]
         if self.acquired.is_empty() {
             return;
         }
-        // Don't panic in Drop on a poisoned lock — the process is already
-        // unwinding in that case.
-        if let Ok(mut inner) = self.budget.lock() {
-            for (key, v) in &self.acquired {
-                if let Some(used) = inner.in_use.get_mut(key) {
-                    *used = used.saturating_sub(*v);
-                }
-            }
+        // Recover poison during unwinding so another task's guard still returns
+        // its own exact reservation. No saturating subtraction hides double release.
+        let mut inner = self.budget.lock().unwrap_or_else(|e| e.into_inner());
+        for (key, amount) in &self.acquired {
+            *inner.in_use.get_mut(key).expect("acquired resource exists") -= amount;
+        }
+        #[cfg(test)]
+        {
+            let used = inner.in_use.clone();
+            inner.history.push((false, used));
         }
     }
 }
@@ -1369,6 +1476,7 @@ struct Frontier {
     statuses: BTreeMap<JobId, JobLifecycle>,
     /// Retry counts per job (how many times we've retried so far).
     retry_counts: BTreeMap<JobId, u32>,
+    retry_ready_at: BTreeMap<JobId, tokio::time::Instant>,
     /// Collected failure details (job id + last stderr line) for the summary.
     failed_details: Vec<FailedJobDetail>,
     /// Recent failure stderr hashes (hash, job_id) in arrival order, for
@@ -1473,6 +1581,7 @@ impl Frontier {
         Self {
             statuses,
             retry_counts: BTreeMap::new(),
+            retry_ready_at: BTreeMap::new(),
             failed_details: Vec::new(),
             recent_failure_hashes: Vec::new(),
             root_cause: None,
@@ -1594,6 +1703,7 @@ impl Frontier {
         Self {
             statuses,
             retry_counts: BTreeMap::new(),
+            retry_ready_at: BTreeMap::new(),
             failed_details: Vec::new(),
             recent_failure_hashes: Vec::new(),
             root_cause: None,
@@ -2347,6 +2457,14 @@ async fn find_ready_jobs(
                 continue;
             }
 
+            if s.retry_ready_at
+                .get(&job_id)
+                .is_some_and(|at| *at > tokio::time::Instant::now())
+            {
+                s.ready_frontier.insert(job_id);
+                continue;
+            }
+            s.retry_ready_at.remove(&job_id);
             let blocking = graph.blocking_gates(&job_id);
             if blocking.is_empty() {
                 s.set_status(job_id.clone(), JobLifecycle::Ready);
@@ -2695,7 +2813,17 @@ async fn handle_completion<E: Executor + ?Sized>(
                         Backoff::Exponential => base_ms * 2u64.saturating_pow(current_attempt - 1),
                     };
                     if delay_ms > 0 {
-                        tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+                        if config.resource_budget.is_empty() {
+                            tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+                        } else {
+                            // The attempt guard was dropped before completion. Keep
+                            // backoff in the frontier so shutdown and other completions
+                            // remain observable while this job owns no permit.
+                            state.lock().await.retry_ready_at.insert(
+                                msg.job_id.clone(),
+                                tokio::time::Instant::now() + Duration::from_millis(delay_ms),
+                            );
+                        }
                     }
                 } else {
                     event_bus.emit(Event::JobFailed {
@@ -8379,4 +8507,6 @@ mod tests {
             "one of the two jobs was deferred and claimed again"
         );
     }
+    #[path = "c2_tests.rs"]
+    pub(super) mod c2_tests;
 }

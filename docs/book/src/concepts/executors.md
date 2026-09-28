@@ -24,6 +24,33 @@ ox run -j 8           # 8 parallel jobs
 
 Best for development, small pipelines, and single-node execution.
 
+Rust API callers can opt into resource admission with
+`SchedulerConfig.resource_budget`, for example `cpu = 6` and `gpu = 1`.
+Two jobs each requesting four CPUs then run sequentially even with
+`max_jobs = 3`; two half-GPU jobs may run together. The CLI does not yet
+provide a resource-budget flag. An empty budget leaves dispatch bounded by
+`max_jobs` alone.
+
+Admission validates the selected graph before cache checks, claims, output
+cleanup or recipes. It reserves only resources named in the budget, using the
+[resource alias and value contract](../reference/format.md#resources).
+Reservations cover preparation, execution, finalization and output hashing.
+Cancellation keeps a running attempt's reservation until its task exits;
+retries release reservations before backoff and acquire them again for the
+next attempt. Budgeted retry backoff remains responsive to shutdown.
+
+Each scheduler run owns its budget. Concurrent runs each receive their own
+capacity; claims and output locks do not coordinate resource budgets. These
+reservations do not constrain actual CPU use or RSS. `--memory-budget` remains
+the separate budget for in-memory output materialization. No fairness or
+preemption policy is promised.
+
+Fatal executor errors and task panics retain the existing cancel/abort path:
+the scheduler requests executor cancellation and aborts its remaining Tokio
+tasks. Guards release when those tasks are dropped, including on unwind;
+this path does not wait for external child processes to exit. A process abort
+cannot run Rust destructors, and its per-run budget disappears with it.
+
 ## SLURM Executor
 
 Submits jobs to an HPC cluster via `sbatch` and polls status with `sacct`.

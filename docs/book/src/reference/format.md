@@ -184,8 +184,8 @@ shell = "compute_heavy"
 resources = { cpus = 4, mem_gb = 16, gpu = 1 }
 ```
 
-The portable resource vocabulary shared by Ray and the planned local
-admission path is:
+The portable resource vocabulary shared by Ray and local scheduler
+admission is:
 
 | Resource | Accepted keys | Value |
 |----------|---------------|-------|
@@ -219,6 +219,17 @@ backslashes and non-ASCII characters, are forwarded as data.
 
 Ray currently accepts memory syntax but does **not** reserve memory. CPU, GPU
 and custom tokens are scheduling reservations; memory forwarding is deferred.
+
+Local scheduler admission is opt-in through the Rust API's
+`SchedulerConfig.resource_budget` (a map of resource keys to `u64` capacities).
+Capacity counts are whole tokens; job demands may be fractional. Memory
+capacities use the units of their key. Only budgeted canonical resources are
+interpreted and enforced. For example, a `cpu = 6` budget also constrains a
+`cpus = 4` demand. A job with no demand consumes no resource tokens and still
+uses one `max_jobs` slot. Zero demand fits zero capacity; a positive demand
+against zero capacity, or any demand exceeding total capacity, is a configuration
+error naming the job and resource before execution of the selected DAG starts.
+Rules outside that DAG do not participate in validation.
 
 ### Conditional Guards
 
