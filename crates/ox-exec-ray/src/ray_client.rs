@@ -202,7 +202,7 @@ impl RayClient {
             if !response.status().is_success() {
                 return Err(RayError::ApiStatus {
                     status: response.status().as_u16(),
-                    body: "Ray node inspection failed".into(),
+                    body: "Ray node inspection failed; use --ray-allow-pending to bypass node inspection and wait for future capacity".into(),
                 });
             }
             let body = response.bytes().await.map_err(|e| {

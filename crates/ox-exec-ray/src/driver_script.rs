@@ -487,6 +487,7 @@ mod tests {
         for execution in kinds {
             let mut job = shell_job("a", "true", vec![], vec![]);
             job.execution = execution;
+            job.resources.insert("cpu".into(), ResourceValue::Int(2));
             job.resources.insert(name.into(), ResourceValue::Int(1));
             job.resources
                 .insert("mem_mb".into(), ResourceValue::Int(32));
@@ -502,7 +503,7 @@ root = ast.parse(open(sys.argv[1]).read())
 options = [n for n in ast.walk(root) if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute) and n.func.attr == 'options']
 assert len(options) == 1
 values = {k.arg: eval(compile(ast.Expression(k.value), '<options>', 'eval'), {'json': json}) for k in options[0].keywords}
-print(json.dumps(values['resources']))
+print(json.dumps(values))
 "#]).arg(source).output().unwrap();
             assert!(
                 output.status.success(),
@@ -510,7 +511,33 @@ print(json.dumps(values['resources']))
                 String::from_utf8_lossy(&output.stderr)
             );
             let actual: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-            assert_eq!(actual, serde_json::json!({name: 1.0}));
+            assert_eq!(
+                actual,
+                serde_json::json!({"num_cpus": 2, "resources": {name: 1.0}})
+            );
+        }
+    }
+
+    #[test]
+    fn custom_resource_emission_is_byte_deterministic() {
+        let mut job = shell_job("a", "true", vec![], vec![]);
+        job.resources = BTreeMap::from([
+            ("cpu".into(), ResourceValue::Int(2)),
+            ("zeta".into(), ResourceValue::Int(3)),
+            ("alpha".into(), ResourceValue::Int(1)),
+            ("metal".into(), ResourceValue::Float(0.5.into())),
+        ]);
+        let graph = JobGraph::build(vec![job]).unwrap();
+        let staging = tempfile::tempdir().unwrap();
+        let expected = "ref_0 = run_shell.options(num_cpus=2, resources=json.loads(\"{\\\"alpha\\\":1.0,\\\"metal\\\":0.5,\\\"zeta\\\":3.0}\")).remote(\"a\", \"true\", \"/tmp/project\")";
+
+        for _ in 0..32 {
+            let script = generate_driver(&graph, &ctx(), staging.path(), &no_skip()).unwrap();
+            let emitted = script
+                .lines()
+                .find(|line| line.starts_with("ref_0 ="))
+                .unwrap();
+            assert_eq!(emitted, expected);
         }
     }
 

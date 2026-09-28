@@ -445,7 +445,7 @@ impl Executor for RayExecutor {
             entrypoint_resources: if resources.custom.is_empty() {
                 None
             } else {
-                Some(resources.custom)
+                Some(resources.custom.into_iter().collect())
             },
             runtime_env: runtime_env.or(merged_runtime),
             metadata: Some(metadata),
@@ -655,8 +655,14 @@ impl Executor for RayExecutor {
                 .client
                 .inspect_node_capacities(Duration::from_secs(10))
                 .await?;
-            for (rule, resources) in &requests {
-                crate::feasibility::check_request(rule, resources, &nodes)?;
+            if nodes.is_empty() {
+                tracing_log(
+                    "Warning: Ray resource feasibility could not be checked because no live node was visible; submitting the DAG so it can wait for future capacity",
+                );
+            } else {
+                for (rule, resources) in &requests {
+                    crate::feasibility::check_request(rule, resources, &nodes)?;
+                }
             }
         }
 

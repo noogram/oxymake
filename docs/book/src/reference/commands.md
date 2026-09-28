@@ -43,12 +43,16 @@ ox run --no-cache               # Ignore the cache, re-run everything
 - `--executor EXEC` -- Choose executor: `local` (default), `slurm`, `ray`
 - `--ray-allow-pending` -- Ray only; skip the default live-node feasibility
   check and allow waiting for a future node. Resource values and names are
-  still validated. Using this flag with another executor is a usage error.
+  still validated. Using this flag with another executor is a usage error. It
+  can also be enabled with `ray_allow_pending = true` in a selected profile.
 
 Ray checks each active task's CPU (default 1), GPU and custom request against
 one live node's **total** capacity before submitting the DAG. Busy capable
 nodes queue normally. The State API inspection has a 10-second end-to-end
 deadline; malformed, unknown, partial or truncated snapshots fail closed.
+An empty live-node list produces one warning and submits because a cluster may
+be scaling from zero; visible nodes that cannot satisfy a request still cause
+an error.
 The check is a snapshot and does not monitor topology changes. See the
 [Ray chapter](../concepts/ray-integration.md#resource-admission).
 

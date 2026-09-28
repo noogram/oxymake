@@ -219,6 +219,19 @@ pub fn cmd_logs(args: LogsArgs, theme: &ox_render::Theme) -> Result<()> {
         println!("{}", serde_json::to_string_pretty(&entries)?);
     } else {
         for j in &jobs {
+            if args.failed {
+                println!("==> {} <==", theme.highlight.apply_to(&j.id));
+                if let Some(logs) = super::ray_remote::job_logs(&db, &j.id)? {
+                    print!("{logs}");
+                    if !logs.ends_with('\n') {
+                        println!();
+                    }
+                } else {
+                    let log_path = resolve_log_path(j.log_path.as_deref(), &j.id);
+                    print_log(&log_path, &j.id, false)?;
+                }
+                continue;
+            }
             let log_path = resolve_log_path(j.log_path.as_deref(), &j.id);
             let marker = if log_path.exists() { " " } else { "!" };
             let status_styled = match j.status.as_str() {

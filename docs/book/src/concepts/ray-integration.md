@@ -101,11 +101,20 @@ ox run --executor ray --ray-allow-pending --follow
 
 Use `--ray-allow-pending` when a future node will supply the missing resources.
 It skips node inspection but preserves resource value and name validation.
+Sites that always permit pending Ray work can set
+`ray_allow_pending = true` in the selected `[profile.NAME]`; an explicit CLI
+flag takes precedence over a profile value.
 Without it, inspection has a fixed **10-second deadline**, including the response
 body. Connection errors, timeouts and malformed/unknown payloads have distinct
 diagnostics. Partial or truncated node lists are rejected. Ray's dashboard
 must expose the detailed State API. This is a pre-submission snapshot; OxyMake
 does not monitor later topology changes or manage the autoscaler.
+
+An empty live-node list is not evidence that a request is impossible: the
+cluster may be scaling from zero or waiting for workers. OxyMake warns once and
+submits in that case. When live nodes are visible and no single node provides
+the complete request, submission still fails so misspelled or impossible
+requests do not remain pending forever.
 
 Custom names with surrounding whitespace are rejected. Names colliding with
 Ray built-ins or reserved prefixes are also rejected; see the

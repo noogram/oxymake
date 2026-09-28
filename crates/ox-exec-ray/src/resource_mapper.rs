@@ -7,7 +7,7 @@
 //! | `mem` / `memory` / `mem_mb` / `mem_gb` | runtime-env memory |
 //! | custom key / `custom:*`          | `entrypoint_resources`    |
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 
 use ox_core::model::ResourceValue;
 use ox_core::resource::{ResourceError, TOKEN_SCALE, TokenAmount, normalize_resources};
@@ -22,7 +22,7 @@ pub struct RayResources {
     /// Memory in bytes.
     pub memory_bytes: Option<u64>,
     /// Custom resources (key → amount).
-    pub custom: HashMap<String, f64>,
+    pub custom: BTreeMap<String, f64>,
 }
 
 /// A checked resource declaration cannot be represented by Ray.

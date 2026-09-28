@@ -1547,6 +1547,17 @@ fn test_ray_error_display() {
 
     let err = RayError::ParseError("invalid json".into());
     assert!(format!("{err}").contains("invalid json"));
+
+    for err in [
+        RayError::NodeInspectionPayload("unexpected schema".into()),
+        RayError::NodeInspectionTimeout(std::time::Duration::from_secs(10)),
+        RayError::NodeInspectionConnection("connection refused".into()),
+    ] {
+        assert!(
+            format!("{err}").contains("--ray-allow-pending"),
+            "missing escape hatch in: {err}"
+        );
+    }
 }
 
 // ─────────────── 30. Job array exhaustive tests ──────────────

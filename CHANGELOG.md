@@ -14,6 +14,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   closed with a fixed 10-second deadline (issue #25).
 
 ### Changed
+- Ray admission now warns and submits when the cluster reports no live nodes,
+  because an empty snapshot cannot prove infeasibility during scale-up. Visible
+  nodes that cannot satisfy a complete request are still rejected (issue #25).
+- Profiles can set `ray_allow_pending = true`; an explicit
+  `--ray-allow-pending` flag still takes precedence (issue #25).
 - Ray rejects custom token names with leading or trailing whitespace (names
   are not trimmed), and names colliding with built-ins or reserved `node:` /
   `accelerator_type:` prefixes, including explicit `custom:` declarations.
