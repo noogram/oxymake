@@ -128,6 +128,7 @@ pub mod job_graph;
 pub mod memory_map;
 pub mod model;
 pub mod resolver;
+pub mod resource;
 pub mod scheduler;
 pub mod traits;
 pub mod wildcard;

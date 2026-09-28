@@ -140,6 +140,18 @@ impl RayClient {
         Self::check_status(&url, resp).await
     }
 
+    /// Retrieve the driver's stdout and stderr from the Jobs API.
+    pub async fn get_job_logs(&self, submission_id: &str) -> Result<String, RayError> {
+        #[derive(Deserialize)]
+        struct Logs {
+            logs: String,
+        }
+        let url = format!("{}/api/jobs/{submission_id}/logs", self.base_url);
+        let response = self.client.get(&url).send().await?;
+        let logs: Logs = Self::check_status(&url, response).await?;
+        Ok(logs.logs)
+    }
+
     /// Stop a running job.
     pub async fn stop_job(&self, submission_id: &str) -> Result<(), RayError> {
         let url = format!("{}/api/jobs/{}/stop", self.base_url, submission_id);
@@ -165,6 +177,48 @@ impl RayClient {
         let url = format!("{}/api/nodes", self.base_url);
         let resp = self.client.get(&url).send().await?;
         Self::check_status(&url, resp).await
+    }
+
+    /// Inspect all nodes through Ray's State API with a single bounded deadline.
+    /// The deadline is an argument so tests can exercise stalled connections.
+    pub(crate) async fn inspect_node_capacities(
+        &self,
+        deadline: std::time::Duration,
+    ) -> Result<Vec<crate::feasibility::NodeCapacity>, RayError> {
+        let operation = async {
+            let response = self
+                .client
+                .get(format!("{}/api/v0/nodes", self.base_url))
+                .query(&[("detail", "1"), ("limit", "10000"), ("timeout", "10")])
+                .send()
+                .await
+                .map_err(|e| {
+                    if e.is_timeout() {
+                        RayError::NodeInspectionTimeout(deadline)
+                    } else {
+                        RayError::NodeInspectionConnection(e.to_string())
+                    }
+                })?;
+            if !response.status().is_success() {
+                return Err(RayError::ApiStatus {
+                    status: response.status().as_u16(),
+                    body: "Ray node inspection failed; use --ray-allow-pending to bypass node inspection and wait for future capacity".into(),
+                });
+            }
+            let body = response.bytes().await.map_err(|e| {
+                if e.is_timeout() {
+                    RayError::NodeInspectionTimeout(deadline)
+                } else {
+                    RayError::NodeInspectionConnection(e.to_string())
+                }
+            })?;
+            let value = serde_json::from_slice(&body)
+                .map_err(|e| RayError::NodeInspectionPayload(format!("invalid JSON: {e}")))?;
+            crate::feasibility::parse_nodes(value)
+        };
+        tokio::time::timeout(deadline, operation)
+            .await
+            .map_err(|_| RayError::NodeInspectionTimeout(deadline))?
     }
 
     /// Create a placement group.
@@ -230,5 +284,66 @@ impl RayClient {
         resp.json::<T>()
             .await
             .map_err(|e| RayError::ParseError(format!("failed to parse response from {url}: {e}")))
+    }
+}
+
+#[cfg(test)]
+mod inspection_tests {
+    use super::*;
+    use std::time::Duration;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    #[tokio::test]
+    async fn inspection_diagnostics_are_distinct_and_bounded() {
+        for (body, expected) in [
+            ("not-json", "invalid JSON"),
+            ("{}", "unknown"),
+            (
+                r#"{"result":true,"data":{"result":{"total":1,"num_after_truncation":1,"num_filtered":1,"result":[{"node_ip":"a","state":"ALIEN","resources_total":{"CPU":1}}]}}}"#,
+                "unknown node state",
+            ),
+            (
+                r#"{"result":true,"data":{"result":{"total":2,"num_after_truncation":1,"num_filtered":1,"result":[{}]}}}"#,
+                "truncated",
+            ),
+        ] {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path("/api/v0/nodes"))
+                .respond_with(ResponseTemplate::new(200).set_body_string(body))
+                .mount(&server)
+                .await;
+            let client = RayClient::new(server.uri(), reqwest::Client::new());
+            let error = client
+                .inspect_node_capacities(Duration::from_secs(1))
+                .await
+                .unwrap_err();
+            assert!(matches!(error, RayError::NodeInspectionPayload(_)));
+            assert!(error.to_string().contains(expected), "{error}");
+        }
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v0/nodes"))
+            .respond_with(ResponseTemplate::new(200).set_delay(Duration::from_secs(2)))
+            .mount(&server)
+            .await;
+        let client = RayClient::new(server.uri(), reqwest::Client::new());
+        let start = std::time::Instant::now();
+        assert!(matches!(
+            client
+                .inspect_node_capacities(Duration::from_millis(20))
+                .await,
+            Err(RayError::NodeInspectionTimeout(_))
+        ));
+        assert!(start.elapsed() < Duration::from_secs(1));
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+        let client = RayClient::new(format!("http://{addr}"), reqwest::Client::new());
+        assert!(matches!(
+            client.inspect_node_capacities(Duration::from_secs(1)).await,
+            Err(RayError::NodeInspectionConnection(_))
+        ));
     }
 }

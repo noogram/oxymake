@@ -1542,3 +1542,56 @@ async fn inherited_descriptor_keeps_flock_while_the_child_lives() {
         "the lock is released once the child exits"
     );
 }
+
+/// Admission validation must precede the real local executor's output cleanup,
+/// lock acquisition and child process creation, including for feasible siblings.
+#[tokio::test]
+async fn resource_budget_rejects_before_output_deletion_or_subprocess() {
+    use ox_core::event::EventBus;
+    use ox_core::job_graph::JobGraph;
+    use ox_core::scheduler::{SchedulerConfig, run_scheduler};
+    use std::sync::Arc;
+
+    for (capacity, demand) in [(6, 7), (0, 1)] {
+        let dir = tempfile::tempdir().unwrap();
+        let output = dir.path().join("preserved.txt");
+        std::fs::write(&output, "original bytes").unwrap();
+        let mut impossible = shell_job("impossible", "touch subprocess-started");
+        impossible
+            .resources
+            .insert("cpus".into(), ResourceValue::Int(demand));
+        impossible.clean_outputs = CleanOutputs::Always;
+        impossible.outputs.push(ResolvedOutput {
+            reference: OutputRef::File("preserved.txt".into()),
+            materialize: MaterializePolicy::Always,
+            name: None,
+            format: None,
+            lifecycle: OutputLifecycle::Permanent,
+        });
+        let feasible = shell_job("feasible", "touch sibling-started");
+        let graph = JobGraph::build(vec![feasible, impossible]).unwrap();
+        let config = SchedulerConfig {
+            max_jobs: 3,
+            resource_budget: BTreeMap::from([("cpu".into(), capacity)]),
+            ..Default::default()
+        };
+        let mut ctx = test_ctx(&dir.path().join("logs"));
+        ctx.project_dir = dir.path().to_owned();
+        let bus = EventBus::new();
+        let mut events = bus.subscribe();
+        let error = tokio::time::timeout(
+            Duration::from_secs(2),
+            run_scheduler(&graph, Arc::new(LocalExecutor::new()), &config, &bus, &ctx),
+        )
+        .await
+        .expect("impossible admission must not wait")
+        .unwrap_err();
+        assert!(matches!(error, ox_core::error::OxError::Parse(_)));
+        assert!(error.to_string().contains("impossible") && error.to_string().contains("cpu"));
+        assert_eq!(std::fs::read_to_string(output).unwrap(), "original bytes");
+        assert!(!dir.path().join("subprocess-started").exists());
+        assert!(!dir.path().join("sibling-started").exists());
+        assert!(!ctx.log_dir.exists());
+        assert!(events.try_recv().is_err());
+    }
+}

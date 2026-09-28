@@ -24,6 +24,38 @@ ox run -j 8           # 8 parallel jobs
 
 Best for development, small pipelines, and single-node execution.
 
+Opt into resource admission with `--resource-budget`, for example
+`ox run -j 3 --resource-budget cpu=6,gpu=1`. Two jobs each requesting four
+CPUs then run sequentially even with `-j 3`; two half-GPU jobs may run
+together. An empty budget leaves dispatch bounded by `-j` alone.
+
+`-j` caps concurrent jobs, `--resource-budget` caps declared resources held by
+those jobs, and `--memory-budget` separately caps in-memory outputs. A budget
+is per `ox run`; concurrent processes each get their own capacity, with no
+host-wide coordination or capacity promise.
+
+Admission validates the selected graph before cache checks, claims, output
+cleanup or recipes, including fully cached runs. It reserves only resources
+named in the budget, using the
+[resource alias and value contract](../reference/format.md#resources).
+Reservations cover preparation, execution, finalization and output hashing.
+Cancellation keeps a running attempt's reservation until its task exits;
+retries release reservations before backoff and acquire them again for the
+next attempt. Retry backoff remains responsive to shutdown with or without
+a budget.
+
+Each scheduler run owns its budget. Concurrent runs each receive their own
+capacity; claims and output locks do not coordinate resource budgets. These
+reservations do not constrain actual CPU use or RSS. `--memory-budget` remains
+the separate budget for in-memory output materialization. No fairness or
+preemption policy is promised.
+
+Fatal executor errors and task panics retain the existing cancel/abort path:
+the scheduler requests executor cancellation and aborts its remaining Tokio
+tasks. Guards release when those tasks are dropped, including on unwind;
+this path does not wait for external child processes to exit. A process abort
+cannot run Rust destructors, and its per-run budget disappears with it.
+
 ## SLURM Executor
 
 Submits jobs to an HPC cluster via `sbatch` and polls status with `sacct`.
@@ -85,10 +117,16 @@ max_submit = 10
 
 | OxyMake | Ray | Notes |
 |---------|-----|-------|
-| `cpu` | `num_cpus` | Direct mapping |
-| `mem` | `memory` | Bytes |
-| `gpu` | `num_gpus` | Fractional GPUs supported (`gpu = 0.5`) |
-| `custom:*` | Custom resources | Arbitrary Ray custom resources |
+| `cpu` / `cpus` | `num_cpus` | Exact to `0.0001` before Ray conversion |
+| `mem` / `memory` | `memory` | Bytes or a binary-unit string |
+| `mem_mb` / `mem_gb` | `memory` | MiB / GiB converted to bytes |
+| `gpu` / `gpus` | `num_gpus` | Fractional GPUs up to one, or whole multi-GPU counts |
+| any custom key / `custom:*` | Custom resources | Case-sensitive custom resources |
+
+The native Ray DAG driver reserves CPU, GPU, memory and custom resources.
+Memory is normalized to whole bytes and included in the live-node feasibility
+check. It is logical scheduling admission, not a hard RSS limit; the per-job
+Jobs API and array paths do not reserve memory.
 
 ### Memory Passing
 

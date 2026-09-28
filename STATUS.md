@@ -52,7 +52,8 @@ The `ox` binary exposes 27 subcommands today (see `crates/ox-cli/src/lib.rs`).
     default `mtime+hash`, content-verifying — ADR-006 amendment)
   - `--no-cache`
 
-  One `ox run` flag is shipped but **unstable**: `--cache-remote <dir>`
+  Three `ox run` flags are shipped but **unstable**: `--cache-remote <dir>`,
+  `--resource-budget KEY=VALUE`, and `--ray-allow-pending`. `--cache-remote`
   stores output blobs in and restores missing outputs from a shared
   directory, forcing content-hash validation. It is a blob transport: the
   local SQLite index mapping computation keys to outputs does not travel,
@@ -76,6 +77,13 @@ The `ox` binary exposes 27 subcommands today (see `crates/ox-cli/src/lib.rs`).
   stable (Cargo guarantee).
 
 ### Unstable
+
+- `ox run --resource-budget KEY=VALUE` enables per-run local admission with
+  repeatable, comma-separated capacities. It validates the selected DAG even
+  when all jobs are cached; it does not coordinate concurrent runs.
+- `ox run --ray-allow-pending` opts out of Ray's live-node capacity check;
+  it does not disable resource validation. Ray custom names reject surrounding
+  whitespace and collisions with built-in names or reserved prefixes.
 
 - **All other subcommands**: `dag`, `snapshot`, `gate`, `serve`,
   `subscribe`, `top`, `dashboard`, `test`, `check-consistency`,
@@ -292,6 +300,16 @@ Explicit `ResolveRequest::existing_files` remain source leaves in these APIs.
 `ox_api::resolution::{discover_source_files, resolve, workflow_directory}` is the
 shared, unstable workflow-relative discovery and cache-provenance policy used by
 CLI, MCP and `SessionBuilder`.
+
+Ray's `RayConfig::allow_pending` and driver log API, and the state queries
+for remote submissions, cancellable jobs and current run membership are
+**unstable** Rust APIs.
+
+The resource-normalization Rust API in `ox_core::resource` is likewise
+**unstable**. It provides the checked canonical form shared by executor
+adapters and local scheduler admission while leaving raw rule and job declarations
+unchanged. `ox_core::scheduler::validate_resource_budget` exposes the same
+unstable admission validation for callers that may skip cached execution.
 
 ---
 
