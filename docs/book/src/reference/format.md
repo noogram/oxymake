@@ -190,7 +190,7 @@ admission is:
 | Resource | Accepted keys | Value |
 |----------|---------------|-------|
 | CPU | `cpu`, `cpus` | Token count, exact to `0.0001` |
-| GPU | `gpu`, `gpus` | Token count, exact to `0.0001` |
+| GPU | `gpu`, `gpus` | Token count, exact to `0.0001`; Ray requires whole counts above 1, while local admission accepts fractions above 1 |
 | Memory | `mem`, `memory` | Bytes, or a string using `K`/`KB`/`KiB` through `T`/`TB`/`TiB` |
 | Memory | `mem_mb` | MiB (2^20 bytes), including fractional MiB |
 | Memory | `mem_gb` | GiB (2^30 bytes), including fractional GiB |
@@ -206,8 +206,8 @@ example), and a bare custom name may not be combined with its prefixed form
 fractional byte results, overflow, and token counts finer than `0.0001` are
 errors. These checks normalize a declaration without rewriting the original
 `resources` table. Executor-specific keys, including SLURM directives such as
-`time_min`, retain the vocabulary documented by that executor. `time_min = 60`
-is a SLURM time limit; on Ray it would request a custom token named `time_min`
+`time`, retain the vocabulary documented by that executor. `time = 60`
+is a SLURM time limit; on Ray it would request a custom token named `time`
 and the default feasibility check rejects it unless a node advertises 60 units.
 Do not copy SLURM-only keys into a Ray workflow.
 
@@ -217,8 +217,10 @@ colliding (case-insensitively) with `cpu`, `cpus`, `gpu`, `gpus`, `memory`,
 This also applies to explicit `custom:` names. Other names, including quotes,
 backslashes and non-ASCII characters, are forwarded as data.
 
-Ray currently accepts memory syntax but does **not** reserve memory. CPU, GPU
-and custom tokens are scheduling reservations; memory forwarding is deferred.
+Native Ray DAG tasks reserve CPU, GPU, memory and custom resources. Memory is
+forwarded as `memory=<bytes>` and included in the live-node feasibility check.
+This is logical scheduling admission, not a hard RSS limit. The per-job Jobs
+API and array paths do not reserve memory.
 
 Local scheduler admission is opt-in with `ox run --resource-budget KEY=VALUE`.
 The flag is repeatable and comma-separated, for example
@@ -233,8 +235,8 @@ a `cpu = 6` budget also constrains a `cpus = 4` demand. A job with no demand
 consumes no resource tokens and still uses one `-j` / `--jobs` slot. Zero
 demand fits zero capacity; a positive demand against zero capacity, or any
 demand exceeding total capacity, is a configuration error naming the job and
-resource before execution of the selected DAG starts. Rules outside that DAG
-do not participate in validation.
+resource before execution of the selected DAG starts, even when every job is
+cached. Rules outside that DAG do not participate in validation.
 
 `-j N` caps concurrent jobs, while `--resource-budget` caps resources held by
 those jobs. This is distinct from `--memory-budget`, which caps in-memory
