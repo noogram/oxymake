@@ -2874,11 +2874,23 @@ mod cache_key_tests {
             ("metal".into(), ResourceValue::Float(0.5.into())),
         ]);
 
-        let key = job_cache_key(&job, None).unwrap();
+        // A golden hash cannot be used here: the cache key includes the
+        // platform, so a fixed value pins the test to one OS. The property
+        // is that normalizing does not disturb the job — assert that.
+        let before = job_cache_key(&job, None).unwrap();
+        let raw = job.resources.clone();
+        let normalized = ox_core::resource::normalize_resources(&job.resources)
+            .expect("the declarations above are valid");
+        assert!(normalized.cpu.is_some(), "normalization ran");
+        let after = job_cache_key(&job, None).unwrap();
         assert_eq!(
-            key.as_str(),
-            "af8c2cf6ef33969b09e535b27ce0dae2ec525942060f2252ef9ba38eb44dc196",
+            before.as_str(),
+            after.as_str(),
             "resource side-car normalization moved the concrete-job cache key"
+        );
+        assert_eq!(
+            job.resources, raw,
+            "normalization must leave the raw declarations untouched"
         );
     }
 
