@@ -50,8 +50,7 @@ Highlights:
 - Rule `executor` accepts only `"local"`. Previously accepted values such as
   `"ray"`, `"slurm"`, site names and typos now fail parsing (including
   `ox lint`), naming the rule and directing backend selection to
-  `ox run --executor`. The next release requires a minor-version bump under
-  the stable-field policy (#37).
+  `ox run --executor` (#37).
 
 ### Added
 - Local cold launches on Linux and macOS now measure peak RSS and user + system
