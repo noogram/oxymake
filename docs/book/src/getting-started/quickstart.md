@@ -19,7 +19,7 @@ Verify:
 
 ```bash
 ox --version
-# ox 0.6.0
+# ox 0.6.1
 ```
 
 ## Create a Project
