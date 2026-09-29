@@ -7,6 +7,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-09-29
+
+Declared resources now reach the executor that runs the job, OxyMake measures
+what a job actually consumed instead of guessing, and a Ray cluster behind a
+token is reachable. Most of this came from running real workflows on two
+shared machines and finding out what was declared but never honoured.
+
+**Two declarations that were silently ignored now take effect** — and one of
+them stops workflows that were wrong all along:
+
+- `[rule.*.resources]` reached no admission mechanism outside SLURM. It now
+  gates local dispatch through `ox run --resource-budget`, and reaches Ray
+  tasks as real requests. Under Ray, a declaration Ray cannot honour is an
+  error instead of a silent reinterpretation: two spellings of one resource,
+  a malformed memory value, a fractional GPU above 1. `mem_mb` and `mem_gb`
+  now mean memory, where Ray previously turned them into custom tokens no
+  cluster provides — a rule declaring `mem_mb = 24000` was waiting forever.
+- A rule's `executor` field only labelled an event. `executor = "local"` now
+  runs the job on the submitting host inside a SLURM run; **every other value
+  is a parse error**, which is the breaking change in this release.
+
+**Resource statistics are measured or absent, never guessed.** The per-job
+memory and CPU figures published before came from a process-wide counter: a
+`printf` rule was credited with 270 MB while an allocator ran beside it. They
+are now measured per child with `wait4`, and what cannot be attributed —
+persistent warm workers, the SLURM REST backend — reports nothing rather than
+a plausible number.
+
+Highlights:
+- **`ox run --resource-budget cpu=6,mem_gb=32`**, local, opt-in, empty by
+  default (#25).
+- **Ray tasks carry custom resources and memory**, with a pre-submission check
+  against live node capacity and `--ray-allow-pending` to bypass it (#25).
+- **`RAY_AUTH_MODE=token`** makes a token-protected cluster reachable (#27).
+- **Per-job peak RSS and CPU time** for local children and warm fork
+  dispatches, and `sacct` MaxRSS in `ox history` (#24).
+- **`ox run --follow` stops** instead of polling a dead endpoint forever, and
+  honours the first Ctrl+C (#33).
+
 ### Breaking changes
 - Rule `executor` accepts only `"local"`. Previously accepted values such as
   `"ray"`, `"slurm"`, site names and typos now fail parsing (including
