@@ -20,6 +20,26 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo check --workspace
 
+  # The release publishes a statically linked Linux asset so that it runs on
+  # distributions older than the runner (issue #40). Build it here too: a
+  # release must never be the first time that target is compiled.
+  musl:
+    name: Static Linux build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+      - uses: Swatinem/rust-cache@v2
+      - run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - run: cargo build --release --bin ox --target x86_64-unknown-linux-musl
+      - name: Assert the binary is static
+        run: |
+          file target/x86_64-unknown-linux-musl/release/ox
+          ldd target/x86_64-unknown-linux-musl/release/ox 2>&1 | tee /tmp/ldd.txt || true
+          grep -qiE 'statically linked|not a dynamic executable' /tmp/ldd.txt
+
   test:
     name: Test
     runs-on: ubuntu-latest
