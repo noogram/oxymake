@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-09-29
+
+The published Linux binary did not run on Rocky Linux 8 or any RHEL 8
+derivative: built on `ubuntu-latest`, it required that image's glibc (2.39),
+while those distributions ship 2.28. A user had to build from source.
+
+### Fixed
+- The release now also publishes `ox-x86_64-unknown-linux-musl.tar.gz`, a
+  statically linked binary with no glibc floor, so the download works on an
+  older distribution. The dynamically linked `x86_64-unknown-linux-gnu` asset
+  is unchanged and remains the right choice on a current distribution. CI
+  builds the static target on every pull request and asserts the result is
+  static, so a release is not the first time it is compiled (issue #40).
+
 ## [0.6.0] - 2026-09-29
 
 Declared resources now reach the executor that runs the job, OxyMake measures
