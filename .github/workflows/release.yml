@@ -64,6 +64,12 @@ jobs:
         include:
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
+          # Statically linked: no glibc floor, so the asset runs on an older
+          # distribution. RHEL 8 / Rocky 8 ship glibc 2.28, while the gnu
+          # build above inherits whatever `ubuntu-latest` carries (2.39 as of
+          # 24.04, and it rises when GitHub moves the label). See issue #40.
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
           - target: aarch64-apple-darwin
             os: macos-latest
           - target: x86_64-apple-darwin
@@ -77,6 +83,10 @@ jobs:
           targets: ${{ matrix.target }}
 
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+
+      - name: Install the musl linker
+        if: endsWith(matrix.target, '-musl')
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
 
       - name: Build ox
         run: cargo build --release --bin ox --target ${{ matrix.target }}
