@@ -350,9 +350,10 @@ canonical list lives in `docs/format/env-vars.md`.
 - `OX_CACHE_VALIDATION` — cache validation strategy (values: `mtime`,
   `mtime+hash`, `hash`). Overridden by `--cache-validation`; overrides
   the Oxymakefile `[config]` and `~/.config/oxymake/config.toml`.
-- `OX_WC_<wildcard>` — set by executors inside a job's environment to
-  expose the resolved wildcard value to scripts.
-- `OX_JOB_ID` — set by executors inside a job's environment.
+- `OX_WC_<wildcard>` — expose the resolved wildcard value to scripts. Set
+  only by the SLURM job-array script today, not by the local, Ray, or
+  non-array SLURM executors — see `docs/format/env-vars.md`.
+- `OX_JOB_ID` — same scope: set only by the SLURM job-array script today.
 
 ### Honoured external conventions (stable)
 
