@@ -21,10 +21,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   writing. `--write` applies only a fully resolved migration, preserving command
   bytes and software environments. Generated markers `0.1` and `0.3` become
   `>=0.7.0`; ambiguous declarations and unknown keys require manual resolution.
-  The report explains the later schema-2 cache identity change and recomputation
-  on the first run after that feature release (#42).
+  Migration preserves cache identity; future execution-semantics changes will
+  document their own cache consequences. Document formatting, including line
+  endings, may be normalized (#42).
 - The unstable Rust API exposes `Workflow::warnings` for per-file legacy
   diagnostics and `ox_format::migrate` for preparing and applying migrations.
+
+### Fixed
+- The format reference now documents `materialize` on an output descriptor,
+  matching the schema-2 form accepted by `ox lint` (#42).
 
 ## [0.6.1] - 2026-09-29
 

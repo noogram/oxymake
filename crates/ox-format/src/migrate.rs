@@ -1,4 +1,4 @@
-//! Reviewable, lossless migration of an entire include graph to schema 2.
+//! Reviewable migration of an entire include graph to schema 2.
 use crate::schema::{check, collect_sources, document, error, structural};
 use ox_core::error::ParseError;
 use std::{
@@ -133,8 +133,9 @@ pub fn prepare(path: &Path) -> Result<Migration, ParseError> {
         let mut edited = source
             .parse::<toml_edit::DocumentMut>()
             .map_err(|e| error(file, e.to_string()))?;
-        // Retain all formatting, comments and command bytes outside the two
-        // declarations. Preserve value decorations on changed declarations too.
+        // Retain comments and command bytes outside the two declarations.
+        // toml_edit may normalize document formatting such as line endings.
+        // Preserve value decorations on changed declarations too.
         for (key, text) in [
             ("format_version", "2"),
             ("ox_version", &format!(">={SCHEMA_2_MINIMUM}")),
@@ -175,7 +176,7 @@ pub fn prepare(path: &Path) -> Result<Migration, ParseError> {
             ));
         }
     }
-    report.push_str("Commands are preserved byte-for-byte; software environments keep their meaning. No shell assignments are extracted.\nAdopting schema 2 will move cache identity later: the first run after the eventual feature release recomputes. This migration alone does not change resource cache identity.\n");
+    report.push_str("Commands are preserved byte-for-byte; software environments keep their meaning. No shell assignments are extracted. Document formatting, including line endings, may be normalized.\nMigration preserves cache identity. Any future execution-semantics change will state its cache consequences in that release's notes.\n");
     Ok(Migration {
         originals,
         proposed,

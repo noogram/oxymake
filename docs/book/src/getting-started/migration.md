@@ -30,8 +30,8 @@ There is no variables table yet, and rule `env` is rejected in schema 2. Keep
 any existing shell assignments in the command. Named resource classes and
 resource exports are also future work.
 
-Schema 2 currently keeps resource cache identity unchanged. The eventual feature
-release will move that identity, so the first run after it recomputes. The
-migration report repeats this consequence so it can be reviewed before writing.
+Migration preserves cache identity. Any future change to execution semantics
+will state its own cache consequences in that release's notes. Command bytes are
+preserved, but document formatting, including line endings, may be normalized.
 Older binaries that predate version enforcement cannot be made to reject a
 future file retroactively; ensure the installed binary supports schema 2.

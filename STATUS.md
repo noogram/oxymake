@@ -159,8 +159,8 @@ error: `environment` names the software backend, and no variables table exists.
 
 `ox migrate --to-format 2 [--write]` is an **unstable** CLI surface. It previews
 by default; see the book's migration guide for include-graph and refusal rules.
-Schema 2 currently preserves resource cache identity. Its later change will
-require recomputation after the eventual feature release.
+Migration to schema 2 preserves cache identity. Any future change to execution
+semantics will state its own cache consequences in that release's notes.
 
 `Workflow::warnings` and `ox_format::migrate::{prepare, Migration,
 SCHEMA_2_MINIMUM}` are **unstable** Rust surfaces. Parser clients should display
