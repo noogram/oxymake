@@ -57,10 +57,13 @@ the local executor, and the Ray executors do not set `OX_JOB_ID` or
 `OX_WC_<wildcard>`. Where the table below says "stable", it means: on the
 route that sets it, the name and semantics are covered by `STATUS.md` §6 —
 not that every route sets it. Treat the gap as a known limitation, not an
-implementation you can rely on outside the SLURM array path; see the
-[resources reference](../book/src/reference/format.md#resource-interpolation-in-commands)
-for the mechanism (`{resources.NAME}`/`{threads}`) that does reach every
-inline command today.
+implementation you can rely on outside the SLURM array path.
+
+If what you need is a declared value inside a command, do not wait for these
+variables: placeholder interpolation is a separate mechanism, it runs in the
+resolver rather than in an executor, and it therefore works on every route
+today — for inline commands only. See
+[resource interpolation](../book/src/reference/format.md#resource-interpolation-in-commands).
 
 ### Stable (SLURM job-array path only)
 
