@@ -21,3 +21,6 @@ pub mod error;
 pub mod parse;
 pub mod targets;
 pub mod validate;
+
+pub mod migrate;
+mod schema;

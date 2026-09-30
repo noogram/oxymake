@@ -1,0 +1,30 @@
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH ox-migrate 1  "ox-migrate " 
+.SH NAME
+ox\-migrate \- Review or apply a workflow schema migration
+.SH SYNOPSIS
+\fBox\-migrate\fR [\fB\-f\fR|\fB\-\-file\fR] <\fB\-\-to\-format\fR> [\fB\-\-write\fR] [\fB\-h\fR|\fB\-\-help\fR] 
+.SH DESCRIPTION
+Review or apply a workflow schema migration
+.SH OPTIONS
+.TP
+\fB\-f\fR, \fB\-\-file\fR \fI<FILE>\fR [default: Oxymakefile.toml]
+Oxymakefile path (includes are resolved relative to each file)
+.TP
+\fB\-\-to\-format\fR \fI<TO_FORMAT>\fR
+Destination schema version
+.br
+
+.br
+\fIPossible values:\fR
+.RS 14
+.IP \(bu 2
+2
+.RE
+.TP
+\fB\-\-write\fR
+Apply the reviewed migration to every file in the include graph
+.TP
+\fB\-h\fR, \fB\-\-help\fR
+Print help

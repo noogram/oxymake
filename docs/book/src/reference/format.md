@@ -6,8 +6,29 @@ This page is the complete format reference.
 ## Top-Level Fields
 
 ```toml
-ox_version = "0.1"           # Required. OxyMake format version.
+format_version = "2"
+ox_version = ">=0.7.0"       # Minimum capable binary, not a reproducibility pin.
 ```
+
+Absent `format_version` selects legacy schema 1. Only `"1"` and `"2"` are
+supported. Schema 1 leaves `ox_version` informational and warns for each file
+that no binary requirement is enforced; its resource identity is unchanged.
+
+Schema 2 requires exactly `>=MAJOR.MINOR.PATCH` with canonical decimal version
+components, for example `>=0.7.0`. Missing requirements, shorthand (`0.1`), other
+comparators, ranges, prerelease/build suffixes, and an unsatisfied minimum are
+errors. Diagnostics name the file, requirement and running binary version.
+Every included file is checked before any external config source is read or a
+workflow is planned or run. Included files declare their own schema and minimum;
+a legacy include still warns and has no enforced binary requirement.
+
+Schema 2 rejects unknown structural keys, including nested rule, profile, gate,
+executor, log, input/output descriptor and guard fields. Dynamic maps (`config`,
+`tags`, `params`, resource names, wildcard constraints, profile overrides and
+named input/output paths) keep their user-defined names. Named resource classes,
+variables tables and resource exports are not implemented.
+
+Use [`ox migrate --to-format 2`](commands/migrate.md) to review an upgrade.
 
 ## Config Section
 
@@ -47,7 +68,7 @@ shell = "python process.py {input} {output}"
 | `lang` | String | With `run`/`script` | Language: `python`, `r`, `julia` |
 | `tags` | Table of string → string | No | Key/value labels for grouping and event filtering, e.g. `tags = { stage = "align", speed = "slow" }`. An array of strings is **not** accepted. |
 | `resources` | Table | No | Resource requirements |
-| `env` | String | No | Environment to use |
+| `environment` | Table | No | Software backend, e.g. `{ uv = "requirements.txt" }`; not shell variables. `env` is rejected in schema 2; a variables table does not exist yet. |
 | `when` | String | No | Conditional guard expression |
 | `materialize` | String | No | `always`, `auto`, `never`, `final` |
 | `params` | Table | No | Rule-specific parameters |

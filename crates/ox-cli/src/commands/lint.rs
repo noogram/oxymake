@@ -22,7 +22,7 @@ pub fn cmd_lint(args: LintArgs) -> Result<()> {
     let file_path = PathBuf::from(&args.file);
 
     // Load and parse the workflow, capturing errors for JSON mode.
-    let workflow = match common::load_workflow(&file_path) {
+    let workflow = match common::load_workflow_quiet(&file_path) {
         Ok(wf) => wf,
         Err(e) => {
             if args.json {
@@ -40,10 +40,12 @@ pub fn cmd_lint(args: LintArgs) -> Result<()> {
         }
     };
 
-    // Non-fatal diagnostics. Currently none are produced: the gate
-    // enforcement stopgap warning was removed when gates started to block
-    // (issue #2); an unknown rule in a gate is now a validation *error*.
-    let warnings: Vec<String> = Vec::new();
+    let warnings = workflow.warnings.clone();
+    if !args.json {
+        for warning in &warnings {
+            eprintln!("warning: {warning}");
+        }
+    }
 
     // Run semantic validation.
     let validation = ox_format::validate::validate(&workflow);
@@ -78,16 +80,10 @@ pub fn cmd_lint(args: LintArgs) -> Result<()> {
         Ok(())
     } else if errors.is_empty() {
         println!("Oxymakefile is valid ({} rules)", workflow.rules.len());
-        for warning in &warnings {
-            println!("warning: {warning}");
-        }
         Ok(())
     } else {
         for err in &errors {
             eprintln!("error: {err}");
-        }
-        for warning in &warnings {
-            eprintln!("warning: {warning}");
         }
         anyhow::bail!(
             "{} validation error(s) found in {}",

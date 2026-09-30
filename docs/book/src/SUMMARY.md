@@ -7,6 +7,7 @@
 - [Installation](./getting-started/installation.md)
 - [Quickstart](./getting-started/quickstart.md)
 - [Your First Workflow](./getting-started/first-workflow.md)
+- [Migrating to Schema 2](./getting-started/migration.md)
 - [Understanding the Output](./getting-started/output.md)
 
 # Concepts
@@ -40,6 +41,7 @@
 
 - [Oxymakefile Format](./reference/format.md)
 - [CLI Commands](./reference/commands.md)
+  - [ox migrate](./reference/commands/migrate.md)
   - [ox lock](./reference/commands/lock.md)
   - [ox test](./reference/commands/test.md)
   - [ox dashboard](./reference/commands/dashboard.md)

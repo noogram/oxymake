@@ -510,7 +510,7 @@ fn handle_lint(args: &serde_json::Value, workdir: &Path) -> Result<ToolCallResul
     match ox_format::validate::validate(&workflow) {
         Ok(()) => Ok(ToolCallResult::json(&json!({
             "valid": true,
-            "diagnostics": [],
+            "diagnostics": workflow.warnings.iter().map(|warning| json!({"level": "warning", "message": warning})).collect::<Vec<_>>(),
         }))),
         Err(errs) => {
             let diags: Vec<serde_json::Value> = errs
@@ -887,6 +887,7 @@ mod tests {
 
     fn empty_workflow() -> ox_format::parse::Workflow {
         ox_format::parse::Workflow {
+            warnings: Vec::new(),
             ox_version: None,
             format_version: ox_format::parse::DEFAULT_FORMAT_VERSION.to_string(),
             config: Default::default(),
@@ -1358,7 +1359,13 @@ shell = "rustc {input} -o {output}"
         let text = &result.content[0].text;
         let v: serde_json::Value = serde_json::from_str(text).unwrap();
         assert_eq!(v["valid"], true);
-        assert_eq!(v["diagnostics"].as_array().unwrap().len(), 0);
+        assert_eq!(v["diagnostics"][0]["level"], "warning");
+        assert!(
+            v["diagnostics"][0]["message"]
+                .as_str()
+                .unwrap()
+                .contains("no binary requirement is enforced")
+        );
     }
 
     #[test]
