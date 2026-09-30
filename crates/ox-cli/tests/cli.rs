@@ -498,7 +498,7 @@ shell = "echo RAN > out.txt"
 /// A well-formed gate produces no warning: the "enforcement is not wired"
 /// stopgap warning was removed once gates started to block.
 #[test]
-fn lint_valid_gate_produces_no_warning() {
+fn lint_valid_gate_produces_only_legacy_warning() {
     let dir = TempDir::new().unwrap();
     let file = dir.path().join("Oxymakefile.toml");
     fs::write(
@@ -527,7 +527,14 @@ shell = "echo RAN > out.txt"
     let parsed: serde_json::Value =
         serde_json::from_str(&stdout).expect("stdout should be valid JSON");
     assert_eq!(parsed["valid"], true);
-    assert!(parsed["warnings"].as_array().unwrap().is_empty());
+    let warnings = parsed["warnings"].as_array().unwrap();
+    assert_eq!(warnings.len(), 1);
+    assert!(
+        warnings[0]
+            .as_str()
+            .unwrap()
+            .contains("no binary requirement is enforced")
+    );
     assert!(!stdout.contains("not wired"));
 }
 
@@ -543,7 +550,14 @@ fn lint_no_gate_warning_without_gates() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let parsed: serde_json::Value =
         serde_json::from_str(&stdout).expect("stdout should be valid JSON");
-    assert!(parsed["warnings"].as_array().unwrap().is_empty());
+    let warnings = parsed["warnings"].as_array().unwrap();
+    assert_eq!(warnings.len(), 1);
+    assert!(
+        warnings[0]
+            .as_str()
+            .unwrap()
+            .contains("no binary requirement is enforced")
+    );
 }
 
 #[test]

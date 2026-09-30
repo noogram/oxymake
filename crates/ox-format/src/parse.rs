@@ -29,6 +29,8 @@ pub const DEFAULT_FORMAT_VERSION: &str = "1";
 /// A parsed workflow — rules + config + metadata.
 #[derive(Debug, Clone)]
 pub struct Workflow {
+    /// Compatibility diagnostics for every legacy file in the include graph.
+    pub warnings: Vec<String>,
     /// The `ox_version` declared at the top of the file.
     pub ox_version: Option<String>,
     /// The `format_version` declared at the top of the file.
@@ -325,7 +327,7 @@ struct RawGate {
 /// - `~` → `/home/user`
 /// - Paths not starting with `~` are returned unchanged.
 /// - If `HOME` is not set, the path is returned unchanged.
-fn expand_tilde(path: &str) -> String {
+pub(crate) fn expand_tilde(path: &str) -> String {
     if path == "~" {
         std::env::var("HOME").unwrap_or_else(|_| path.to_string())
     } else if let Some(rest) = path.strip_prefix("~/") {
@@ -359,6 +361,15 @@ fn expand_tilde_path(p: &PathBuf) -> PathBuf {
 /// The including file wins on config-key conflicts; a duplicate rule name
 /// is an error, as are missing files and include cycles (H29).
 pub fn parse_workflow(content: &str, file_path: &Path) -> Result<Workflow, ParseError> {
+    let sources = crate::schema::collect_sources(content, file_path)?;
+    parse_sources(content, file_path, &sources)
+}
+
+pub(crate) fn parse_sources(
+    content: &str,
+    file_path: &Path,
+    sources: &BTreeMap<PathBuf, String>,
+) -> Result<Workflow, ParseError> {
     // Seed cycle detection with the root file. Canonicalization may fail
     // for in-memory parses (tests pass paths that don't exist) — fall back
     // to the literal path; includes themselves must exist on disk.
@@ -366,13 +377,14 @@ pub fn parse_workflow(content: &str, file_path: &Path) -> Result<Workflow, Parse
         .canonicalize()
         .unwrap_or_else(|_| file_path.to_path_buf());
     let mut visited = vec![root_id];
-    parse_workflow_inner(content, file_path, &mut visited)
+    parse_workflow_inner(content, file_path, &mut visited, sources)
 }
 
 fn parse_workflow_inner(
     content: &str,
     file_path: &Path,
     visited: &mut Vec<PathBuf>,
+    sources: &BTreeMap<PathBuf, String>,
 ) -> Result<Workflow, ParseError> {
     let raw: RawOxymakefile = toml::from_str(content).map_err(|e| ParseError::Toml {
         file: file_path.to_path_buf(),
@@ -462,7 +474,19 @@ fn parse_workflow_inner(
         .format_version
         .unwrap_or_else(|| DEFAULT_FORMAT_VERSION.to_string());
 
+    let warnings = if format_version == "1" {
+        let warning = format!(
+            "{}: legacy schema 1: ox_version {:?} is informational; no binary requirement is enforced for this file. Resource identity is unchanged. Use ox migrate --to-format 2 to review an upgrade.",
+            file_path.display(),
+            raw.ox_version
+        );
+        tracing::warn!("{warning}");
+        vec![warning]
+    } else {
+        Vec::new()
+    };
     let mut workflow = Workflow {
+        warnings,
         ox_version: raw.ox_version,
         format_version,
         config,
@@ -474,7 +498,7 @@ fn parse_workflow_inner(
         executor_config,
     };
 
-    expand_includes(&mut workflow, base_dir, file_path, visited)?;
+    expand_includes(&mut workflow, base_dir, file_path, visited, sources)?;
 
     Ok(workflow)
 }
@@ -491,6 +515,7 @@ fn expand_includes(
     base_dir: &Path,
     file_path: &Path,
     visited: &mut Vec<PathBuf>,
+    sources: &BTreeMap<PathBuf, String>,
 ) -> Result<(), ParseError> {
     if workflow.includes.is_empty() {
         return Ok(());
@@ -512,13 +537,16 @@ fn expand_includes(
             chain.push(canon);
             return Err(ParseError::CircularInclude { chain });
         }
-        visited.push(canon);
+        visited.push(canon.clone());
 
-        let inc_content =
-            std::fs::read_to_string(&inc_path).map_err(|_| ParseError::IncludeNotFound {
+        let inc_content = sources
+            .get(&canon)
+            .ok_or_else(|| ParseError::IncludeNotFound {
                 path: inc_path.clone(),
             })?;
-        let inc_wf = parse_workflow_inner(&inc_content, &inc_path, visited)?;
+        let inc_wf = parse_workflow_inner(inc_content, &inc_path, visited, sources)?;
+        visited.pop();
+        workflow.warnings.extend(inc_wf.warnings.iter().cloned());
 
         // Root-only sections: reject rather than silently drop.
         if !inc_wf.profiles.is_empty() {
@@ -1516,7 +1544,15 @@ mod tests {
         let path = fixture_path(name);
         let content = std::fs::read_to_string(&path)
             .unwrap_or_else(|e| panic!("Failed to read {}: {}", path.display(), e));
-        parse_workflow(&content, &path).unwrap_or_else(|e| panic!("Parse failed: {e}"))
+        let mut workflow =
+            parse_workflow(&content, &path).unwrap_or_else(|e| panic!("Parse failed: {e}"));
+        for warning in &mut workflow.warnings {
+            *warning = warning.replace(
+                path.to_str().unwrap(),
+                &format!("tests/fixtures/{name}/Oxymakefile.toml"),
+            );
+        }
+        workflow
     }
 
     #[test]
@@ -1561,10 +1597,7 @@ shell = "cp {input} {output}"
     }
 
     #[test]
-    fn format_version_accepts_arbitrary_string_until_validation_lands() {
-        // The validator may reject unknown versions in the future; today
-        // we surface whatever the file declared so STATUS.md / lint can
-        // decide.
+    fn format_version_rejects_unknown_schema() {
         let toml = r#"
 format_version = "2-rc"
 
@@ -1573,8 +1606,12 @@ input = ["a.txt"]
 output = ["b.txt"]
 shell = "cp {input} {output}"
 "#;
-        let wf = parse_workflow(toml, Path::new("test.toml")).unwrap();
-        assert_eq!(wf.format_version, "2-rc");
+        let error = parse_workflow(toml, Path::new("test.toml")).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("unsupported format_version 2-rc")
+        );
     }
 
     #[test]

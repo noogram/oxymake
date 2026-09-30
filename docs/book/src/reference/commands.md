@@ -436,3 +436,8 @@ Most subcommands additionally accept `--json` (structured NDJSON output) and
 
 - [Oxymakefile Format](./format.md) -- workflow definition reference
 - [Configuration](./configuration.md) -- project settings
+
+## ox migrate
+
+Review a schema migration with `ox migrate --to-format 2`; add `--write` to apply
+it to the whole include graph. See [the command reference](commands/migrate.md).

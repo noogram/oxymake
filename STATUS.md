@@ -88,7 +88,7 @@ The `ox` binary exposes 27 subcommands today (see `crates/ox-cli/src/lib.rs`).
 
 - **All other subcommands**: `dag`, `snapshot`, `gate`, `serve`,
   `subscribe`, `top`, `dashboard`, `test`, `check-consistency`,
-  `cache-export`, `cache-import`, `logo`. These exist for exploration and
+  `cache-export`, `cache-import`, `migrate`, `logo`. These exist for exploration and
   may be renamed, restructured, or removed before `1.0`.
 - The cache-adoption JSON manifest is an **unstable, versioned** compatibility
   surface. Readers dispatch on kind `oxymake.cache-adoption-manifest` and
@@ -147,16 +147,24 @@ bump and a `CHANGELOG.md` entry:
 
 ### `format_version`
 
-The top-level `format_version = "1"` field, added in the
-2026-05-27 public-contracts review, is **optional today** and **required after
-`format_version` reaches `"2"`**. Migration policy:
+Absent `format_version` selects schema 1; explicit `"1"` and `"2"` are supported.
+Every other value is rejected. Schema 1 retains legacy resource identity and
+informational `ox_version`, with a warning for every file.
 
-- Files without `format_version` are read as `format_version = "1"`.
-- A future `format_version = "2"` will only be introduced alongside a
-  migration tool (`ox lint --migrate` or `ox format --upgrade`,
-  TBD).
-- We will never silently re-interpret an existing field; breaking
-  changes flip the `format_version` instead.
+Schema 2 requires `ox_version = ">=MAJOR.MINOR.PATCH"`, a minimum capable binary
+checked for every include before external config reads. It is not a range
+language or reproducibility guarantee. Structural keys are closed; dynamic
+config, tags, params and custom resource names remain open. Rule `env` is an
+error: `environment` names the software backend, and no variables table exists.
+
+`ox migrate --to-format 2 [--write]` is an **unstable** CLI surface. It previews
+by default; see the book's migration guide for include-graph and refusal rules.
+Schema 2 currently preserves resource cache identity. Its later change will
+require recomputation after the eventual feature release.
+
+`Workflow::warnings` and `ox_format::migrate::{prepare, Migration,
+SCHEMA_2_MINIMUM}` are **unstable** Rust surfaces. Parser clients should display
+legacy diagnostics to their users (the CLI and MCP lint already do).
 
 ### Semver contract
 

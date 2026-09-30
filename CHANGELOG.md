@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Breaking changes
+- Schema 2 (`format_version = "2"`) requires `ox_version = ">=MAJOR.MINOR.PATCH"`:
+  the minimum capable binary is checked in every included file before config
+  sources, planning, claims, submission or cache adoption. Unknown schemas and
+  unknown structural keys are errors. Rule `env` is rejected with guidance to
+  `environment`; a variables table is not implemented. Schema 1 remains
+  compatible and warns that its binary requirement is not enforced. The next
+  release version is 0.7.0 for this contract (#42).
+
+### Added
+- `ox migrate --to-format 2` reports an entire include-graph migration without
+  writing. `--write` applies only a fully resolved migration, preserving command
+  bytes and software environments. Generated markers `0.1` and `0.3` become
+  `>=0.7.0`; ambiguous declarations and unknown keys require manual resolution.
+  The report explains the later schema-2 cache identity change and recomputation
+  on the first run after that feature release (#42).
+- The unstable Rust API exposes `Workflow::warnings` for per-file legacy
+  diagnostics and `ox_format::migrate` for preparing and applying migrations.
+
 ## [0.6.1] - 2026-09-29
 
 The published Linux binary did not run on Rocky Linux 8 or any RHEL 8
