@@ -46,13 +46,22 @@ shell = "python process.py {input} {output}"
 | `call` | String | One of shell/run/script/call | Python function reference |
 | `lang` | String | With `run`/`script` | Language: `python`, `r`, `julia` |
 | `tags` | Table of string → string | No | Key/value labels for grouping and event filtering, e.g. `tags = { stage = "align", speed = "slow" }`. An array of strings is **not** accepted. |
-| `resources` | Table | No | Resource requirements |
-| `env` | String | No | Environment to use |
+| `resources` | Table | No | Resource requirements; see [Resources](#resources) below for what each executor actually does with them |
+| `environment` | Table | No | The software environment to run the command in (`uv`, conda, Nix, Apptainer/Singularity); see the environment backend section. Not to be confused with environment *variables* — there is no field for those today. |
 | `when` | String | No | Conditional guard expression |
 | `materialize` | String | No | `always`, `auto`, `never`, `final` |
 | `params` | Table | No | Rule-specific parameters |
 | `clean_outputs` | String | No | `always` (default), `on-failure`, `never`; see Output cleanup below |
 | `cache_platform` | String | No | `exact` (default), `any`; see Cross-platform cache reuse below |
+
+There is no `env` field. An Oxymakefile has no way to declare environment
+variables for a job's command — not the `environment` table above (that
+selects a software backend, not variables) and not a dedicated field. A
+variable a command needs today must come from the parent shell's
+environment, from `{resources.NAME}`/`{threads}` interpolation into the
+command text (see [Resource interpolation in commands](#resource-interpolation-in-commands)),
+or from what the executor itself sets (see
+[`docs/format/env-vars.md`](https://github.com/noogram/oxymake/blob/main/docs/format/env-vars.md)).
 
 ### Cross-platform cache reuse
 
@@ -207,6 +216,28 @@ shell = "compute_heavy"
 resources = { cpus = 4, mem_gb = 16, gpu = 1 }
 ```
 
+#### What a declared resource actually does, per route
+
+A declared resource means something different on every execution route.
+Read this table before relying on `resources` for anything beyond
+scheduling hints. Definitions: **Requested** — the declaration is parsed
+and attached to the job. **Admitted** — something checks the declaration
+before letting the job start, and can refuse or delay it. **Enforced** —
+something stops the running job from exceeding the declaration.
+**Measured** — the actual usage is observed and reported back, independent
+of what was declared.
+
+| Route | Requested | Admitted | Enforced | Measured |
+|---|---|---|---|---|
+| Local, no `--resource-budget` | Yes — parsed and normalized, kept on the job | **No** — nothing gates start; `-j` concurrency is the only limit | **No** | CPU/RSS via `wait4` if `benchmark` is set (see [Benchmark output](#benchmark-output)); not tied to the declaration |
+| Local, `--resource-budget` | Yes | **Yes**, for canonical resources present in the budget — OxyMake will not start more concurrent work than the budget allows (a budgeted `cpu` also constrains `cpus`; an unbudgeted key, e.g. `mem` with no `mem` capacity configured, is not interpreted at all) | **No** — a job declaring `cpu = 1` may spawn any number of threads, and nothing sets a `ulimit` or kills it for exceeding declared memory | Same as above |
+| Ray, native DAG | Yes | **Yes** — becomes a real Ray task request (`num_cpus`, `num_gpus`, `memory`, custom resources via `.options()`) checked against live node capacity before submission (`crates/ox-exec-ray/src/driver_script.rs:239-255`, `crates/ox-exec-ray/src/feasibility.rs`) | Partial — Ray's own scheduler will not co-place tasks whose declared totals exceed a node's advertised capacity, but a task using more than it reserved is not stopped (logical scheduling, not containment) | Ray dashboard node/task stats, not surfaced by OxyMake |
+| Ray, Jobs API and arrays | Yes | **Partial** — CPU/GPU/custom resources are requested at the *entrypoint* (driver) level, shared across the jobs the entrypoint runs, not admitted per job; memory is **not** reserved at all — it only becomes an `OXYMAKE_MEMORY_LIMIT_BYTES` environment hint (`crates/ox-exec-ray/src/runtime_env.rs:91-98`) that nothing in OxyMake reads back | **No** | Not measured by OxyMake |
+| SLURM, CLI/REST, single job | Yes — mapped to `#SBATCH` directives (`crates/ox-exec-slurm/src/resource_mapper.rs`) | **Depends on cluster configuration** — SLURM itself can enforce (cgroups) or merely record, depending on how the cluster is configured; OxyMake does not control or detect this | Depends on cluster configuration, same caveat | Whatever `sacct`/`seff` reports on that cluster; OxyMake does not read it back |
+| SLURM, CLI/REST, array | Yes — same directive mapping, shared across array tasks | Same as single job | Same as single job | Same as single job |
+| SLURM, CLI/REST, DAG (`--dependency` chain) | Yes — each step is its own single-job script with its own directives | Same as single job, per step | Same as single job, per step | Same as single job, per step |
+| Mixed SLURM+local (`executor = "local"` override) | Yes | Locally routed jobs go through the local admission row above (opt-in `--resource-budget`); remote jobs keep their SLURM request and its cluster-dependent admission | Per the relevant row above | Per the relevant row above |
+
 The portable resource vocabulary shared by Ray and local scheduler
 admission is:
 
@@ -243,7 +274,12 @@ backslashes and non-ASCII characters, are forwarded as data.
 Native Ray DAG tasks reserve CPU, GPU, memory and custom resources. Memory is
 forwarded as `memory=<bytes>` and included in the live-node feasibility check.
 This is logical scheduling admission, not a hard RSS limit. The per-job Jobs
-API and array paths do not reserve memory.
+API and array paths do not reserve memory; there, a declared memory value is
+instead forwarded to the job as the `OXYMAKE_MEMORY_LIMIT_BYTES` environment
+variable (`crates/ox-exec-ray/src/runtime_env.rs:91-98`). That variable is a
+hint for user code to read, not a limit OxyMake or Ray enforces — nothing in
+OxyMake sets an rlimit or cgroup from it, and nothing kills a job for
+exceeding it.
 
 Local scheduler admission is opt-in with `ox run --resource-budget KEY=VALUE`.
 The flag is repeatable and comma-separated, for example
@@ -269,6 +305,89 @@ those jobs. This is distinct from `--memory-budget`, which caps in-memory
 materialized outputs and never admits or rejects a job. The resource budget is
 per `ox run`: two concurrent runs each get their full configured budget.
 OxyMake does not detect host capacity or coordinate budgets across processes.
+
+#### Resource interpolation in commands
+
+A declared resource can reach the command text itself, through two
+placeholders resolved while the job graph is built
+(`crates/ox-core/src/resolver.rs:1350-1357`):
+
+- `{threads}` substitutes the literal `cpu` resource value (the Snakemake
+  convention). It comes specifically from the key `cpu` — declaring `cpus`
+  instead does not populate `{threads}`.
+- `{resources.NAME}` substitutes any declared resource under its own key,
+  e.g. `{resources.mem_gb}` for `resources = { mem_gb = 16 }`.
+
+This mechanism covers **inline commands only** — `shell` and `run` blocks,
+where the interpolated text is the command OxyMake executes
+(`crates/ox-core/src/resolver.rs:1136-1204`). For `script`, only the path
+string is interpolated, not the file's contents; for `call`, only the
+function-reference string is interpolated, not the function body. A
+`{threads}`/`{resources.NAME}` reference inside a script file or a called
+function is not substituted — it reaches the script/function unexpanded.
+Neither placeholder is available in a shared wrapper outside the command
+(there is no such wrapper today; see the `env` field note above).
+
+The interpolated execution block — the actual command text after
+substitution — is what enters the cache key as `rule_source`
+(`crates/ox-cache/src/key.rs`, `crates/ox-cli/src/commands/run.rs`). The
+`resources` table itself is **not** a separate cache key input. The
+practical consequence: a rule that writes `resources = { cpu = 4 }` and a
+`shell` command that never mentions `{threads}` or `{resources.cpu}` can
+have its `cpu` value changed without invalidating the cache, because the
+command text — the only place resources reach the key — did not change. A
+rule that interpolates `{threads}` or `{resources.NAME}` into its command
+does get cache invalidation when that value changes, as a side effect of
+the command text changing, not because `resources` is tracked directly.
+
+#### A shared multi-user machine without root
+
+This is the pattern for the case that motivated the guarantee table above:
+several people running many rules on one Linux box, no root, no cgroups.
+
+OxyMake bounds how many jobs *start*, not what each one *takes*. On a
+shared machine, get all three of these, not just the first:
+
+1. **Declare resources on every rule** — `resources = { cpu = N, mem_gb = M }`
+   — even though local admission ignores them by default. This is what
+   makes the next two steps possible and keeps the numbers visible in one
+   place.
+2. **Run with a matching `--resource-budget`** — e.g.
+   `ox run --resource-budget cpu=<cores you're allowed>,mem_gb=<memory you're
+   allowed>`. This caps how many jobs your own `ox run` starts concurrently.
+   It does not cap what a single started job does once running, and it does
+   not know about — or coordinate with — anyone else's `ox run`, your own
+   other concurrent runs, or any process outside OxyMake.
+3. **Cap library thread pools yourself**, inside the command, using
+   `{threads}`/`{resources.NAME}` interpolation (above) so the number is
+   declared once: e.g.
+   `shell = "OMP_NUM_THREADS={threads} POLARS_MAX_THREADS={threads} {command}"`.
+   OxyMake has no mechanism that does this for you.
+
+A per-run `--resource-budget` coordinates nothing across runs or users. Two
+people each running `ox run --resource-budget cpu=8` on the same 8-core
+machine will each believe they have the whole machine; OxyMake will start
+up to 8 CPU-tokens' worth of work *per run*, not per machine.
+
+#### Memory limits: reservation, not enforcement
+
+Nothing in OxyMake today enforces a declared memory value against a
+running process — see the guarantee table above. If a future version adds
+local memory enforcement, the mechanism matters: `ulimit -v` (`RLIMIT_AS`)
+caps a process's *address space*, not its resident set (RSS). Address
+space is routinely far larger than resident memory for a modern runtime —
+a process can reserve gigabytes of virtual address space it never
+touches — so an address-space limit rejects far more processes than a
+resident-memory limit would, or none at all if set loosely enough to be
+harmless. It is not a drop-in for "limit this job's memory." One team has
+reported, unconfirmed and still under investigation on their side, that
+wrapping a job in a `ulimit -v` cap appeared to break an S3 client's TLS
+setup on its first call; whether the cap, a related environment change, or
+something else in their environment caused it has not been established.
+It is recorded here only as a caution, not as a finding about `ulimit -v`
+in general: an enforcement feature should name its actual mechanism (RSS
+via cgroup, address space via rlimit, or none) rather than promise
+"memory".
 
 ### Benchmark output
 
