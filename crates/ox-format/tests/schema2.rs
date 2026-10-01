@@ -216,3 +216,32 @@ call = 'module:function'
     ox_format::migrate::prepare(&path).unwrap().write().unwrap();
     assert!(fs::read_to_string(&path).unwrap().ends_with(body));
 }
+
+#[test]
+fn migration_report_states_cache_and_document_formatting_contracts() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("root.toml");
+    fs::write(
+        &path,
+        "ox_version='0.1'\r\n\r\n[rule.a]\r\noutput=['a']\r\nshell='true'\r\n",
+    )
+    .unwrap();
+
+    let migration = ox_format::migrate::prepare(&path).unwrap();
+    let report = migration.report();
+    assert!(
+        report.contains("Migration preserves cache identity."),
+        "{report}"
+    );
+    assert!(
+        report.contains(
+            "Any future execution-semantics change will state its cache consequences in that release's notes."
+        ),
+        "{report}"
+    );
+    assert!(
+        report.contains("Document formatting, including line endings, may be normalized."),
+        "{report}"
+    );
+    assert!(!report.contains("first run after"), "{report}");
+}

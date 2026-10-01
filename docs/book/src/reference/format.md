@@ -60,7 +60,7 @@ shell = "python process.py {input} {output}"
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `input` | Array of strings | No | Input file patterns with `{wildcards}` |
-| `output` | Array of strings | Yes | Output file patterns with `{wildcards}` |
+| `output` | Array of strings or descriptors | Yes | Output file patterns with `{wildcards}`; descriptors configure individual outputs |
 | `shell` | String | One of shell/run/script/call | Opaque shell command |
 | `run` | String | One of shell/run/script/call | Inline script (with `lang`) |
 | `script` | String | One of shell/run/script/call | Path to script file |
@@ -70,10 +70,23 @@ shell = "python process.py {input} {output}"
 | `resources` | Table | No | Resource requirements |
 | `environment` | Table | No | Software backend, e.g. `{ uv = "requirements.txt" }`; not shell variables. `env` is rejected in schema 2; a variables table does not exist yet. |
 | `when` | String | No | Conditional guard expression |
-| `materialize` | String | No | `always`, `auto`, `never`, `final` |
 | `params` | Table | No | Rule-specific parameters |
 | `clean_outputs` | String | No | `always` (default), `on-failure`, `never`; see Output cleanup below |
 | `cache_platform` | String | No | `exact` (default), `any`; see Cross-platform cache reuse below |
+
+`materialize` belongs to an output descriptor, not directly to the rule. Its
+values are `always`, `auto`, `never`, and `final`:
+
+<!-- schema2-materialize-example-start -->
+```toml
+format_version = "2"
+ox_version = ">=0.7.0"
+
+[rule.a]
+output = [{ path = "a", materialize = "always" }]
+shell = "touch a"
+```
+<!-- schema2-materialize-example-end -->
 
 ### Cross-platform cache reuse
 
