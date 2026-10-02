@@ -135,7 +135,12 @@ async fn allocation_has_child_peak_on_both_paths() {
 #[serial_test::serial]
 async fn busy_child_uses_more_cpu_than_sleeping_neighbour() {
     for streaming in [false, true] {
-        let busy = "exec python3 -c 'import time; end = time.monotonic() + 0.5\nwhile time.monotonic() < end: pass'";
+        // Bound the busy child by WORK, not by wall time: a loop that stops at
+        // a monotonic deadline accumulates less CPU the busier the machine is,
+        // so under load it sinks toward the sleeper's interpreter start-up cost
+        // and the assertion below fails for reasons that have nothing to do
+        // with attribution.
+        let busy = "exec python3 -c 'i = 0\nwhile i < 20000000: i += 1'";
         let sleep = "exec python3 -c 'import time; time.sleep(0.5)'";
         let (busy, sleep) = tokio::join!(run(busy, streaming, None), run(sleep, streaming, None));
         assert_eq!(busy.exit_code, 0);

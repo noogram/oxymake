@@ -49,15 +49,28 @@ change with it.
 
 ## Variables OxyMake sets (visible to scripts)
 
-These are exported into the environment of every job step. Scripts may
-rely on them. See `STATUS.md` §6 for the stability tier.
+**Not universal.** These are not exported on every route today — construction
+is visible only in the SLURM job-array script generator
+(`crates/ox-exec-slurm/src/job_script.rs`, `generate_array`). A single SLURM
+job (no array), a SLURM DAG step (each step is its own single-job script),
+the local executor, and the Ray executors do not set `OX_JOB_ID` or
+`OX_WC_<wildcard>`. Where the table below says "stable", it means: on the
+route that sets it, the name and semantics are covered by `STATUS.md` §6 —
+not that every route sets it. Treat the gap as a known limitation, not an
+implementation you can rely on outside the SLURM array path.
 
-### Stable
+If what you need is a declared value inside a command, do not wait for these
+variables: placeholder interpolation is a separate mechanism, it runs in the
+resolver rather than in an executor, and it therefore works on every route
+today — for inline commands only. See
+[resource interpolation](../book/src/reference/format.md#resource-interpolation-in-commands).
+
+### Stable (SLURM job-array path only)
 
 | Name | Value |
 |------|-------|
-| `OX_JOB_ID` | Stable string identifier for the running job. Unique within a run. |
-| `OX_WC_<wildcard>` | One variable per wildcard in the rule's pattern. Example: a rule with output `results/{sample}.txt` produces `OX_WC_sample=S001` in the job's environment. |
+| `OX_JOB_ID` | Stable string identifier for the running job. Unique within a run. Set only by the SLURM array job script today. |
+| `OX_WC_<wildcard>` | One variable per wildcard in the rule's pattern. Example: a rule with output `results/{sample}.txt` produces `OX_WC_sample=S001` in the job's environment. Set only by the SLURM array job script today. |
 
 ### Unstable
 
