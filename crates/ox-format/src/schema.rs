@@ -220,6 +220,7 @@ pub(crate) fn structural(
     if kind == "resource_class" {
         const NON_RESOURCE_KEYS: &[&str] = &[
             "parent",
+            "extends",
             "resource_class",
             "variables",
             "environment",
@@ -234,12 +235,7 @@ pub(crate) fn structural(
             "resources",
         ];
         for (key, child) in table {
-            if NON_RESOURCE_KEYS.contains(&key.as_str())
-                || !matches!(
-                    child,
-                    Value::Integer(_) | Value::Float(_) | Value::String(_)
-                )
-            {
+            if NON_RESOURCE_KEYS.contains(&key.as_str()) {
                 return Err(error(
                     path,
                     format!(
@@ -247,6 +243,7 @@ pub(crate) fn structural(
                     ),
                 ));
             }
+            resource_value(child, path, &format!("{location}.{key}"))?;
         }
         return Ok(());
     }
@@ -271,6 +268,13 @@ pub(crate) fn structural(
             ));
         }
         match (kind, key.as_str()) {
+            ("rule", "resources") => {
+                if let Some(resources) = child.as_table() {
+                    for (name, value) in resources {
+                        resource_value(value, path, &format!("{at}.{name}"))?;
+                    }
+                }
+            }
             ("root", "rule" | "profile" | "gate") => {
                 if let Some(named) = child.as_table() {
                     for (name, entry) in named {
@@ -306,6 +310,21 @@ pub(crate) fn structural(
             }
             _ => {}
         }
+    }
+    Ok(())
+}
+
+fn resource_value(value: &Value, path: &Path, location: &str) -> Result<(), ParseError> {
+    if !matches!(
+        value,
+        Value::Integer(_) | Value::Float(_) | Value::String(_)
+    ) {
+        return Err(error(
+            path,
+            format!(
+                "invalid resource value at `{location}`: {value}; expected an integer, float, or string"
+            ),
+        ));
     }
     Ok(())
 }

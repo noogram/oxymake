@@ -425,7 +425,11 @@ fn parse_workflow_inner(
     let mut rule_resource_classes = BTreeMap::new();
     for (name, raw_rule) in &raw.rule {
         if format_version == "2" {
-            validate_resource_aliases(&raw_rule.resources, &format!("rule `{name}`"))?;
+            validate_resource_aliases(
+                &raw_rule.resources,
+                &format!("rule.{name}.resources"),
+                file_path,
+            )?;
             if let Some(class) = &raw_rule.resource_class {
                 let class = class.as_str().ok_or_else(|| ParseError::InvalidField {
                     field: format!("rule.{name}.resource_class"),
@@ -520,7 +524,7 @@ fn parse_workflow_inner(
                 .iter()
                 .map(|(key, value)| (key.clone(), value.clone()))
                 .collect();
-            validate_resource_aliases(&values, &format!("resource class `{name}`"))?;
+            validate_resource_aliases(&values, &format!("resource_classes.{name}"), file_path)?;
             resource_classes.insert(name.clone(), parse_resources(&values));
             resource_class_origins.insert(name.clone(), file_path.to_path_buf());
         }
@@ -533,7 +537,26 @@ fn parse_workflow_inner(
             raw.ox_version
         );
         tracing::warn!("{warning}");
-        vec![warning]
+        let mut warnings = vec![warning];
+        let mut ignored = Vec::new();
+        if raw.resource_classes.is_some() {
+            ignored.push("resource_classes".to_owned());
+        }
+        for (name, rule) in &raw.rule {
+            if rule.resource_class.is_some() {
+                ignored.push(format!("rule.{name}.resource_class"));
+            }
+        }
+        if !ignored.is_empty() {
+            let warning = format!(
+                "{}: format_version = 1: {} ignored; resource classes require format_version = 2 in this file",
+                file_path.display(),
+                ignored.join(", ")
+            );
+            tracing::warn!("{warning}");
+            warnings.push(warning);
+        }
+        warnings
     } else {
         Vec::new()
     };
@@ -673,21 +696,19 @@ fn expand_includes(
 fn validate_resource_aliases(
     resources: &BTreeMap<String, toml::Value>,
     context: &str,
+    file_path: &Path,
 ) -> Result<(), ParseError> {
     let mut seen = BTreeMap::new();
     for key in resources.keys() {
-        let canonical =
-            canonicalize_resource_key(key).map_err(|error| ParseError::InvalidField {
-                field: context.to_string(),
-                reason: error.to_string(),
-            })?;
+        let canonical = canonicalize_resource_key(key)
+            .map_err(|error| crate::schema::error(file_path, format!("{context}: {error}")))?;
         if let Some(first) = seen.insert(canonical, key) {
-            return Err(ParseError::InvalidField {
-                field: context.to_string(),
-                reason: format!(
-                    "resource is declared more than once via {first:?} and {key:?} in the same table"
+            return Err(crate::schema::error(
+                file_path,
+                format!(
+                    "{context}: resource is declared more than once via {first:?} and {key:?} in the same table"
                 ),
-            });
+            ));
         }
     }
     Ok(())
@@ -704,10 +725,19 @@ fn resolve_resource_classes(workflow: &mut Workflow) -> Result<(), ParseError> {
                 .get(class_name)
                 .ok_or_else(|| ParseError::InvalidField {
                     field: format!("rule.{}.resource_class", rule.name.as_str()),
-                    reason: format!(
-                        "rule `{}` references unknown resource class `{class_name}`",
-                        rule.name.as_str()
-                    ),
+                    reason: {
+                        let mut reason = format!(
+                            "rule `{}` references unknown resource class `{class_name}`",
+                            rule.name.as_str()
+                        );
+                        // Parsing errors otherwise discard collected warnings, including
+                        // the origin of class definitions ignored under schema 1.
+                        for warning in &workflow.warnings {
+                            reason.push('\n');
+                            reason.push_str(warning);
+                        }
+                        reason
+                    },
                 })?;
         let mut effective = class.clone();
         for (key, value) in &rule.resources {
@@ -722,10 +752,8 @@ fn resolve_resource_classes(workflow: &mut Workflow) -> Result<(), ParseError> {
                     canonicalize_resource_key(candidate).ok().as_ref() == Some(&canonical)
                 })
                 .cloned();
-            if let Some(inherited) = inherited {
-                effective.remove(&inherited);
-            }
-            effective.insert(key.clone(), value.clone());
+            // Keep inherited spelling so existing interpolation names remain valid.
+            effective.insert(inherited.unwrap_or_else(|| key.clone()), value.clone());
         }
         rule.resources = effective;
     }
@@ -2222,10 +2250,10 @@ mem = "4G"
             );
         }
         assert_eq!(
-            rule("two").resources.get("cpus"),
+            rule("two").resources.get("cpu"),
             Some(&ResourceValue::Int(3))
         );
-        assert!(!rule("two").resources.contains_key("cpu"));
+        assert!(!rule("two").resources.contains_key("cpus"));
         assert_eq!(
             rule("two").resources.get("mem"),
             Some(&ResourceValue::Str("4G".into()))

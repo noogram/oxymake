@@ -3149,3 +3149,137 @@ mod resource_budget_tests {
         assert!(err.to_string().contains("whole token"));
     }
 }
+
+#[cfg(test)]
+mod resource_class_regressions {
+    use std::path::Path;
+
+    use ox_core::resolver::{Config, ResolveRequest, resolve};
+    fn resolved_key(source: &str) -> ox_core::model::ContentHash {
+        let workflow =
+            ox_format::parse::parse_workflow(source, std::path::Path::new("test.toml")).unwrap();
+        let job = resolve(
+            &workflow.rules,
+            &ResolveRequest {
+                targets: vec!["out".into()],
+                config: Config::default(),
+                existing_files: vec![],
+            },
+        )
+        .unwrap()
+        .jobs
+        .remove(0);
+        super::job_cache_key_with_components(&job, None)
+            .unwrap()
+            .cache_key
+    }
+    #[test]
+    fn resource_class_identity_is_the_resolved_execution_not_the_class_name() {
+        let prefix = "format_version='2'\nox_version='>=0.7.0'\n";
+        let inline = format!(
+            "{prefix}[rule.a]\noutput=['out']\nshell='echo {{threads}} {{resources.mem}} > {{output}}'\nresources={{cpu=2,mem='4G'}}\n"
+        );
+        let named = format!(
+            "{prefix}[rule.a]\noutput=['out']\nshell='echo {{threads}} {{resources.mem}} > {{output}}'\nresource_class='standard'\n[resource_classes.standard]\ncpu=2\nmem='4G'\n"
+        );
+        let renamed = named.replace("standard", "renamed");
+        assert_eq!(resolved_key(&inline), resolved_key(&named));
+        assert_eq!(resolved_key(&named), resolved_key(&renamed));
+    }
+
+    #[test]
+    fn schema1_cpus_preserves_literal_threads_and_cache_key() {
+        let source = "format_version='1'
+[rule.a]
+output=['out']
+shell='echo t={threads}'
+resources={cpus=7}
+";
+        let wf = ox_format::parse::parse_workflow(source, Path::new("legacy.toml")).unwrap();
+        let job = resolve(
+            &wf.rules,
+            &ResolveRequest {
+                targets: vec!["out".into()],
+                config: Config::default(),
+                existing_files: vec![],
+            },
+        )
+        .unwrap()
+        .jobs
+        .remove(0);
+        assert!(
+            matches!(&job.execution, ox_core::model::ExecutionBlock::Shell {command} if command == "echo t={threads}")
+        );
+        assert_eq!(
+            resolved_key(source),
+            resolved_key(&source.replace("resources={cpus=7}", ""))
+        );
+    }
+
+    #[test]
+    fn class_alias_override_interpolates_inherited_spelling() {
+        let source = "format_version='2'
+ox_version='>=0.7.0'
+[resource_classes.standard]
+cpu=2
+mem='4G'
+[rule.a]
+output=['out']
+resource_class='standard'
+resources={cpus=6}
+shell='echo t={threads} c={resources.cpu} m={resources.mem}'
+";
+        let expected = "format_version='2'
+ox_version='>=0.7.0'
+[rule.a]
+output=['out']
+resources={cpu=6,mem='4G'}
+shell='echo t=6 c=6 m=4G'
+";
+        assert_eq!(resolved_key(source), resolved_key(expected));
+    }
+
+    #[test]
+    fn resource_class_cache_identity_survives_include_move_order_and_unused_values() {
+        let prefix = "format_version='2'
+ox_version='>=0.7.0'
+";
+        let class = "[resource_classes.standard]
+cpu=2
+mem='4G'
+";
+        let rule = "[rule.a]
+output=['out']
+shell='echo {threads} {resources.mem}'
+resource_class='standard'
+";
+        let original = format!("{prefix}{class}{rule}");
+        assert_eq!(
+            resolved_key(&original),
+            resolved_key(&format!("{prefix}{rule}{class}"))
+        );
+        let other = "[resource_classes.other]\ncpu=9\n";
+        assert_eq!(
+            resolved_key(&format!("{prefix}{class}{other}{rule}")),
+            resolved_key(&format!("{prefix}{other}{class}{rule}"))
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let child = dir.path().join("classes.toml");
+        std::fs::write(&child, format!("{prefix}{class}")).unwrap();
+        let included = format!(
+            "{prefix}include=[{:?}]
+{rule}",
+            child.to_str().unwrap()
+        );
+        assert_eq!(resolved_key(&original), resolved_key(&included));
+        assert_ne!(
+            resolved_key(&original),
+            resolved_key(&original.replace("cpu=2", "cpu=3"))
+        );
+        let unused = original.replace("echo {threads} {resources.mem}", "echo constant");
+        assert_eq!(
+            resolved_key(&unused),
+            resolved_key(&unused.replace("cpu=2", "cpu=3"))
+        );
+    }
+}
