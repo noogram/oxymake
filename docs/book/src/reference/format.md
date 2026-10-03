@@ -68,6 +68,7 @@ shell = "python process.py {input} {output}"
 | `lang` | String | With `run`/`script` | Language: `python`, `r`, `julia` |
 | `tags` | Table of string → string | No | Key/value labels for grouping and event filtering, e.g. `tags = { stage = "align", speed = "slow" }`. An array of strings is **not** accepted. |
 | `resources` | Table | No | Resource requirements; see [Resources](#resources) below for what each executor actually does with them |
+| `resource_class` | String | No | Schema 2 only: name of a root-level resource class whose values this rule inherits before applying its `resources` overrides |
 | `environment` | Table | No | The software environment to run the command in (`uv`, conda, Nix, Apptainer/Singularity); see the environment backend section. Not to be confused with environment *variables* — there is no field for those today, and under schema 2 a rule-level `env` is rejected with that explanation. |
 | `when` | String | No | Conditional guard expression |
 | `params` | Table | No | Rule-specific parameters |
@@ -250,6 +251,54 @@ shell = "compute_heavy"
 resources = { cpus = 4, mem_gb = 16, gpu = 1 }
 ```
 
+#### Named resource classes (schema 2)
+
+Schema 2 can collect repeated declarations into a root-level named class:
+
+```toml
+format_version = "2"
+ox_version = ">=0.7.0"
+
+[resource_classes.standard]
+cpu = 2
+mem = "4G"
+
+[rule.first]
+output = ["first.txt"]
+shell = "compute --threads {threads} > {output}"
+resource_class = "standard"
+
+[rule.larger]
+output = ["larger.txt"]
+shell = "compute --threads {threads} > {output}"
+resource_class = "standard"
+resources = { cpus = 6 }
+```
+
+A class contains integer, float, or string resource values only, as do schema-2
+rule resources. Custom resource names are allowed. The class guard rejects
+`parent`, `extends`, `resource_class`, `variables`, `environment`, `executor`,
+`when`, `shell`, `run`, `script`, `call`, `input`, `output`, and `resources`.
+Other names are treated as custom resources. It cannot inherit another class or
+declare variables, execution, conditions, or environment settings. Definitions
+may follow their references or live in schema-2 included files, which share one
+class namespace. Schema-1 files ignore class declarations and references and
+warn with the file name and format version; migrate those files to schema 2
+before using classes. Duplicate class definitions and unknown class
+references are errors. A rule's inline `resources` replace individual canonical
+dimensions from its class, so `cpus` may override class `cpu`, but aliases may
+not be duplicated within either table. An override keeps the class spelling:
+class `cpu = 2` plus rule `cpus = 6` yields `cpu = 6`, so
+`{resources.cpu}` and `{threads}` both expand to `6`; `{resources.cpus}`
+stays literal. A new dimension keeps the rule spelling.
+
+Classes resolve before command interpolation. Their effective values therefore
+expand `{resources.NAME}` using the effective spelling. As with inline resources,
+`{threads}` reads only `cpu`; a class declaring only `cpus` leaves it literal. Cache
+identity also follows those effective values: class names, definition order,
+and definition file paths do not enter the key. As before, a resource affects a
+key only when interpolation places its value in the execution text.
+
 #### What a declared resource actually does, per route
 
 A declared resource means something different on every execution route.
@@ -346,9 +395,8 @@ A declared resource can reach the command text itself, through two
 placeholders resolved while the job graph is built
 (`crates/ox-core/src/resolver.rs:1350-1357`):
 
-- `{threads}` substitutes the literal `cpu` resource value (the Snakemake
-  convention). It comes specifically from the key `cpu` — declaring `cpus`
-  instead does not populate `{threads}`.
+- `{threads}` substitutes the canonical CPU resource value (the Snakemake
+  convention), declared as either `cpu` or `cpus`.
 - `{resources.NAME}` substitutes any declared resource under its own key,
   e.g. `{resources.mem_gb}` for `resources = { mem_gb = 16 }`.
 

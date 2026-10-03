@@ -897,6 +897,9 @@ mod tests {
             global_environment: None,
             profiles: Default::default(),
             executor_config: Default::default(),
+            resource_classes: Default::default(),
+            resource_class_origins: Default::default(),
+            rule_resource_classes: Default::default(),
         }
     }
 

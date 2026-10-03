@@ -69,6 +69,13 @@ pub enum ParseError {
         second: PathBuf,
     },
 
+    #[error("duplicate resource class `{name}` (first defined in {first}, redefined in {second})")]
+    DuplicateResourceClass {
+        name: String,
+        first: PathBuf,
+        second: PathBuf,
+    },
+
     #[error("unsupported ox_version `{version}` (supported: {supported:?})")]
     UnsupportedVersion {
         version: String,

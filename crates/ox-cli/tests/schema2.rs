@@ -7,6 +7,17 @@ fn ox() -> Command {
 }
 
 #[test]
+fn lint_accepts_shared_resource_class_on_three_rules() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(
+        dir.path().join("Oxymakefile.toml"),
+        "format_version='2'\nox_version='>=0.7.0'\n[resource_classes.standard]\ncpu=2\nmem='4G'\n[rule.a]\noutput=['a']\nshell='touch a'\nresource_class='standard'\n[rule.b]\noutput=['b']\nshell='touch b'\nresource_class='standard'\n[rule.c]\noutput=['c']\nshell='touch c'\nresource_class='standard'\nresources={cpu=3}\n",
+    )
+    .unwrap();
+    ox().current_dir(dir.path()).arg("lint").assert().success();
+}
+
+#[test]
 fn migration_preview_write_and_ambiguous_refusal() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("Oxymakefile.toml");
@@ -161,4 +172,191 @@ fn rejected_requirement_precedes_cache_adoption() {
         .failure()
         .stderr(contains(">=99.0.0"));
     assert!(!dir.path().join(".oxymake").exists());
+}
+
+#[test]
+fn resource_class_diagnostics_name_included_file_and_defect() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(
+        dir.path().join("Oxymakefile.toml"),
+        "format_version='2'
+ox_version='>=0.7.0'
+include=['classes.toml']
+",
+    )
+    .unwrap();
+    for (body, defect) in [
+        (
+            "[resource_classes.bad]
+cpu=1
+cpus=2",
+            "more than once",
+        ),
+        (
+            "[rule.a]
+shell='true'
+resources={cpu=1,cpus=2}",
+            "more than once",
+        ),
+        (
+            "[resource_classes.bad]
+cpu=true",
+            "invalid resource value",
+        ),
+        (
+            "[rule.a]
+shell='true'
+resources={cpu=true}",
+            "invalid resource value",
+        ),
+    ] {
+        fs::write(
+            dir.path().join("classes.toml"),
+            format!(
+                "format_version='2'
+ox_version='>=0.7.0'
+{body}"
+            ),
+        )
+        .unwrap();
+        ox().current_dir(dir.path())
+            .arg("lint")
+            .assert()
+            .failure()
+            .stderr(contains("classes.toml"))
+            .stderr(contains(defect));
+    }
+}
+
+#[test]
+fn legacy_class_declarations_warn_with_origin_and_version() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(
+        dir.path().join("Oxymakefile.toml"),
+        "format_version='2'
+ox_version='>=0.7.0'
+include=['legacy.toml']
+",
+    )
+    .unwrap();
+    for body in [
+        "[resource_classes.standard]
+cpu=2",
+        "[rule.a]
+shell='true'
+resource_class='standard'",
+    ] {
+        fs::write(
+            dir.path().join("legacy.toml"),
+            format!(
+                "format_version='1'
+{body}"
+            ),
+        )
+        .unwrap();
+        ox().current_dir(dir.path())
+            .arg("lint")
+            .assert()
+            .success()
+            .stderr(contains("legacy.toml"))
+            .stderr(contains("format_version"))
+            .stderr(contains("ignored"));
+    }
+}
+
+#[test]
+fn resource_class_override_runs_with_effective_values() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(
+        dir.path().join("Oxymakefile.toml"),
+        "format_version='2'
+ox_version='>=0.7.0'
+[resource_classes.standard]
+cpu=2
+mem='4G'
+[rule.a]
+output=['out']
+shell='echo t={threads} c={resources.cpu} m={resources.mem} > {output}'
+resource_class='standard'
+resources={cpus=6}
+",
+    )
+    .unwrap();
+    ox().current_dir(dir.path())
+        .args(["run", "out"])
+        .assert()
+        .success();
+    assert_eq!(
+        fs::read_to_string(dir.path().join("out")).unwrap(),
+        "t=6 c=6 m=4G
+"
+    );
+}
+
+#[test]
+fn unknown_class_reports_ignored_legacy_definition() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(dir.path().join("Oxymakefile.toml"), "format_version='2'\nox_version='>=0.7.0'\ninclude=['legacy.toml']\n[rule.a]\noutput=['a']\nshell='echo {threads} > {output}'\nresource_class='standard'\n").unwrap();
+    fs::write(
+        dir.path().join("legacy.toml"),
+        "format_version='1'\n[resource_classes.standard]\ncpu=2\n",
+    )
+    .unwrap();
+    ox().current_dir(dir.path())
+        .args(["lint", "--json"])
+        .assert()
+        .failure()
+        .stdout(contains("legacy.toml"))
+        .stdout(contains("format_version"))
+        .stdout(contains("ignored"));
+}
+
+#[test]
+fn schema2_resources_reject_invalid_values_but_accept_custom_names() {
+    let dir = tempfile::tempdir().unwrap();
+    for table in ["resource_classes.bad", "rule.a.resources"] {
+        for value in ["true", "[1]", "{nested=1}"] {
+            fs::write(
+                dir.path().join("Oxymakefile.toml"),
+                format!(
+                    "format_version='2'
+ox_version='>=0.7.0'
+[{table}]
+cpu={value}
+"
+                ),
+            )
+            .unwrap();
+            ox().current_dir(dir.path())
+                .arg("lint")
+                .assert()
+                .failure()
+                .stderr(contains("invalid resource value"))
+                .stderr(contains("cpu"));
+        }
+    }
+    fs::write(
+        dir.path().join("Oxymakefile.toml"),
+        "format_version='2'
+ox_version='>=0.7.0'
+[resource_classes.bad]
+extends='base'
+",
+    )
+    .unwrap();
+    ox().current_dir(dir.path())
+        .arg("lint")
+        .assert()
+        .failure()
+        .stderr(contains("extends"));
+    fs::write(
+        dir.path().join("Oxymakefile.toml"),
+        "format_version='2'
+ox_version='>=0.7.0'
+[resource_classes.custom]
+license_tokens=2
+",
+    )
+    .unwrap();
+    ox().current_dir(dir.path()).arg("lint").assert().success();
 }

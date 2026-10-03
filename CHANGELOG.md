@@ -17,6 +17,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   release version is 0.7.0 for this contract (#42).
 
 ### Added
+- Schema 2 supports root-level `[resource_classes.NAME]` declarations and
+  rule-level `resource_class = "NAME"`. Classes resolve across includes before
+  interpolation, while inline `resources` override individual canonical
+  dimensions; cache identity continues to follow resolved command text (#43).
 - `ox migrate --to-format 2` reports an entire include-graph migration without
   writing. `--write` applies only a fully resolved migration, preserving command
   bytes and software environments. Generated markers `0.1` and `0.3` become
@@ -27,7 +31,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The unstable Rust API exposes `Workflow::warnings` for per-file legacy
   diagnostics and `ox_format::migrate` for preparing and applying migrations.
 
+### Changed
+- The unstable Rust `Workflow` struct adds `resource_classes`,
+  `resource_class_origins`, and `rule_resource_classes`; downstream struct
+  literals must initialize these fields (#43).
+- Schema-2 resource values must be integers, floats, or strings. Class alias
+  errors name the source file, and schema-1 files warn when class declarations
+  or references are ignored (#43).
+
 ### Fixed
+- Class overrides keep the inherited resource spelling, so a rule's `cpus`
+  override of class `cpu` works with `{threads}` and `{resources.cpu}`.
+  Inline `cpus` retains the existing literal `{threads}` and cache identity (#43).
 - The format reference now documents `materialize` on an output descriptor,
   matching the schema-2 form accepted by `ox lint` (#42).
 

@@ -135,6 +135,8 @@ bump and a `CHANGELOG.md` entry:
 
 ### Unstable
 
+- Schema-2 `[resource_classes.NAME]` and rule-level `resource_class` — named
+  resource bundles resolved across the include graph.
 - `clean_outputs` (`always`, `on-failure`, `never`) — local-executor output cleanup policy.
 - `cache_platform` (`exact`, `any`) — per-rule cross-platform cache reuse policy.
 - Any TOML field not in the list above is **experimental** and may be

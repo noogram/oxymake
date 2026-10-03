@@ -27,8 +27,12 @@ ox lint -f Oxymakefile.toml
 
 Use `environment = { uv = "requirements.txt" }` for the software backend.
 There is no variables table yet, and rule `env` is rejected in schema 2. Keep
-any existing shell assignments in the command. Named resource classes and
-resource exports are also future work.
+any existing shell assignments in the command. Schema 2 supports
+[named resource classes](../reference/format.md#named-resource-classes-schema-2).
+Migrate each file that declares or references a class: schema 1 ignores those
+fields and warns. Overrides preserve the class spelling, so rule `cpus = 6`
+over class `cpu = 2` expands both `{threads}` and `{resources.cpu}` to `6`.
+Resource exports remain future work.
 
 Migration preserves cache identity. Any future change to execution semantics
 will state its own cache consequences in that release's notes. Command bytes are
