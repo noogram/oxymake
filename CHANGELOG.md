@@ -17,6 +17,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   release version is 0.7.0 for this contract (#42).
 
 ### Added
+- `ox run --dry-run` now shows each job's expanded execution block in human
+  output and in the NDJSON `dry_run_job.execution` field. Shell and inline
+  commands preserve multi-line text; script and call rules expose their
+  resolved invocation details, making unexpanded placeholders visible before
+  execution (#48).
 - `ox migrate --to-format 2` reports an entire include-graph migration without
   writing. `--write` applies only a fully resolved migration, preserving command
   bytes and software environments. Generated markers `0.1` and `0.3` become

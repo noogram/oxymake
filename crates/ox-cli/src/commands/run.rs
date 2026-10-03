@@ -37,6 +37,34 @@ use ox_plan::critical_path::CriticalPathPass;
 use super::common;
 use super::remote_follow::{self, FollowPolicy, FollowRequest, FollowStop};
 
+/// Human-readable label and resolved text for a dry-run execution block.
+///
+/// Shell and inline-run blocks retain their exact resolved text. Script and
+/// call blocks use a compact invocation notation because their executors add
+/// runtime machinery that is not part of the workflow declaration.
+fn dry_run_execution(execution: &ExecutionBlock) -> (String, String) {
+    match execution {
+        ExecutionBlock::Shell { command } => ("shell".into(), command.clone()),
+        ExecutionBlock::Run { code, lang } => (format!("run, {lang}"), code.clone()),
+        ExecutionBlock::Script { path, lang } => (
+            "script".into(),
+            format!("{} {}", lang.as_deref().unwrap_or("sh"), path.display()),
+        ),
+        ExecutionBlock::Call { function, lang } => ("call".into(), format!("{lang} {function}")),
+    }
+}
+
+/// Print execution text as a line-marked block. Splitting on `\n` preserves
+/// blank lines (including a final one), while the marker makes embedded
+/// indentation and multi-line commands unambiguous to a human reader.
+fn print_dry_run_execution(execution: &ExecutionBlock) {
+    let (label, text) = dry_run_execution(execution);
+    println!("    execution ({label}):");
+    for line in text.split('\n') {
+        println!("      | {line}");
+    }
+}
+
 /// Lightweight phase timer for `--timings` output.
 struct PhaseTimer {
     enabled: bool,
@@ -120,7 +148,7 @@ pub struct RunArgs {
     #[arg(long, value_name = "PATH")]
     pub report_json: Option<String>,
 
-    /// Show what would run without executing
+    /// Show jobs and expanded execution blocks without executing
     #[arg(short = 'n', long)]
     pub dry_run: bool,
 
@@ -1372,6 +1400,7 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
                             "rule": job.rule.as_str(),
                             "outputs": outputs,
                             "inputs": inputs,
+                            "execution": &job.execution,
                         });
                         println!("{}", job_event);
                     }
@@ -1406,6 +1435,7 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
                             job.rule.as_str(),
                             outputs.join(", ")
                         );
+                        print_dry_run_execution(&job.execution);
                     }
                 }
             }
