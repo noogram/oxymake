@@ -39,7 +39,7 @@ ox run --no-cache               # Ignore the cache, re-run everything
   runs. Pure remote runs reject it.
 - `--rule RULE` -- Only run jobs from this rule (exact name or `/regex/`)
 - `-k`, `--keep-going` -- Continue independent jobs after a failure
-- `-n`, `--dry-run` -- Show what would run without executing
+- `-n`, `--dry-run` -- Show jobs and expanded execution blocks without executing
 - `--json` -- Emit NDJSON events on stdout
 - `--report-json PATH` -- Write the NDJSON event stream to a file
 - `--note TEXT` -- Attach a note to this run
@@ -67,6 +67,29 @@ completed output OxyMake keeps in memory, not whether a job may start.
 A resource budget belongs to one `ox run` process. Two concurrent runs each
 receive their configured capacity; OxyMake makes no host-wide capacity or
 cross-process resource-arbitration promise.
+
+#### Dry-run execution blocks
+
+`ox run --dry-run` keeps its summary and job lines unchanged, then adds the
+resolved execution block beneath each job. Shell blocks show the exact command
+after `{input}`, `{output}`, `{threads}`, `{resources.*}`, `{params.*}`,
+`{config.*}`, and wildcard interpolation. Inline `run` blocks show the resolved
+source text and language. Script blocks show the interpreter followed by the
+resolved script path (using `sh` when no language is declared). Call blocks
+show the language followed by the resolved function reference; this is a
+description of the invocation, not the generated adapter code.
+
+Human output prefixes every physical line of execution text with `      | `.
+This includes blank lines and a final blank line, so indentation and line
+breaks remain visible without reformatting the command. With `--json`, each
+`dry_run_job` event instead contains an `execution` object using the workflow
+mode's fields: `type` plus `command` for `shell`, `code` and `lang` for `run`,
+`path` and optional `lang` for `script`, or `function` and `lang` for `call`.
+JSON string escaping preserves multi-line text exactly.
+
+Resolved execution text can contain values supplied through configuration or
+parameters. Treat dry-run output as potentially sensitive, just like job
+environments and logs; OxyMake does not redact those values.
 
 Ray checks each active task's CPU (default 1), GPU, memory and custom request against
 one live node's **total** capacity before submitting the DAG. Busy capable
