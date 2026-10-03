@@ -1348,7 +1348,7 @@ fn interpolate_full(
     }
 
     // Replace {threads} with the cpu resource value (Snakemake convention).
-    if let Some(cpu) = resources.get("cpu").or_else(|| resources.get("cpus")) {
+    if let Some(cpu) = resources.get("cpu") {
         result = result.replace("{threads}", &cpu.to_string());
     }
 
