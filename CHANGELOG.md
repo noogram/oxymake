@@ -17,6 +17,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   release version is 0.7.0 for this contract (#42).
 
 ### Added
+- Schema 2 supports root-level `[resource_classes.NAME]` declarations and
+  rule-level `resource_class = "NAME"`. Classes resolve across includes before
+  interpolation, while inline `resources` override individual canonical
+  dimensions; cache identity continues to follow resolved command text (#43).
 - `ox migrate --to-format 2` reports an entire include-graph migration without
   writing. `--write` applies only a fully resolved migration, preserving command
   bytes and software environments. Generated markers `0.1` and `0.3` become
