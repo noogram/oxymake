@@ -6,8 +6,29 @@ This page is the complete format reference.
 ## Top-Level Fields
 
 ```toml
-ox_version = "0.1"           # Required. OxyMake format version.
+format_version = "2"
+ox_version = ">=0.7.0"       # Minimum capable binary, not a reproducibility pin.
 ```
+
+Absent `format_version` selects legacy schema 1. Only `"1"` and `"2"` are
+supported. Schema 1 leaves `ox_version` informational and warns for each file
+that no binary requirement is enforced; its resource identity is unchanged.
+
+Schema 2 requires exactly `>=MAJOR.MINOR.PATCH` with canonical decimal version
+components, for example `>=0.7.0`. Missing requirements, shorthand (`0.1`), other
+comparators, ranges, prerelease/build suffixes, and an unsatisfied minimum are
+errors. Diagnostics name the file, requirement and running binary version.
+Every included file is checked before any external config source is read or a
+workflow is planned or run. Included files declare their own schema and minimum;
+a legacy include still warns and has no enforced binary requirement.
+
+Schema 2 rejects unknown structural keys, including nested rule, profile, gate,
+executor, log, input/output descriptor and guard fields. Dynamic maps (`config`,
+`tags`, `params`, resource names, wildcard constraints, profile overrides and
+named input/output paths) keep their user-defined names. Named resource classes,
+variables tables and resource exports are not implemented.
+
+Use [`ox migrate --to-format 2`](commands/migrate.md) to review an upgrade.
 
 ## Config Section
 
@@ -39,7 +60,7 @@ shell = "python process.py {input} {output}"
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `input` | Array of strings | No | Input file patterns with `{wildcards}` |
-| `output` | Array of strings | Yes | Output file patterns with `{wildcards}` |
+| `output` | Array of strings or descriptors | Yes | Output file patterns with `{wildcards}`; descriptors configure individual outputs |
 | `shell` | String | One of shell/run/script/call | Opaque shell command |
 | `run` | String | One of shell/run/script/call | Inline script (with `lang`) |
 | `script` | String | One of shell/run/script/call | Path to script file |
@@ -47,9 +68,8 @@ shell = "python process.py {input} {output}"
 | `lang` | String | With `run`/`script` | Language: `python`, `r`, `julia` |
 | `tags` | Table of string → string | No | Key/value labels for grouping and event filtering, e.g. `tags = { stage = "align", speed = "slow" }`. An array of strings is **not** accepted. |
 | `resources` | Table | No | Resource requirements; see [Resources](#resources) below for what each executor actually does with them |
-| `environment` | Table | No | The software environment to run the command in (`uv`, conda, Nix, Apptainer/Singularity); see the environment backend section. Not to be confused with environment *variables* — there is no field for those today. |
+| `environment` | Table | No | The software environment to run the command in (`uv`, conda, Nix, Apptainer/Singularity); see the environment backend section. Not to be confused with environment *variables* — there is no field for those today, and under schema 2 a rule-level `env` is rejected with that explanation. |
 | `when` | String | No | Conditional guard expression |
-| `materialize` | String | No | `always`, `auto`, `never`, `final` |
 | `params` | Table | No | Rule-specific parameters |
 | `clean_outputs` | String | No | `always` (default), `on-failure`, `never`; see Output cleanup below |
 | `cache_platform` | String | No | `exact` (default), `any`; see Cross-platform cache reuse below |
@@ -62,6 +82,20 @@ environment, from `{resources.NAME}`/`{threads}` interpolation into the
 command text (see [Resource interpolation in commands](#resource-interpolation-in-commands)),
 or from what the executor itself sets (see
 [`docs/format/env-vars.md`](https://github.com/noogram/oxymake/blob/main/docs/format/env-vars.md)).
+
+`materialize` belongs to an output descriptor, not directly to the rule. Its
+values are `always`, `auto`, `never`, and `final`:
+
+<!-- schema2-materialize-example-start -->
+```toml
+format_version = "2"
+ox_version = ">=0.7.0"
+
+[rule.a]
+output = [{ path = "a", materialize = "always" }]
+shell = "touch a"
+```
+<!-- schema2-materialize-example-end -->
 
 ### Cross-platform cache reuse
 

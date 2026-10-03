@@ -3,6 +3,9 @@ source: crates/ox-format/src/parse.rs
 expression: wf
 ---
 Workflow {
+    warnings: [
+        "tests/fixtures/simple/Oxymakefile.toml: legacy schema 1: ox_version Some(\"0.1\") is informational; no binary requirement is enforced for this file. Resource identity is unchanged. Use ox migrate --to-format 2 to review an upgrade.",
+    ],
     ox_version: Some(
         "0.1",
     ),

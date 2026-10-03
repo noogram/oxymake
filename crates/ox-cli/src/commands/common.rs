@@ -13,6 +13,15 @@ use ox_format::parse::{ConfigValue, Profile, Workflow};
 /// Read and parse an Oxymakefile from disk.
 /// Also resolves `{config.X}` references in resource values (config interpolation).
 pub fn load_workflow(path: &Path) -> Result<Workflow> {
+    let workflow = load_workflow_quiet(path)?;
+    for warning in &workflow.warnings {
+        eprintln!("warning: {warning}");
+    }
+    Ok(workflow)
+}
+
+/// Load with diagnostics returned for structured output instead of stderr.
+pub fn load_workflow_quiet(path: &Path) -> Result<Workflow> {
     let content = std::fs::read_to_string(path)
         .with_context(|| format!("cannot read Oxymakefile: {}", path.display()))?;
     let mut workflow = ox_format::parse::parse_workflow(&content, path)

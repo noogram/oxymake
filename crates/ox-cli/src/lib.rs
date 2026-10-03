@@ -73,6 +73,9 @@ enum Commands {
     Gate(commands::GateArgs),
     /// Validate the Oxymakefile
     Lint(commands::LintArgs),
+
+    /// Review or apply a workflow schema migration
+    Migrate(commands::MigrateArgs),
     /// Generate or verify a reproducibility lockfile
     Lock(commands::LockArgs),
     /// Initialize a new workflow
@@ -173,6 +176,7 @@ pub fn run() -> i32 {
         Commands::Snapshot(args) => commands::cmd_snapshot(args),
         Commands::Gate(args) => commands::cmd_gate(args),
         Commands::Lint(args) => commands::cmd_lint(args),
+        Commands::Migrate(args) => commands::cmd_migrate(args),
         Commands::Lock(args) => commands::cmd_lock(args),
         Commands::Init(args) => commands::cmd_init(args),
         Commands::Clean(args) => commands::cmd_clean(args),

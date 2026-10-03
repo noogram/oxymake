@@ -64,3 +64,6 @@ pub use stubs::{TopArgs, cmd_top};
 pub use subscribe::{SubscribeArgs, cmd_subscribe};
 pub use test::{TestArgs, cmd_test};
 pub use translate::{TranslateArgs, cmd_translate};
+
+mod migrate;
+pub use migrate::{MigrateArgs, cmd_migrate};

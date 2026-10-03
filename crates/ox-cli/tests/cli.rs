@@ -387,6 +387,39 @@ fn lint_valid_oxymakefile() {
 }
 
 #[test]
+fn lint_accepts_the_documented_schema2_materialize_form() {
+    const START: &str = "<!-- schema2-materialize-example-start -->";
+    const END: &str = "<!-- schema2-materialize-example-end -->";
+
+    let reference = fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../docs/book/src/reference/format.md"),
+    )
+    .unwrap();
+    let example = reference
+        .split_once(START)
+        .expect("format reference must retain the schema-2 materialize example")
+        .1
+        .split_once(END)
+        .expect("format reference must close the schema-2 materialize example")
+        .0
+        .trim()
+        .strip_prefix("```toml")
+        .and_then(|text| text.strip_suffix("```"))
+        .expect("schema-2 materialize example must remain a TOML code block")
+        .trim();
+
+    let dir = TempDir::new().unwrap();
+    let file = dir.path().join("Oxymakefile.toml");
+    fs::write(&file, example).unwrap();
+
+    ox().args(["lint", "-f", file.to_str().unwrap()])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("Oxymakefile is valid"));
+}
+
+#[test]
 fn lint_invalid_toml() {
     let dir = TempDir::new().unwrap();
     let bad_file = dir.path().join("Oxymakefile.toml");
@@ -498,7 +531,7 @@ shell = "echo RAN > out.txt"
 /// A well-formed gate produces no warning: the "enforcement is not wired"
 /// stopgap warning was removed once gates started to block.
 #[test]
-fn lint_valid_gate_produces_no_warning() {
+fn lint_valid_gate_produces_only_legacy_warning() {
     let dir = TempDir::new().unwrap();
     let file = dir.path().join("Oxymakefile.toml");
     fs::write(
@@ -527,7 +560,14 @@ shell = "echo RAN > out.txt"
     let parsed: serde_json::Value =
         serde_json::from_str(&stdout).expect("stdout should be valid JSON");
     assert_eq!(parsed["valid"], true);
-    assert!(parsed["warnings"].as_array().unwrap().is_empty());
+    let warnings = parsed["warnings"].as_array().unwrap();
+    assert_eq!(warnings.len(), 1);
+    assert!(
+        warnings[0]
+            .as_str()
+            .unwrap()
+            .contains("no binary requirement is enforced")
+    );
     assert!(!stdout.contains("not wired"));
 }
 
@@ -543,7 +583,14 @@ fn lint_no_gate_warning_without_gates() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let parsed: serde_json::Value =
         serde_json::from_str(&stdout).expect("stdout should be valid JSON");
-    assert!(parsed["warnings"].as_array().unwrap().is_empty());
+    let warnings = parsed["warnings"].as_array().unwrap();
+    assert_eq!(warnings.len(), 1);
+    assert!(
+        warnings[0]
+            .as_str()
+            .unwrap()
+            .contains("no binary requirement is enforced")
+    );
 }
 
 #[test]
