@@ -2,8 +2,63 @@ use assert_cmd::Command;
 use predicates::str::contains;
 use std::fs;
 
+use ox_cache::{CacheKeySpec, compute_cache_key};
+use ox_core::resolver::{Config, ResolveRequest, resolve};
+
 fn ox() -> Command {
     Command::cargo_bin("ox").unwrap()
+}
+
+fn resolved_key(source: &str) -> ox_core::model::ContentHash {
+    let workflow =
+        ox_format::parse::parse_workflow(source, std::path::Path::new("test.toml")).unwrap();
+    let job = resolve(
+        &workflow.rules,
+        &ResolveRequest {
+            targets: vec!["out".into()],
+            config: Config::default(),
+            existing_files: vec![],
+        },
+    )
+    .unwrap()
+    .jobs
+    .remove(0);
+    let execution = serde_json::to_string(&job.execution).unwrap();
+    compute_cache_key(&CacheKeySpec {
+        rule_source: &execution,
+        inputs: &[],
+        params_hash: None,
+        env_hash: None,
+        shell_executable: None,
+        clean_outputs: job.clean_outputs,
+        platform_scope: job.platform_scope,
+        platform: "test/platform",
+    })
+}
+
+#[test]
+fn resource_class_identity_is_the_resolved_execution_not_the_class_name() {
+    let prefix = "format_version='2'\nox_version='>=0.7.0'\n";
+    let inline = format!(
+        "{prefix}[rule.a]\noutput=['out']\nshell='echo {{threads}} {{resources.mem}} > {{output}}'\nresources={{cpu=2,mem='4G'}}\n"
+    );
+    let named = format!(
+        "{prefix}[rule.a]\noutput=['out']\nshell='echo {{threads}} {{resources.mem}} > {{output}}'\nresource_class='standard'\n[resource_classes.standard]\ncpu=2\nmem='4G'\n"
+    );
+    let renamed = named.replace("standard", "renamed");
+    assert_eq!(resolved_key(&inline), resolved_key(&named));
+    assert_eq!(resolved_key(&named), resolved_key(&renamed));
+}
+
+#[test]
+fn lint_accepts_shared_resource_class_on_three_rules() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(
+        dir.path().join("Oxymakefile.toml"),
+        "format_version='2'\nox_version='>=0.7.0'\n[resource_classes.standard]\ncpu=2\nmem='4G'\n[rule.a]\noutput=['a']\nshell='touch a'\nresource_class='standard'\n[rule.b]\noutput=['b']\nshell='touch b'\nresource_class='standard'\n[rule.c]\noutput=['c']\nshell='touch c'\nresource_class='standard'\nresources={cpu=3}\n",
+    )
+    .unwrap();
+    ox().current_dir(dir.path()).arg("lint").assert().success();
 }
 
 #[test]

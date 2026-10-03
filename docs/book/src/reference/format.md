@@ -68,6 +68,7 @@ shell = "python process.py {input} {output}"
 | `lang` | String | With `run`/`script` | Language: `python`, `r`, `julia` |
 | `tags` | Table of string → string | No | Key/value labels for grouping and event filtering, e.g. `tags = { stage = "align", speed = "slow" }`. An array of strings is **not** accepted. |
 | `resources` | Table | No | Resource requirements; see [Resources](#resources) below for what each executor actually does with them |
+| `resource_class` | String | No | Schema 2 only: name of a root-level resource class whose values this rule inherits before applying its `resources` overrides |
 | `environment` | Table | No | The software environment to run the command in (`uv`, conda, Nix, Apptainer/Singularity); see the environment backend section. Not to be confused with environment *variables* — there is no field for those today, and under schema 2 a rule-level `env` is rejected with that explanation. |
 | `when` | String | No | Conditional guard expression |
 | `params` | Table | No | Rule-specific parameters |
@@ -250,6 +251,42 @@ shell = "compute_heavy"
 resources = { cpus = 4, mem_gb = 16, gpu = 1 }
 ```
 
+Schema 2 can collect repeated declarations into a root-level named class:
+
+```toml
+format_version = "2"
+ox_version = ">=0.7.0"
+
+[resource_classes.standard]
+cpu = 2
+mem = "4G"
+
+[rule.first]
+output = ["first.txt"]
+shell = "compute --threads {threads} > {output}"
+resource_class = "standard"
+
+[rule.larger]
+output = ["larger.txt"]
+shell = "compute --threads {threads} > {output}"
+resource_class = "standard"
+resources = { cpus = 6 }
+```
+
+A class contains resource values only. It cannot inherit another class or
+declare variables, execution, conditions, or environment settings. Definitions
+may follow their references or live in included files; all files in the include
+graph share one class namespace. Duplicate class definitions and unknown class
+references are errors. A rule's inline `resources` replace individual canonical
+dimensions from its class, so `cpus` may override class `cpu`, but aliases may
+not be duplicated within either table.
+
+Classes resolve before command interpolation. Their effective values therefore
+work with `{threads}` and `{resources.NAME}` exactly like inline values. Cache
+identity also follows those effective values: class names, definition order,
+and definition file paths do not enter the key. As before, a resource affects a
+key only when interpolation places its value in the execution text.
+
 #### What a declared resource actually does, per route
 
 A declared resource means something different on every execution route.
@@ -346,9 +383,8 @@ A declared resource can reach the command text itself, through two
 placeholders resolved while the job graph is built
 (`crates/ox-core/src/resolver.rs:1350-1357`):
 
-- `{threads}` substitutes the literal `cpu` resource value (the Snakemake
-  convention). It comes specifically from the key `cpu` — declaring `cpus`
-  instead does not populate `{threads}`.
+- `{threads}` substitutes the canonical CPU resource value (the Snakemake
+  convention), declared as either `cpu` or `cpus`.
 - `{resources.NAME}` substitutes any declared resource under its own key,
   e.g. `{resources.mem_gb}` for `resources = { mem_gb = 16 }`.
 

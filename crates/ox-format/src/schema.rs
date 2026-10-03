@@ -138,6 +138,7 @@ pub(crate) fn structural(
             "include",
             "environment",
             "executor",
+            "resource_classes",
         ],
         "rule" => &[
             "input",
@@ -149,6 +150,7 @@ pub(crate) fn structural(
             "lang",
             "tags",
             "resources",
+            "resource_class",
             "environment",
             "when",
             "expand",
@@ -212,8 +214,42 @@ pub(crate) fn structural(
             Some("not") => &["op", "condition"],
             _ => &["op"],
         },
+        "resource_class" => &[],
         _ => unreachable!("structural kind {kind}"),
     };
+    if kind == "resource_class" {
+        const NON_RESOURCE_KEYS: &[&str] = &[
+            "parent",
+            "resource_class",
+            "variables",
+            "environment",
+            "executor",
+            "when",
+            "shell",
+            "run",
+            "script",
+            "call",
+            "input",
+            "output",
+            "resources",
+        ];
+        for (key, child) in table {
+            if NON_RESOURCE_KEYS.contains(&key.as_str())
+                || !matches!(
+                    child,
+                    Value::Integer(_) | Value::Float(_) | Value::String(_)
+                )
+            {
+                return Err(error(
+                    path,
+                    format!(
+                        "non-resource key `{location}.{key}` in resource class; classes contain resource values only"
+                    ),
+                ));
+            }
+        }
+        return Ok(());
+    }
     for (key, child) in table {
         let at = if location.is_empty() {
             key.clone()
@@ -239,6 +275,13 @@ pub(crate) fn structural(
                 if let Some(named) = child.as_table() {
                     for (name, entry) in named {
                         structural(entry, path, &format!("{at}.{name}"), key)?;
+                    }
+                }
+            }
+            ("root", "resource_classes") => {
+                if let Some(named) = child.as_table() {
+                    for (name, entry) in named {
+                        structural(entry, path, &format!("{at}.{name}"), "resource_class")?;
                     }
                 }
             }
