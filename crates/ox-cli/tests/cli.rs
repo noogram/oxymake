@@ -1020,6 +1020,197 @@ shell = "cat data/{sample}.csv > results/{sample}.txt"
     assert!(lines[1]["inputs"].is_array());
 }
 
+#[cfg(unix)]
+#[test]
+fn run_dry_run_shell_matches_the_command_that_executes() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = TempDir::new().unwrap();
+    let recorder = dir.path().join("record-execution");
+    fs::write(&recorder, "#!/bin/sh\nprintf '%s' \"$0 $*\" > \"$3\"\n").unwrap();
+    let mut permissions = fs::metadata(&recorder).unwrap().permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&recorder, permissions).unwrap();
+
+    fs::write(dir.path().join("input.txt"), "input").unwrap();
+    let oxymakefile = dir.path().join("Oxymakefile.toml");
+    fs::write(
+        &oxymakefile,
+        format!(
+            r#"ox_version = "0.1"
+
+[rule.record]
+input = ["input.txt"]
+output = ["executed.txt"]
+shell = "{} {{input}} {{threads}} {{output}}"
+
+[rule.record.resources]
+cpu = 3
+"#,
+            recorder.display()
+        ),
+    )
+    .unwrap();
+
+    let dry_output = ox()
+        .current_dir(dir.path())
+        .args(["run", "--dry-run", "--json", "executed.txt"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let dry_job: serde_json::Value = String::from_utf8(dry_output)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .find(|event: &serde_json::Value| event["event"] == "dry_run_job")
+        .unwrap();
+    let announced = dry_job["execution"]["command"].as_str().unwrap();
+
+    ox().current_dir(dir.path())
+        .args(["run", "executed.txt"])
+        .assert()
+        .success();
+    let executed = fs::read_to_string(dir.path().join("executed.txt")).unwrap();
+
+    assert_eq!(announced, executed);
+    assert_eq!(dry_job["execution"]["type"], "shell");
+}
+
+#[test]
+fn run_dry_run_exposes_unexpanded_placeholders_and_preserves_old_lines() {
+    let dir = TempDir::new().unwrap();
+    fs::write(
+        dir.path().join("Oxymakefile.toml"),
+        r#"ox_version = "0.1"
+
+[rule.alias_mismatch]
+output = ["result.txt"]
+shell = "tool --threads {threads} > {output}"
+
+[rule.alias_mismatch.resources]
+cpus = 3
+"#,
+    )
+    .unwrap();
+
+    let output = ox()
+        .current_dir(dir.path())
+        .args(["run", "--dry-run", "result.txt"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let stdout = String::from_utf8(output).unwrap();
+
+    assert!(stdout.contains("Dry run: 1 job(s) would execute for 1 target(s)"));
+    assert!(stdout.contains("rule=alias_mismatch outputs=[result.txt]"));
+    assert!(stdout.contains("execution (shell):\n      | tool --threads {threads} > result.txt"));
+}
+
+#[test]
+fn run_dry_run_shows_every_execution_mode() {
+    let dir = TempDir::new().unwrap();
+    fs::write(
+        dir.path().join("Oxymakefile.toml"),
+        r#"ox_version = "0.1"
+
+[rule.inline]
+output = ["inline.txt"]
+lang = "python3"
+run = "open('{output}', 'w').write('inline')"
+
+[rule.external]
+output = ["script.txt"]
+lang = "python3"
+script = "scripts/build.py"
+
+[rule.function]
+output = [{ path = "call.txt", format = "json" }]
+lang = "python"
+call = "pipeline.build:make"
+"#,
+    )
+    .unwrap();
+
+    let output = ox()
+        .current_dir(dir.path())
+        .args(["run", "--dry-run", "inline.txt", "script.txt", "call.txt"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let stdout = String::from_utf8(output).unwrap();
+
+    assert!(
+        stdout
+            .contains("execution (run, python3):\n      | open('inline.txt', 'w').write('inline')")
+    );
+    assert!(stdout.contains("execution (script):\n      | python3 scripts/build.py"));
+    assert!(stdout.contains("execution (call):\n      | python pipeline.build:make"));
+
+    let output = ox()
+        .current_dir(dir.path())
+        .args([
+            "run",
+            "--dry-run",
+            "--json",
+            "inline.txt",
+            "script.txt",
+            "call.txt",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let executions: Vec<serde_json::Value> = String::from_utf8(output)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .filter(|event: &serde_json::Value| event["event"] == "dry_run_job")
+        .map(|event| event["execution"].clone())
+        .collect();
+    assert_eq!(executions.len(), 3);
+    assert!(executions.iter().all(|execution| !execution.is_null()));
+}
+
+#[test]
+fn run_dry_run_json_round_trips_multiline_shell() {
+    let dir = TempDir::new().unwrap();
+    let command = "printf 'first\\n' > {output}\nprintf 'second\\n' >> {output}\n";
+    fs::write(
+        dir.path().join("Oxymakefile.toml"),
+        format!(
+            "ox_version = \"0.1\"\n\n[rule.multiline]\noutput = [\"out.txt\"]\nshell = '''{command}'''\n"
+        ),
+    )
+    .unwrap();
+
+    let output = ox()
+        .current_dir(dir.path())
+        .args(["run", "--dry-run", "--json", "out.txt"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let job: serde_json::Value = String::from_utf8(output)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .find(|event: &serde_json::Value| event["event"] == "dry_run_job")
+        .unwrap();
+
+    assert_eq!(
+        job["execution"]["command"],
+        command.replace("{output}", "out.txt")
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Run (actual execution)
 // ---------------------------------------------------------------------------

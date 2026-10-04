@@ -17,6 +17,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   release version is 0.7.0 for this contract (#42).
 
 ### Added
+- `ox run --dry-run` now shows each job's expanded execution block in human
+  output and in the NDJSON `dry_run_job.execution` field. Shell and inline
+  commands preserve multi-line text; script and call rules expose their
+  resolved invocation details, making unexpanded placeholders visible before
+  execution (#48).
 - Schema 2 supports root-level `[resource_classes.NAME]` declarations and
   rule-level `resource_class = "NAME"`. Classes resolve across includes before
   interpolation, while inline `resources` override individual canonical
