@@ -126,4 +126,7 @@ Workflow {
     executor_config: ExecutorConfig {
         slurm: None,
     },
+    resource_classes: {},
+    resource_class_origins: {},
+    rule_resource_classes: {},
 }

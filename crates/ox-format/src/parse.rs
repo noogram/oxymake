@@ -15,6 +15,7 @@ use ox_core::model::{
     InputPattern, LogConfig, MaterializePolicy, OutputLifecycle, OutputPattern, PlatformScope,
     ReproducibilityClass, ResourceValue, Rule, RuleMeta, RuleName,
 };
+use ox_core::resource::canonicalize_resource_key;
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -54,6 +55,14 @@ pub struct Workflow {
     pub profiles: BTreeMap<String, Profile>,
     /// Executor-specific configuration from `[executor.*]` sections.
     pub executor_config: ExecutorConfig,
+    /// Named resource bundles available to rules in this workflow.
+    pub resource_classes: BTreeMap<String, BTreeMap<String, ResourceValue>>,
+    /// Definition origins retained for include-graph diagnostics.
+    #[doc(hidden)]
+    pub resource_class_origins: BTreeMap<String, PathBuf>,
+    /// Rule-to-class references retained after effective resources are resolved.
+    #[doc(hidden)]
+    pub rule_resource_classes: BTreeMap<String, String>,
 }
 
 /// Executor-specific configuration sections from the Oxymakefile.
@@ -199,6 +208,7 @@ struct RawOxymakefile {
     /// Executor-specific configuration sections.
     #[serde(default)]
     executor: Option<RawExecutorTable>,
+    resource_classes: Option<toml::Value>,
 }
 
 /// Raw `[executor]` table containing per-backend sub-tables.
@@ -260,6 +270,7 @@ struct RawRule {
     tags: BTreeMap<String, String>,
     #[serde(default)]
     resources: BTreeMap<String, toml::Value>,
+    resource_class: Option<toml::Value>,
     #[serde(default)]
     environment: Option<BTreeMap<String, String>>,
     when: Option<toml::Value>,
@@ -377,7 +388,9 @@ pub(crate) fn parse_sources(
         .canonicalize()
         .unwrap_or_else(|_| file_path.to_path_buf());
     let mut visited = vec![root_id];
-    parse_workflow_inner(content, file_path, &mut visited, sources)
+    let mut workflow = parse_workflow_inner(content, file_path, &mut visited, sources)?;
+    resolve_resource_classes(&mut workflow)?;
+    Ok(workflow)
 }
 
 fn parse_workflow_inner(
@@ -390,6 +403,11 @@ fn parse_workflow_inner(
         file: file_path.to_path_buf(),
         message: e.to_string(),
     })?;
+
+    let format_version = raw
+        .format_version
+        .clone()
+        .unwrap_or_else(|| DEFAULT_FORMAT_VERSION.to_string());
 
     let mut config = parse_config(&raw.config);
 
@@ -404,7 +422,22 @@ fn parse_workflow_inner(
     let global_environment = parse_environment(&raw.environment, "[environment]")?;
 
     let mut rules = Vec::new();
+    let mut rule_resource_classes = BTreeMap::new();
     for (name, raw_rule) in &raw.rule {
+        if format_version == "2" {
+            validate_resource_aliases(
+                &raw_rule.resources,
+                &format!("rule.{name}.resources"),
+                file_path,
+            )?;
+            if let Some(class) = &raw_rule.resource_class {
+                let class = class.as_str().ok_or_else(|| ParseError::InvalidField {
+                    field: format!("rule.{name}.resource_class"),
+                    reason: "expected a resource class name as a string".into(),
+                })?;
+                rule_resource_classes.insert(name.clone(), class.to_owned());
+            }
+        }
         let mut rule = parse_rule(name, raw_rule, file_path)?;
         // Inherit global environment if rule doesn't specify one.
         if rule.environment.is_none() {
@@ -470,9 +503,32 @@ fn parse_workflow_inner(
         }
     }
 
-    let format_version = raw
-        .format_version
-        .unwrap_or_else(|| DEFAULT_FORMAT_VERSION.to_string());
+    let mut resource_classes = BTreeMap::new();
+    let mut resource_class_origins = BTreeMap::new();
+    if format_version == "2" {
+        let classes = raw.resource_classes.as_ref().map_or(Ok(None), |value| {
+            value
+                .as_table()
+                .map(Some)
+                .ok_or_else(|| ParseError::InvalidField {
+                    field: "resource_classes".into(),
+                    reason: "expected a table of named resource classes".into(),
+                })
+        })?;
+        for (name, value) in classes.into_iter().flatten() {
+            let values = value.as_table().ok_or_else(|| ParseError::InvalidField {
+                field: format!("resource_classes.{name}"),
+                reason: "expected a table containing resource values".into(),
+            })?;
+            let values: BTreeMap<_, _> = values
+                .iter()
+                .map(|(key, value)| (key.clone(), value.clone()))
+                .collect();
+            validate_resource_aliases(&values, &format!("resource_classes.{name}"), file_path)?;
+            resource_classes.insert(name.clone(), parse_resources(&values));
+            resource_class_origins.insert(name.clone(), file_path.to_path_buf());
+        }
+    }
 
     let warnings = if format_version == "1" {
         let warning = format!(
@@ -481,7 +537,26 @@ fn parse_workflow_inner(
             raw.ox_version
         );
         tracing::warn!("{warning}");
-        vec![warning]
+        let mut warnings = vec![warning];
+        let mut ignored = Vec::new();
+        if raw.resource_classes.is_some() {
+            ignored.push("resource_classes".to_owned());
+        }
+        for (name, rule) in &raw.rule {
+            if rule.resource_class.is_some() {
+                ignored.push(format!("rule.{name}.resource_class"));
+            }
+        }
+        if !ignored.is_empty() {
+            let warning = format!(
+                "{}: format_version = 1: {} ignored; resource classes require format_version = 2 in this file",
+                file_path.display(),
+                ignored.join(", ")
+            );
+            tracing::warn!("{warning}");
+            warnings.push(warning);
+        }
+        warnings
     } else {
         Vec::new()
     };
@@ -496,6 +571,9 @@ fn parse_workflow_inner(
         global_environment,
         profiles,
         executor_config,
+        resource_classes,
+        resource_class_origins,
+        rule_resource_classes,
     };
 
     expand_includes(&mut workflow, base_dir, file_path, visited, sources)?;
@@ -587,10 +665,98 @@ fn expand_includes(
             workflow.config.entry(key).or_insert(value);
         }
 
+        // Resource classes share one workflow namespace and never shadow.
+        for (name, resources) in inc_wf.resource_classes {
+            let second = inc_wf
+                .resource_class_origins
+                .get(&name)
+                .cloned()
+                .unwrap_or_else(|| inc_path.clone());
+            if let Some(first) = workflow.resource_class_origins.get(&name) {
+                return Err(ParseError::DuplicateResourceClass {
+                    name,
+                    first: first.clone(),
+                    second,
+                });
+            }
+            workflow.resource_class_origins.insert(name.clone(), second);
+            workflow.resource_classes.insert(name, resources);
+        }
+        workflow
+            .rule_resource_classes
+            .extend(inc_wf.rule_resource_classes);
+
         // Gates: append.
         workflow.gates.extend(inc_wf.gates);
     }
 
+    Ok(())
+}
+
+fn validate_resource_aliases(
+    resources: &BTreeMap<String, toml::Value>,
+    context: &str,
+    file_path: &Path,
+) -> Result<(), ParseError> {
+    let mut seen = BTreeMap::new();
+    for key in resources.keys() {
+        let canonical = canonicalize_resource_key(key)
+            .map_err(|error| crate::schema::error(file_path, format!("{context}: {error}")))?;
+        if let Some(first) = seen.insert(canonical, key) {
+            return Err(crate::schema::error(
+                file_path,
+                format!(
+                    "{context}: resource is declared more than once via {first:?} and {key:?} in the same table"
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn resolve_resource_classes(workflow: &mut Workflow) -> Result<(), ParseError> {
+    for rule in &mut workflow.rules {
+        let Some(class_name) = workflow.rule_resource_classes.get(rule.name.as_str()) else {
+            continue;
+        };
+        let class =
+            workflow
+                .resource_classes
+                .get(class_name)
+                .ok_or_else(|| ParseError::InvalidField {
+                    field: format!("rule.{}.resource_class", rule.name.as_str()),
+                    reason: {
+                        let mut reason = format!(
+                            "rule `{}` references unknown resource class `{class_name}`",
+                            rule.name.as_str()
+                        );
+                        // Parsing errors otherwise discard collected warnings, including
+                        // the origin of class definitions ignored under schema 1.
+                        for warning in &workflow.warnings {
+                            reason.push('\n');
+                            reason.push_str(warning);
+                        }
+                        reason
+                    },
+                })?;
+        let mut effective = class.clone();
+        for (key, value) in &rule.resources {
+            let canonical =
+                canonicalize_resource_key(key).map_err(|error| ParseError::InvalidField {
+                    field: format!("rule.{}.resources", rule.name.as_str()),
+                    reason: error.to_string(),
+                })?;
+            let inherited = effective
+                .keys()
+                .find(|candidate| {
+                    canonicalize_resource_key(candidate).ok().as_ref() == Some(&canonical)
+                })
+                .cloned();
+            // Keep inherited spelling so existing interpolation names remain valid.
+            effective.insert(inherited.unwrap_or_else(|| key.clone()), value.clone());
+        }
+        rule.resources = effective;
+    }
     Ok(())
 }
 
@@ -2040,6 +2206,150 @@ mem = "8G"
             wf.rules[0].resources.get("mem"),
             Some(&ResourceValue::Str("8G".into()))
         );
+    }
+
+    #[test]
+    fn schema2_resource_classes_resolve_forward_references_and_overrides() {
+        let toml = r#"
+format_version = "2"
+ox_version = ">=0.7.0"
+
+[rule.one]
+output = ["one"]
+shell = "echo {threads} {resources.mem} > {output}"
+resource_class = "standard"
+
+[rule.two]
+output = ["two"]
+shell = "echo two > {output}"
+resource_class = "standard"
+resources = { cpus = 3 }
+
+[rule.three]
+output = ["three"]
+shell = "echo three > {output}"
+resource_class = "standard"
+
+[resource_classes.standard]
+cpu = 2
+mem = "4G"
+"#;
+        let wf = parse_workflow(toml, Path::new("test.toml")).unwrap();
+        assert_eq!(wf.rules.len(), 3);
+        let rule = |name: &str| {
+            wf.rules
+                .iter()
+                .find(|rule| rule.name.as_str() == name)
+                .unwrap()
+        };
+        for rule in [rule("one"), rule("three")] {
+            assert_eq!(rule.resources.get("cpu"), Some(&ResourceValue::Int(2)));
+            assert_eq!(
+                rule.resources.get("mem"),
+                Some(&ResourceValue::Str("4G".into()))
+            );
+        }
+        assert_eq!(
+            rule("two").resources.get("cpu"),
+            Some(&ResourceValue::Int(3))
+        );
+        assert!(!rule("two").resources.contains_key("cpus"));
+        assert_eq!(
+            rule("two").resources.get("mem"),
+            Some(&ResourceValue::Str("4G".into()))
+        );
+
+        let result = ox_core::resolver::resolve(
+            &wf.rules,
+            &ox_core::resolver::ResolveRequest {
+                targets: vec!["one".into()],
+                config: Default::default(),
+                existing_files: vec![],
+            },
+        )
+        .unwrap();
+        assert!(matches!(
+            &result.jobs[0].execution,
+            ExecutionBlock::Shell { command } if command == "echo 2 4G > one"
+        ));
+    }
+
+    #[test]
+    fn schema2_resource_class_can_be_defined_in_an_include() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("Oxymakefile.toml");
+        std::fs::write(
+            dir.path().join("classes.toml"),
+            "format_version='2'\nox_version='>=0.7.0'\n[resource_classes.shared]\ncpu=6\n",
+        )
+        .unwrap();
+        let toml = "format_version='2'\nox_version='>=0.7.0'\ninclude=['classes.toml']\n[rule.a]\noutput=['a']\nshell='echo {threads} > {output}'\nresource_class='shared'\n";
+        let wf = parse_workflow(toml, &root).unwrap();
+        assert_eq!(
+            wf.rules[0].resources.get("cpu"),
+            Some(&ResourceValue::Int(6))
+        );
+    }
+
+    #[test]
+    fn schema2_resource_class_errors_are_specific() {
+        let unknown = "format_version='2'\nox_version='>=0.7.0'\n[rule.build]\noutput=['x']\nshell='touch x'\nresource_class='missing'\n";
+        let err = parse_workflow(unknown, Path::new("root.toml")).unwrap_err();
+        let message = err.to_string();
+        assert!(
+            message.contains("build") && message.contains("missing"),
+            "{message}"
+        );
+
+        let aliases = "format_version='2'\nox_version='>=0.7.0'\n[rule.build]\noutput=['x']\nshell='touch x'\nresources={cpu=1,cpus=2}\n";
+        let err = parse_workflow(aliases, Path::new("root.toml")).unwrap_err();
+        let message = err.to_string();
+        assert!(
+            message.contains("build") && message.contains("cpu") && message.contains("cpus"),
+            "{message}"
+        );
+
+        let invalid = "format_version='2'\nox_version='>=0.7.0'\n[resource_classes.bad]\nparent='base'\ncpu=1\n";
+        let err = parse_workflow(invalid, Path::new("root.toml")).unwrap_err();
+        let message = err.to_string();
+        assert!(
+            message.contains("bad") && message.contains("parent"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn duplicate_resource_classes_name_both_origins() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("Oxymakefile.toml");
+        for name in ["first.toml", "second.toml"] {
+            std::fs::write(
+                dir.path().join(name),
+                "format_version='2'\nox_version='>=0.7.0'\n[resource_classes.shared]\ncpu=2\n",
+            )
+            .unwrap();
+        }
+        let toml =
+            "format_version='2'\nox_version='>=0.7.0'\ninclude=['first.toml','second.toml']\n";
+        let err = parse_workflow(toml, &root).unwrap_err();
+        let message = err.to_string();
+        assert!(
+            message.contains("shared")
+                && message.contains("first.toml")
+                && message.contains("second.toml"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn schema1_resource_class_keys_keep_legacy_unknown_field_behaviour() {
+        let toml = "format_version='1'\n[resource_classes.shared]\ncpu=8\n[rule.a]\noutput=['a']\nshell='touch a'\nresource_class='shared'\n";
+        let wf = parse_workflow(toml, Path::new("legacy.toml")).unwrap();
+        assert!(wf.rules[0].resources.is_empty());
+
+        let malformed_unknowns = "format_version='1'\nresource_classes='ignored'\n[rule.a]\noutput=['a']\nshell='touch a'\nresource_class=42\n";
+        let wf = parse_workflow(malformed_unknowns, Path::new("legacy.toml")).unwrap();
+        assert!(wf.rules[0].resources.is_empty());
     }
 
     #[test]

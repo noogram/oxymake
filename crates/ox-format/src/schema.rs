@@ -138,6 +138,7 @@ pub(crate) fn structural(
             "include",
             "environment",
             "executor",
+            "resource_classes",
         ],
         "rule" => &[
             "input",
@@ -149,6 +150,7 @@ pub(crate) fn structural(
             "lang",
             "tags",
             "resources",
+            "resource_class",
             "environment",
             "when",
             "expand",
@@ -212,8 +214,39 @@ pub(crate) fn structural(
             Some("not") => &["op", "condition"],
             _ => &["op"],
         },
+        "resource_class" => &[],
         _ => unreachable!("structural kind {kind}"),
     };
+    if kind == "resource_class" {
+        const NON_RESOURCE_KEYS: &[&str] = &[
+            "parent",
+            "extends",
+            "resource_class",
+            "variables",
+            "environment",
+            "executor",
+            "when",
+            "shell",
+            "run",
+            "script",
+            "call",
+            "input",
+            "output",
+            "resources",
+        ];
+        for (key, child) in table {
+            if NON_RESOURCE_KEYS.contains(&key.as_str()) {
+                return Err(error(
+                    path,
+                    format!(
+                        "non-resource key `{location}.{key}` in resource class; classes contain resource values only"
+                    ),
+                ));
+            }
+            resource_value(child, path, &format!("{location}.{key}"))?;
+        }
+        return Ok(());
+    }
     for (key, child) in table {
         let at = if location.is_empty() {
             key.clone()
@@ -235,10 +268,24 @@ pub(crate) fn structural(
             ));
         }
         match (kind, key.as_str()) {
+            ("rule", "resources") => {
+                if let Some(resources) = child.as_table() {
+                    for (name, value) in resources {
+                        resource_value(value, path, &format!("{at}.{name}"))?;
+                    }
+                }
+            }
             ("root", "rule" | "profile" | "gate") => {
                 if let Some(named) = child.as_table() {
                     for (name, entry) in named {
                         structural(entry, path, &format!("{at}.{name}"), key)?;
+                    }
+                }
+            }
+            ("root", "resource_classes") => {
+                if let Some(named) = child.as_table() {
+                    for (name, entry) in named {
+                        structural(entry, path, &format!("{at}.{name}"), "resource_class")?;
                     }
                 }
             }
@@ -263,6 +310,21 @@ pub(crate) fn structural(
             }
             _ => {}
         }
+    }
+    Ok(())
+}
+
+fn resource_value(value: &Value, path: &Path, location: &str) -> Result<(), ParseError> {
+    if !matches!(
+        value,
+        Value::Integer(_) | Value::Float(_) | Value::String(_)
+    ) {
+        return Err(error(
+            path,
+            format!(
+                "invalid resource value at `{location}`: {value}; expected an integer, float, or string"
+            ),
+        ));
     }
     Ok(())
 }
