@@ -3249,7 +3249,7 @@ mod resource_class_regressions {
     }
 
     #[test]
-    fn schema1_cpus_preserves_literal_threads_and_cache_key() {
+    fn schema1_cpus_expands_threads_without_a_schema_gate() {
         let source = "format_version='1'
 [rule.a]
 output=['out']
@@ -3269,11 +3269,11 @@ resources={cpus=7}
         .jobs
         .remove(0);
         assert!(
-            matches!(&job.execution, ox_core::model::ExecutionBlock::Shell {command} if command == "echo t={threads}")
+            matches!(&job.execution, ox_core::model::ExecutionBlock::Shell {command} if command == "echo t=7")
         );
         assert_eq!(
             resolved_key(source),
-            resolved_key(&source.replace("resources={cpus=7}", ""))
+            resolved_key(&source.replace("resources={cpus=7}", "resources={cpu=7}"))
         );
     }
 
