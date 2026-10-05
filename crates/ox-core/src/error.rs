@@ -37,7 +37,9 @@ pub enum WildcardError {
     #[error("wildcard `{name}` could not be resolved from config or filesystem")]
     UnresolvableWildcard { name: String },
 
-    #[error("unknown config key `{key}` in pattern `{pattern}` — not defined in [config]")]
+    #[error(
+        "unknown config key `{key}` in pattern `{pattern}` — not defined in [config] and not supplied by --set"
+    )]
     UnknownConfigKey { key: String, pattern: String },
 }
 

@@ -12,11 +12,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Workflows using `cpus` with `{threads}` rerun once because their corrected
   command has a new cache key; workflows using `cpu` keep their existing key
   byte-for-byte (#47).
-- Validation now rejects `{resources.NAME}`, `{params.NAME}`, and
-  `{config.NAME}` when `NAME` is undeclared, plus `{threads}` without a CPU
-  resource and `{log}` without a stdout log path. A workflow that previously
-  sent one of these literal placeholders to the command now fails validation
-  instead (#47).
+- Validation now rejects `{resources.NAME}` and `{params.NAME}` when `NAME` is
+  undeclared, plus `{threads}` without a CPU resource and `{log}` without a
+  stdout log path. An unknown `{config.NAME}` in a command is rejected by the
+  resolver, one step later, because `--set` may supply a key no `[config]`
+  section declares. A workflow that previously sent one of these literal
+  placeholders to the command now fails instead of running (#47).
 - Schema 2 (`format_version = "2"`) requires `ox_version = ">=MAJOR.MINOR.PATCH"`:
   the minimum capable binary is checked in every included file before config
   sources, planning, claims, submission or cache adoption. Unknown schemas and

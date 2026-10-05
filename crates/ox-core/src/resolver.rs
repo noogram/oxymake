@@ -1155,7 +1155,7 @@ fn interpolate_execution(
                 log,
                 resources,
                 config_scalars,
-            );
+            )?;
             Ok(ExecutionBlock::Shell {
                 command: interpolated,
             })
@@ -1170,7 +1170,7 @@ fn interpolate_execution(
                 log,
                 resources,
                 config_scalars,
-            );
+            )?;
             Ok(ExecutionBlock::Run {
                 code: interpolated,
                 lang: lang.clone(),
@@ -1186,7 +1186,7 @@ fn interpolate_execution(
                 log,
                 resources,
                 config_scalars,
-            );
+            )?;
             Ok(ExecutionBlock::Script {
                 path: PathBuf::from(interpolated),
                 lang: lang.clone(),
@@ -1202,7 +1202,7 @@ fn interpolate_execution(
                 log,
                 resources,
                 config_scalars,
-            );
+            )?;
             Ok(ExecutionBlock::Call {
                 function: interpolated,
                 lang: lang.clone(),
@@ -1280,7 +1280,7 @@ fn interpolate_full(
     log: &LogConfig,
     resources: &BTreeMap<String, ResourceValue>,
     config_scalars: &BTreeMap<String, String>,
-) -> String {
+) -> Result<String, WildcardError> {
     let mut result = template.to_owned();
 
     let input_paths: Vec<&str> = named_inputs.iter().map(|(p, _)| p.as_str()).collect();
@@ -1338,10 +1338,11 @@ fn interpolate_full(
         result = result.replace(&format!("{{params.{name}}}"), value);
     }
 
-    // Replace {config.X} (config scalar values).
-    for (name, value) in config_scalars {
-        result = result.replace(&format!("{{config.{name}}}"), value);
-    }
+    // Replace {config.X} (config scalar values). This rejects a key that no
+    // config section and no `--set` override supplies: unlike the resource and
+    // param namespaces, the set of valid config keys is only complete here,
+    // after overrides have been applied, so it cannot be checked statically.
+    result = substitute_config_scalars(&result, config_scalars)?;
 
     // Replace {log} with the log stdout path (Snakemake convention).
     if let Some(ref log_path) = log.stdout {
@@ -1371,7 +1372,7 @@ fn interpolate_full(
         result = result.replace(&placeholder, value);
     }
 
-    result
+    Ok(result)
 }
 
 /// Build a job ID from a rule name and wildcard values.
@@ -2328,7 +2329,8 @@ mod tests {
             &LogConfig::default(),
             &BTreeMap::new(),
             &BTreeMap::new(),
-        );
+        )
+        .unwrap();
         assert_eq!(result, "data/patient_42.fastq");
     }
 
@@ -2686,7 +2688,8 @@ mod tests {
             &LogConfig::default(),
             &BTreeMap::new(),
             &BTreeMap::new(),
-        );
+        )
+        .unwrap();
         assert_eq!(result, "cat data/A.csv > results/A.txt");
     }
 
@@ -2704,7 +2707,8 @@ mod tests {
             &LogConfig::default(),
             &BTreeMap::new(),
             &BTreeMap::new(),
-        );
+        )
+        .unwrap();
         assert_eq!(result, "cat a.txt b.txt > out.txt");
     }
 
@@ -2723,7 +2727,8 @@ mod tests {
             &LogConfig::default(),
             &BTreeMap::new(),
             &BTreeMap::new(),
-        );
+        )
+        .unwrap();
         assert_eq!(result, "process --sample=X data/X.csv > results/X.txt");
     }
 
@@ -2744,7 +2749,8 @@ mod tests {
             &LogConfig::default(),
             &BTreeMap::new(),
             &BTreeMap::new(),
-        );
+        )
+        .unwrap();
         assert_eq!(
             result,
             "bwa mem data/genome.fa data/reads.fq > results/aligned.bam"
@@ -2777,7 +2783,8 @@ mod tests {
             &LogConfig::default(),
             &BTreeMap::new(),
             &BTreeMap::new(),
-        );
+        )
+        .unwrap();
         assert_eq!(
             result,
             "for f in cleaned/sales.csv cleaned/inventory.csv cleaned/returns.csv; do cat $f; done > output/combined.csv"
@@ -2801,7 +2808,8 @@ mod tests {
             &LogConfig::default(),
             &BTreeMap::new(),
             &BTreeMap::new(),
-        );
+        )
+        .unwrap();
         assert_eq!(
             result,
             "process data/input.csv --out results/main.txt --log results/log.txt"
@@ -2824,7 +2832,8 @@ mod tests {
             &LogConfig::default(),
             &BTreeMap::new(),
             &BTreeMap::new(),
-        );
+        )
+        .unwrap();
         assert_eq!(
             result,
             "echo patient_42 bwa && process data/patient_42.fq > results/patient_42.bam"
@@ -2851,7 +2860,8 @@ mod tests {
             &LogConfig::default(),
             &BTreeMap::new(),
             &BTreeMap::new(),
-        );
+        )
+        .unwrap();
         assert_eq!(
             result,
             "align --ref=data/genome.fa --reads=data/A.fq --idx=data/genome.fa \
@@ -2876,7 +2886,8 @@ mod tests {
             &log,
             &BTreeMap::new(),
             &BTreeMap::new(),
-        );
+        )
+        .unwrap();
         assert_eq!(result, "command > logs/run.log 2>&1");
     }
 
@@ -2894,7 +2905,8 @@ mod tests {
             &LogConfig::default(),
             &resources,
             &BTreeMap::new(),
-        );
+        )
+        .unwrap();
         assert_eq!(result, "bwa mem -t 8 ref.fa reads.fq");
     }
 
@@ -2913,7 +2925,8 @@ mod tests {
             &LogConfig::default(),
             &resources,
             &BTreeMap::new(),
-        );
+        )
+        .unwrap();
         assert_eq!(result, "run --cpus 4 --mem 8G");
     }
 
@@ -2951,7 +2964,8 @@ mod tests {
             &log,
             &resources,
             &BTreeMap::new(),
-        );
+        )
+        .unwrap();
         assert_eq!(
             result,
             "process -t 4 -n 100 data/A.csv > results/A.txt 2> logs/A.log"

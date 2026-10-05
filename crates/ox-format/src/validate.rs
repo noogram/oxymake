@@ -11,7 +11,7 @@ use ox_core::error::ParseError;
 use ox_core::model::ExecutionBlock;
 use ox_core::resource::{CanonicalResource, canonicalize_resource_key};
 
-use crate::parse::{ConfigValue, Workflow};
+use crate::parse::Workflow;
 
 /// Validate a parsed workflow for semantic correctness.
 ///
@@ -36,12 +36,10 @@ pub fn validate(workflow: &Workflow) -> Result<(), Vec<ParseError>> {
 /// Reject only OxyMake-specific placeholder shapes whose declarations are
 /// statically knowable. Bare braces remain valid shell/code text.
 fn check_execution_placeholders(workflow: &Workflow, errors: &mut Vec<ParseError>) {
-    let config_scalars: Vec<&str> = workflow
-        .config
-        .iter()
-        .filter_map(|(key, value)| matches!(value, ConfigValue::Scalar(_)).then_some(key.as_str()))
-        .collect();
-
+    // `{config.X}` is deliberately absent from this static check: `--set`
+    // overrides can introduce a key that no `[config]` section declares, and
+    // they are applied after validation runs. The resolver rejects an unknown
+    // config key instead, once the override set is complete.
     for rule in &workflow.rules {
         let text = execution_text(&rule.execution);
         let resources: Vec<&str> = rule.resources.keys().map(String::as_str).collect();
@@ -61,14 +59,6 @@ fn check_execution_placeholders(workflow: &Workflow, errors: &mut Vec<ParseError
             &params,
             &rule.name.0,
             "declared parameter keys",
-            errors,
-        );
-        check_namespaced_placeholders(
-            text,
-            "config",
-            &config_scalars,
-            &rule.name.0,
-            "declared config scalar keys",
             errors,
         );
 
@@ -356,7 +346,7 @@ params = { present = "yes" }
             .map(|error| error.to_string())
             .collect();
 
-        assert_eq!(messages.len(), 3, "{messages:?}");
+        assert_eq!(messages.len(), 2, "{messages:?}");
         assert!(messages.iter().any(|message| {
             message.contains("rule `process`")
                 && message.contains("{resources.memory}")
@@ -365,9 +355,15 @@ params = { present = "yes" }
         assert!(messages.iter().any(|message| {
             message.contains("{params.missing}") && message.contains("present")
         }));
-        assert!(messages.iter().any(|message| {
-            message.contains("{config.unknown}") && message.contains("project")
-        }));
+        // `{config.unknown}` is deliberately NOT reported here: `--set` can
+        // supply a key absent from `[config]`, and overrides are applied after
+        // validation. The resolver rejects it once the key set is complete.
+        assert!(
+            !messages
+                .iter()
+                .any(|message| message.contains("{config.unknown}")),
+            "{messages:?}"
+        );
     }
 
     #[test]

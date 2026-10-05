@@ -685,6 +685,58 @@ shell = '''awk '{print $1}' input.txt > out.txt; printf '%s\n' "${HOME}" '{"ok":
     assert!(output.contains("{\"ok\":true}"), "{output}");
 }
 
+/// `--set` may introduce a config key that no `[config]` section declares, and
+/// overrides are applied after validation. A static check on `{config.NAME}`
+/// would reject this workflow even though it resolves; the resolver checks the
+/// key instead, once the override set is complete.
+#[test]
+fn config_placeholder_supplied_only_by_an_override_resolves() {
+    let dir = TempDir::new().unwrap();
+    fs::write(
+        dir.path().join("Oxymakefile.toml"),
+        r#"[rule.process]
+output = ["out.txt"]
+shell = "echo dir={config.outdir} > {output}"
+"#,
+    )
+    .unwrap();
+
+    ox().current_dir(dir.path()).arg("lint").assert().success();
+    ox().current_dir(dir.path())
+        .args(["run", "out.txt", "--set", "outdir=/tmp"])
+        .assert()
+        .success();
+    assert_eq!(
+        fs::read_to_string(dir.path().join("out.txt")).unwrap(),
+        "dir=/tmp\n"
+    );
+}
+
+/// The same placeholder with no declaration and no override is still an error,
+/// reported by the resolver before any job runs.
+#[test]
+fn unknown_config_placeholder_in_a_command_fails_before_execution() {
+    let dir = TempDir::new().unwrap();
+    fs::write(
+        dir.path().join("Oxymakefile.toml"),
+        r#"[rule.process]
+output = ["out.txt"]
+shell = "echo dir={config.outdir} > {output}"
+"#,
+    )
+    .unwrap();
+
+    ox().current_dir(dir.path())
+        .args(["run", "out.txt"])
+        .assert()
+        .failure()
+        .stderr(
+            predicates::str::contains("unknown config key `outdir`")
+                .and(predicates::str::contains("--set")),
+        );
+    assert!(!dir.path().join("out.txt").exists());
+}
+
 // ---------------------------------------------------------------------------
 // Plan
 // ---------------------------------------------------------------------------

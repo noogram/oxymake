@@ -402,10 +402,15 @@ placeholders resolved while the job graph is built
 
 Validation rejects the placeholder shapes whose declarations can be checked
 statically: `{resources.NAME}` and `{params.NAME}` require that exact key on the
-rule, `{config.NAME}` requires a scalar key in `[config]`, `{threads}` requires
-either `cpu` or `cpus`, and `{log}` requires a configured stdout log path. The
-error names the rule, placeholder, and available keys. This check applies before
-planning, dry runs, and execution.
+rule, `{threads}` requires either `cpu` or `cpus`, and `{log}` requires a
+configured stdout log path. The error names the rule, placeholder, and available
+keys. This check applies before planning, dry runs, and execution.
+
+`{config.NAME}` is checked one step later, while the job graph is built, because
+`--set NAME=value` can supply a key that no `[config]` section declares and
+overrides are applied after validation. An unknown config key is still an error,
+and it still stops the run before any job starts — it is simply reported by the
+resolver rather than by `ox lint`.
 
 A bare `{name}` is deliberately not checked. OxyMake cannot distinguish a
 mistyped wildcard such as `{samp}` from legitimate brace text in shell and
