@@ -294,7 +294,7 @@ stays literal. A new dimension keeps the rule spelling.
 
 Classes resolve before command interpolation. Their effective values therefore
 expand `{resources.NAME}` using the effective spelling. As with inline resources,
-`{threads}` reads only `cpu`; a class declaring only `cpus` leaves it literal. Cache
+`{threads}` reads the canonical CPU value from either `cpu` or `cpus`. Cache
 identity also follows those effective values: class names, definition order,
 and definition file paths do not enter the key. As before, a resource affects a
 key only when interpolation places its value in the execution text.
@@ -399,6 +399,19 @@ placeholders resolved while the job graph is built
   convention), declared as either `cpu` or `cpus`.
 - `{resources.NAME}` substitutes any declared resource under its own key,
   e.g. `{resources.mem_gb}` for `resources = { mem_gb = 16 }`.
+
+Validation rejects the placeholder shapes whose declarations can be checked
+statically: `{resources.NAME}` and `{params.NAME}` require that exact key on the
+rule, `{config.NAME}` requires a scalar key in `[config]`, `{threads}` requires
+either `cpu` or `cpus`, and `{log}` requires a configured stdout log path. The
+error names the rule, placeholder, and available keys. This check applies before
+planning, dry runs, and execution.
+
+A bare `{name}` is deliberately not checked. OxyMake cannot distinguish a
+mistyped wildcard such as `{samp}` from legitimate brace text in shell and
+inline code, including `awk '{print $1}'`, `${HOME}`, and JSON literals. Such a
+bare typo can therefore remain literal; namespaced placeholders are the
+fail-closed forms where static checking is possible.
 
 This mechanism covers **inline commands only** — `shell` and `run` blocks,
 where the interpolated text is the command OxyMake executes

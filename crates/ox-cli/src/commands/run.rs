@@ -3057,6 +3057,37 @@ mod cache_key_tests {
     }
 
     #[test]
+    fn threads_alias_fix_has_narrow_and_stable_cache_effect() {
+        let cpu_before = make_job(ExecutionBlock::Shell {
+            command: "echo --threads 2".into(),
+        });
+        let cpu_after = cpu_before.clone();
+        assert_eq!(
+            job_cache_key(&cpu_before, None),
+            job_cache_key(&cpu_after, None),
+            "the existing cpu spelling must preserve its cache identity"
+        );
+
+        let cpus_before = make_job(ExecutionBlock::Shell {
+            command: "echo --threads {threads}".into(),
+        });
+        let cpus_after = make_job(ExecutionBlock::Shell {
+            command: "echo --threads 2".into(),
+        });
+        let old_key = job_cache_key(&cpus_before, None);
+        let new_key = job_cache_key(&cpus_after, None);
+        assert_ne!(
+            old_key, new_key,
+            "fixing cpus interpolation must rerun once"
+        );
+        assert_eq!(
+            new_key,
+            job_cache_key(&cpus_after, None),
+            "the corrected key must be stable across runs"
+        );
+    }
+
+    #[test]
     fn clean_outputs_changes_cache_key_and_job_spec_hash() {
         use ox_core::model::CleanOutputs;
         let mut job = make_job(ExecutionBlock::Shell {

@@ -109,6 +109,7 @@ use regex::Regex;
 
 use crate::error::{DagError, WildcardError};
 use crate::model::*;
+use crate::resource::{CanonicalResource, canonicalize_resource_key};
 use crate::wildcard::{CompiledPattern, Pattern, Wildcards};
 
 /// Maximum depth of the backward-chaining recursion in [`resolve`].
@@ -1347,8 +1348,11 @@ fn interpolate_full(
         result = result.replace("{log}", log_path);
     }
 
-    // Replace {threads} with the cpu resource value (Snakemake convention).
-    if let Some(cpu) = resources.get("cpu") {
+    // Replace {threads} with the canonically identified CPU resource value
+    // (Snakemake convention). The raw spelling remains untouched elsewhere.
+    if let Some(cpu) = resources.iter().find_map(|(key, value)| {
+        matches!(canonicalize_resource_key(key), Ok(CanonicalResource::Cpu)).then_some(value)
+    }) {
         result = result.replace("{threads}", &cpu.to_string());
     }
 
@@ -2548,6 +2552,34 @@ mod tests {
                 command: "tool --flag true --name myproj".into()
             }
         );
+    }
+
+    #[test]
+    fn threads_uses_canonical_cpu_for_both_spellings() {
+        let exec = ExecutionBlock::Shell {
+            command: "tool --threads {threads}".into(),
+        };
+        for spelling in ["cpu", "cpus"] {
+            let resources = BTreeMap::from([(spelling.into(), ResourceValue::Int(2))]);
+            let result = interpolate_execution(
+                &exec,
+                &Wildcards::new(),
+                &[],
+                &[],
+                &BTreeMap::new(),
+                &LogConfig::default(),
+                &resources,
+                &BTreeMap::new(),
+            )
+            .unwrap();
+            assert_eq!(
+                result,
+                ExecutionBlock::Shell {
+                    command: "tool --threads 2".into()
+                },
+                "spelling {spelling}"
+            );
+        }
     }
 
     // -- Aggregation with no wildcards returns literal paths ---------------

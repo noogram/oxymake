@@ -111,6 +111,16 @@ pub enum ParseError {
         field: String,
         rule: String,
     },
+
+    /// A namespaced execution placeholder cannot be resolved from the rule's
+    /// declarations. Bare `{name}` placeholders are deliberately excluded
+    /// because they are indistinguishable from ordinary shell brace syntax.
+    #[error("rule `{rule}` uses unresolved placeholder `{placeholder}` ({available})")]
+    UnresolvedPlaceholder {
+        rule: String,
+        placeholder: String,
+        available: String,
+    },
 }
 
 /// An invalid hash literal was rejected at the type boundary.

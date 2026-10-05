@@ -8,8 +8,10 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 
 use ox_core::error::ParseError;
+use ox_core::model::ExecutionBlock;
+use ox_core::resource::{CanonicalResource, canonicalize_resource_key};
 
-use crate::parse::Workflow;
+use crate::parse::{ConfigValue, Workflow};
 
 /// Validate a parsed workflow for semantic correctness.
 ///
@@ -22,12 +24,131 @@ pub fn validate(workflow: &Workflow) -> Result<(), Vec<ParseError>> {
     check_execution_modes(workflow, &mut errors);
     check_output_wildcards(workflow, &mut errors);
     check_gate_rules(workflow, &mut errors);
+    check_execution_placeholders(workflow, &mut errors);
 
     if errors.is_empty() {
         Ok(())
     } else {
         Err(errors)
     }
+}
+
+/// Reject only OxyMake-specific placeholder shapes whose declarations are
+/// statically knowable. Bare braces remain valid shell/code text.
+fn check_execution_placeholders(workflow: &Workflow, errors: &mut Vec<ParseError>) {
+    let config_scalars: Vec<&str> = workflow
+        .config
+        .iter()
+        .filter_map(|(key, value)| matches!(value, ConfigValue::Scalar(_)).then_some(key.as_str()))
+        .collect();
+
+    for rule in &workflow.rules {
+        let text = execution_text(&rule.execution);
+        let resources: Vec<&str> = rule.resources.keys().map(String::as_str).collect();
+        let params: Vec<&str> = rule.params.keys().map(String::as_str).collect();
+
+        check_namespaced_placeholders(
+            text,
+            "resources",
+            &resources,
+            &rule.name.0,
+            "declared resource keys",
+            errors,
+        );
+        check_namespaced_placeholders(
+            text,
+            "params",
+            &params,
+            &rule.name.0,
+            "declared parameter keys",
+            errors,
+        );
+        check_namespaced_placeholders(
+            text,
+            "config",
+            &config_scalars,
+            &rule.name.0,
+            "declared config scalar keys",
+            errors,
+        );
+
+        if text.contains("{threads}")
+            && !rule
+                .resources
+                .keys()
+                .any(|key| matches!(canonicalize_resource_key(key), Ok(CanonicalResource::Cpu)))
+        {
+            push_placeholder_error(
+                &rule.name.0,
+                "{threads}",
+                available("declared resource keys", &resources),
+                errors,
+            );
+        }
+        if text.contains("{log}") && rule.log.stdout.is_none() {
+            push_placeholder_error(
+                &rule.name.0,
+                "{log}",
+                "no stdout log path is configured".into(),
+                errors,
+            );
+        }
+    }
+}
+
+fn execution_text(execution: &ExecutionBlock) -> &str {
+    match execution {
+        ExecutionBlock::Shell { command } => command,
+        ExecutionBlock::Run { code, .. } => code,
+        ExecutionBlock::Script { path, .. } => path.to_str().unwrap_or_default(),
+        ExecutionBlock::Call { function, .. } => function,
+    }
+}
+
+fn check_namespaced_placeholders(
+    text: &str,
+    namespace: &str,
+    declared: &[&str],
+    rule: &str,
+    label: &str,
+    errors: &mut Vec<ParseError>,
+) {
+    let prefix = format!("{{{namespace}.");
+    let mut rest = text;
+    let mut reported = HashSet::new();
+    while let Some(start) = rest.find(&prefix) {
+        let candidate = &rest[start..];
+        let Some(end) = candidate.find('}') else {
+            break;
+        };
+        let placeholder = &candidate[..=end];
+        let key = &placeholder[prefix.len()..placeholder.len() - 1];
+        if !declared.contains(&key) && reported.insert(placeholder.to_string()) {
+            push_placeholder_error(rule, placeholder, available(label, declared), errors);
+        }
+        rest = &candidate[end + 1..];
+    }
+}
+
+fn available(label: &str, keys: &[&str]) -> String {
+    if keys.is_empty() {
+        format!("{label}: none")
+    } else {
+        format!("{label}: {}", keys.join(", "))
+    }
+}
+
+fn push_placeholder_error(
+    rule: &str,
+    placeholder: &str,
+    available: String,
+    errors: &mut Vec<ParseError>,
+) {
+    errors.push(ParseError::UnresolvedPlaceholder {
+        rule: rule.into(),
+        placeholder: placeholder.into(),
+        available,
+    });
 }
 
 /// Check for duplicate rule names.
@@ -212,6 +333,85 @@ shell = "process {input} > {output}"
 "#;
         let wf = parse_workflow(toml, Path::new("test.toml")).unwrap();
         // Currently this is informational only (not an error), so validate should pass.
+        assert!(validate(&wf).is_ok());
+    }
+
+    #[test]
+    fn rejects_undeclared_namespaced_placeholders_and_names_declared_keys() {
+        let toml = r#"
+[config]
+project = "demo"
+samples = ["A"]
+
+[rule.process]
+output = ["out.txt"]
+shell = "tool {resources.memory} {params.missing} {config.unknown} > {output}"
+resources = { mem = "8G" }
+params = { present = "yes" }
+"#;
+        let wf = parse_workflow(toml, Path::new("test.toml")).unwrap();
+        let messages: Vec<String> = validate(&wf)
+            .unwrap_err()
+            .into_iter()
+            .map(|error| error.to_string())
+            .collect();
+
+        assert_eq!(messages.len(), 3, "{messages:?}");
+        assert!(messages.iter().any(|message| {
+            message.contains("rule `process`")
+                && message.contains("{resources.memory}")
+                && message.contains("mem")
+        }));
+        assert!(messages.iter().any(|message| {
+            message.contains("{params.missing}") && message.contains("present")
+        }));
+        assert!(messages.iter().any(|message| {
+            message.contains("{config.unknown}") && message.contains("project")
+        }));
+    }
+
+    #[test]
+    fn rejects_threads_without_cpu_and_log_without_stdout_path() {
+        let toml = r#"
+[rule.process]
+output = ["out.txt"]
+shell = "tool --threads {threads} > {log}"
+resources = { mem = "8G" }
+"#;
+        let wf = parse_workflow(toml, Path::new("test.toml")).unwrap();
+        let messages: Vec<String> = validate(&wf)
+            .unwrap_err()
+            .into_iter()
+            .map(|error| error.to_string())
+            .collect();
+
+        assert_eq!(messages.len(), 2, "{messages:?}");
+        assert!(messages.iter().any(|message| {
+            message.contains("rule `process`")
+                && message.contains("{threads}")
+                && message.contains("mem")
+        }));
+        assert!(
+            messages
+                .iter()
+                .any(|message| { message.contains("rule `process`") && message.contains("{log}") })
+        );
+    }
+
+    #[test]
+    fn permits_shell_braces_bare_names_and_declared_placeholders() {
+        let toml = r#"
+[config]
+project = "demo"
+
+[rule.process]
+output = ["out.txt"]
+shell = '''printf '%s\n' '{"ok":true}' "${HOME}"; awk '{print $1}'; echo {samp} {threads} {resources.mem} {params.mode} {config.project} > {log}'''
+resources = { cpus = 2, mem = "8G" }
+params = { mode = "fast" }
+log = { stdout = "process.log" }
+"#;
+        let wf = parse_workflow(toml, Path::new("test.toml")).unwrap();
         assert!(validate(&wf).is_ok());
     }
 

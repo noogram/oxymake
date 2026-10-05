@@ -8,6 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Breaking changes
+- `{threads}` now expands from either documented CPU spelling, `cpu` or `cpus`.
+  Workflows using `cpus` with `{threads}` rerun once because their corrected
+  command has a new cache key; workflows using `cpu` keep their existing key
+  byte-for-byte (#47).
+- Validation now rejects `{resources.NAME}`, `{params.NAME}`, and
+  `{config.NAME}` when `NAME` is undeclared, plus `{threads}` without a CPU
+  resource and `{log}` without a stdout log path. A workflow that previously
+  sent one of these literal placeholders to the command now fails validation
+  instead (#47).
 - Schema 2 (`format_version = "2"`) requires `ox_version = ">=MAJOR.MINOR.PATCH"`:
   the minimum capable binary is checked in every included file before config
   sources, planning, claims, submission or cache adoption. Unknown schemas and
@@ -47,7 +56,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - Class overrides keep the inherited resource spelling, so a rule's `cpus`
   override of class `cpu` works with `{threads}` and `{resources.cpu}`.
-  Inline `cpus` retains the existing literal `{threads}` and cache identity (#43).
+  Inline `cpus` now also expands `{threads}` (#43, #47).
 - The format reference now documents `materialize` on an output descriptor,
   matching the schema-2 form accepted by `ox lint` (#42).
 
