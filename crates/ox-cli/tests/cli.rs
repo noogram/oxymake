@@ -612,6 +612,131 @@ fn lint_json_invalid_toml_outputs_json() {
     assert!(!parsed["errors"].as_array().unwrap().is_empty());
 }
 
+#[test]
+fn unresolved_resource_placeholder_fails_lint_dry_run_and_run() {
+    let dir = TempDir::new().unwrap();
+    fs::write(
+        dir.path().join("Oxymakefile.toml"),
+        r#"[rule.process]
+output = ["out.txt"]
+shell = "echo {resources.memory} > {output}"
+resources = { mem = "8G" }
+"#,
+    )
+    .unwrap();
+
+    let lint = ox()
+        .current_dir(dir.path())
+        .args(["lint", "--json"])
+        .assert()
+        .failure()
+        .get_output()
+        .stdout
+        .clone();
+    let lint: serde_json::Value = serde_json::from_slice(&lint).unwrap();
+    assert_eq!(lint["valid"], false);
+    let errors = lint["errors"].as_array().unwrap();
+    assert!(errors.iter().any(|error| {
+        let error = error.as_str().unwrap();
+        error.contains("rule `process`")
+            && error.contains("{resources.memory}")
+            && error.contains("mem")
+    }));
+
+    for args in [
+        &["plan", "out.txt"][..],
+        &["run", "--dry-run", "out.txt"][..],
+        &["run", "out.txt"][..],
+    ] {
+        ox().current_dir(dir.path())
+            .args(args)
+            .assert()
+            .failure()
+            .stderr(
+                predicates::str::contains("rule `process`")
+                    .and(predicates::str::contains("{resources.memory}"))
+                    .and(predicates::str::contains("mem")),
+            );
+    }
+    assert!(!dir.path().join("out.txt").exists());
+}
+
+#[test]
+fn ordinary_shell_braces_validate_and_execute() {
+    let dir = TempDir::new().unwrap();
+    fs::write(dir.path().join("input.txt"), "first second\n").unwrap();
+    fs::write(
+        dir.path().join("Oxymakefile.toml"),
+        r#"[rule.process]
+input = ["input.txt"]
+output = ["out.txt"]
+shell = '''awk '{print $1}' input.txt > out.txt; printf '%s\n' "${HOME}" '{"ok":true}' >> out.txt'''
+"#,
+    )
+    .unwrap();
+
+    ox().current_dir(dir.path()).arg("lint").assert().success();
+    ox().current_dir(dir.path())
+        .args(["run", "out.txt"])
+        .assert()
+        .success();
+    let output = fs::read_to_string(dir.path().join("out.txt")).unwrap();
+    assert!(output.starts_with("first\n"), "{output}");
+    assert!(output.contains("{\"ok\":true}"), "{output}");
+}
+
+/// `--set` may introduce a config key that no `[config]` section declares, and
+/// overrides are applied after validation. A static check on `{config.NAME}`
+/// would reject this workflow even though it resolves; the resolver checks the
+/// key instead, once the override set is complete.
+#[test]
+fn config_placeholder_supplied_only_by_an_override_resolves() {
+    let dir = TempDir::new().unwrap();
+    fs::write(
+        dir.path().join("Oxymakefile.toml"),
+        r#"[rule.process]
+output = ["out.txt"]
+shell = "echo dir={config.outdir} > {output}"
+"#,
+    )
+    .unwrap();
+
+    ox().current_dir(dir.path()).arg("lint").assert().success();
+    ox().current_dir(dir.path())
+        .args(["run", "out.txt", "--set", "outdir=/tmp"])
+        .assert()
+        .success();
+    assert_eq!(
+        fs::read_to_string(dir.path().join("out.txt")).unwrap(),
+        "dir=/tmp\n"
+    );
+}
+
+/// The same placeholder with no declaration and no override is still an error,
+/// reported by the resolver before any job runs.
+#[test]
+fn unknown_config_placeholder_in_a_command_fails_before_execution() {
+    let dir = TempDir::new().unwrap();
+    fs::write(
+        dir.path().join("Oxymakefile.toml"),
+        r#"[rule.process]
+output = ["out.txt"]
+shell = "echo dir={config.outdir} > {output}"
+"#,
+    )
+    .unwrap();
+
+    ox().current_dir(dir.path())
+        .args(["run", "out.txt"])
+        .assert()
+        .failure()
+        .stderr(
+            predicates::str::contains("unknown config key `outdir`")
+                .and(predicates::str::contains("--set")),
+        );
+    assert!(!dir.path().join("out.txt").exists());
+}
+
 // ---------------------------------------------------------------------------
 // Plan
 // ---------------------------------------------------------------------------
@@ -1079,7 +1204,7 @@ cpu = 3
 }
 
 #[test]
-fn run_dry_run_exposes_unexpanded_placeholders_and_preserves_old_lines() {
+fn run_dry_run_expands_cpus_alias_and_preserves_old_lines() {
     let dir = TempDir::new().unwrap();
     fs::write(
         dir.path().join("Oxymakefile.toml"),
@@ -1107,7 +1232,39 @@ cpus = 3
 
     assert!(stdout.contains("Dry run: 1 job(s) would execute for 1 target(s)"));
     assert!(stdout.contains("rule=alias_mismatch outputs=[result.txt]"));
-    assert!(stdout.contains("execution (shell):\n      | tool --threads {threads} > result.txt"));
+    assert!(stdout.contains("execution (shell):\n      | tool --threads 3 > result.txt"));
+}
+
+#[test]
+fn threads_expands_from_cpu_and_cpus_in_real_execution() {
+    let dir = TempDir::new().unwrap();
+    fs::write(
+        dir.path().join("Oxymakefile.toml"),
+        r#"[rule.a]
+output = ["a.txt"]
+resources = { cpus = 2, mem = "8G" }
+shell = "echo cpu={threads} mem={resources.mem} > {output}"
+
+[rule.b]
+output = ["b.txt"]
+resources = { cpu = 2, mem = "8G" }
+shell = "echo cpu={threads} mem={resources.mem} > {output}"
+"#,
+    )
+    .unwrap();
+
+    ox().current_dir(dir.path())
+        .args(["run", "a.txt", "b.txt", "--no-cache"])
+        .assert()
+        .success();
+    assert_eq!(
+        fs::read_to_string(dir.path().join("a.txt")).unwrap(),
+        "cpu=2 mem=8G\n"
+    );
+    assert_eq!(
+        fs::read_to_string(dir.path().join("b.txt")).unwrap(),
+        "cpu=2 mem=8G\n"
+    );
 }
 
 #[test]
