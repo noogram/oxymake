@@ -3314,6 +3314,7 @@ mod tests {
                 command: "true".into(),
             },
             resources: BTreeMap::new(),
+            env: Default::default(),
             environment: None,
             error_strategy: ErrorStrategy::default(),
             timeout: None,

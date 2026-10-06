@@ -169,14 +169,17 @@ pub fn prepare(path: &Path) -> Result<Migration, ParseError> {
         )
     })?;
     for (old, new) in before.rules.iter().zip(&after.rules) {
-        if old.execution != new.execution || old.environment != new.environment {
+        if old.execution != new.execution
+            || old.environment != new.environment
+            || old.env != new.env
+        {
             return Err(error(
                 path,
-                "migration changed command or software environment; originals untouched",
+                "migration changed command, software environment, or environment variables; originals untouched",
             ));
         }
     }
-    report.push_str("Commands are preserved byte-for-byte; software environments keep their meaning. No shell assignments are extracted. Document formatting, including line endings, may be normalized.\nMigration preserves cache identity. Any future execution-semantics change will state its cache consequences in that release's notes.\n");
+    report.push_str("Commands and declared environment variables are preserved byte-for-byte; software environments keep their meaning. No shell assignments are extracted. Document formatting, including line endings, may be normalized.\nMigration preserves cache identity. Any future execution-semantics change will state its cache consequences in that release's notes.\n");
     Ok(Migration {
         originals,
         proposed,

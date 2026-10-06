@@ -460,6 +460,28 @@ fn resolve_environment(
     }
 }
 
+fn resolve_job_environment(
+    command: &str,
+    environment: &Option<EnvSpec>,
+    declared_env: &std::collections::BTreeMap<String, String>,
+    shell: &str,
+) -> Result<(String, Vec<(String, String)>), ExecLocalError> {
+    if let Some(EnvSpec::Docker { image }) = environment {
+        let env_flags = declared_env
+            .keys()
+            .map(|name| format!(" --env {}", shell_escape(name)))
+            .collect::<String>();
+        let wrapped = format!(
+            "docker run --rm{env_flags} {} {} -c {}",
+            shell_escape(image),
+            shell_escape(shell),
+            shell_escape(command),
+        );
+        return Ok((wrapped, vec![]));
+    }
+    resolve_environment(command, environment, shell)
+}
+
 /// Resolve `InMemory` inputs to temporary files for call-mode execution.
 ///
 /// When a call-mode job has `OutputRef::InMemory` inputs, the data must be
@@ -992,7 +1014,9 @@ impl Executor for LocalExecutor {
                 let wrapper_job = resolved_job.as_ref().unwrap_or(job_ref);
 
                 // Stage 5: Try warm dispatch (fork-after-import) before cold spawn.
-                if let Some(ref pool) = self.worker_pool {
+                if let Some(ref pool) = self.worker_pool
+                    && wrapper_job.env.is_empty()
+                {
                     // Derive a stable environment key for worker pooling.
                     let env_key = match &wrapper_job.environment {
                         Some(ox_core::model::EnvSpec::Uv {
@@ -1089,7 +1113,14 @@ impl Executor for LocalExecutor {
             .shell_executable
             .as_deref()
             .unwrap_or(ox_core::model::DEFAULT_SHELL);
-        let (command, env_vars) = resolve_environment(&raw_command, &job.environment, shell)?;
+        let (command, backend_env_vars) =
+            resolve_job_environment(&raw_command, &job.environment, &job.env, shell)?;
+        let mut env_vars: Vec<(String, String)> = job
+            .env
+            .iter()
+            .map(|(name, value)| (name.clone(), value.clone()))
+            .collect();
+        env_vars.extend(backend_env_vars);
 
         // Log the resolved command so users can reproduce manually.
         if let Some(ref event_bus) = self.event_bus {
@@ -1567,6 +1598,26 @@ mod tests {
     }
 
     #[test]
+    fn resolve_env_docker_forwards_declared_environment() {
+        let environment = Some(EnvSpec::Docker {
+            image: "python:3.12".into(),
+        });
+        let declared =
+            std::collections::BTreeMap::from([("DECLARED_VALUE".into(), "inside".into())]);
+        let (cmd, _) = resolve_job_environment(
+            "printf '%s' \"$DECLARED_VALUE\"",
+            &environment,
+            &declared,
+            ox_core::model::DEFAULT_SHELL,
+        )
+        .unwrap();
+        assert!(
+            cmd.contains("docker run --rm --env 'DECLARED_VALUE'"),
+            "{cmd}"
+        );
+    }
+
+    #[test]
     fn resolve_env_uv_with_requirements() {
         // Regression (#9): `uv run` has no `-r` flag; the requirements file
         // must be passed with `--with-requirements`. Assert the EXACT command
@@ -1727,6 +1778,7 @@ mod tests {
                 lang: "python".into(),
             },
             resources: std::collections::BTreeMap::from([("cpu".into(), ResourceValue::Int(4))]),
+            env: Default::default(),
             environment: None,
             error_strategy: ErrorStrategy::default(),
             timeout: None,
@@ -2098,6 +2150,7 @@ mod tests {
                 command: "true".into(),
             },
             resources: std::collections::BTreeMap::new(),
+            env: Default::default(),
             environment: None,
             error_strategy: ox_core::model::ErrorStrategy::default(),
             timeout: None,
@@ -2279,6 +2332,7 @@ mod tests {
                 command: format!("cat .oxymake_mem_input_dat.dat > {}", out_path.display()),
             },
             resources: BTreeMap::new(),
+            env: Default::default(),
             environment: None,
             error_strategy: ErrorStrategy::Terminate,
             timeout: None,
@@ -2363,6 +2417,7 @@ mod tests {
                 command: "true".into(),
             },
             resources: BTreeMap::new(),
+            env: Default::default(),
             environment: None,
             error_strategy: ErrorStrategy::Terminate,
             timeout: None,
@@ -2445,6 +2500,7 @@ mod tests {
                 command: "true".into(),
             },
             resources: BTreeMap::new(),
+            env: Default::default(),
             environment: None,
             error_strategy: ErrorStrategy::Terminate,
             timeout: None,

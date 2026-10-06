@@ -895,6 +895,7 @@ mod tests {
             gates: vec![],
             includes: vec![],
             global_environment: None,
+            global_env: Default::default(),
             profiles: Default::default(),
             executor_config: Default::default(),
             resource_classes: Default::default(),

@@ -216,6 +216,7 @@ mod tests {
             },
             environment: None,
             resources: Default::default(),
+            env: Default::default(),
             tags: Default::default(),
             meta: Default::default(),
             wildcard_constraints: Default::default(),

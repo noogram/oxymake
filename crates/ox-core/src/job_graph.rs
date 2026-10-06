@@ -779,6 +779,7 @@ pub fn make_test_job(name: &str, inputs: &[&str], outputs: &[&str]) -> ConcreteJ
             command: "true".into(),
         },
         resources: BTreeMap::new(),
+        env: BTreeMap::new(),
         environment: None,
         error_strategy: ErrorStrategy::default(),
         timeout: None,

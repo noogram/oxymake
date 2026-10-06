@@ -1343,6 +1343,9 @@ pub struct Rule {
     pub execution: ExecutionBlock,
     /// Resource requirements (cpu, mem, gpu, custom).
     pub resources: BTreeMap<String, ResourceValue>,
+    /// Environment variables declared for the job command.
+    #[serde(default)]
+    pub env: BTreeMap<String, String>,
     /// Optional environment specification.
     pub environment: Option<EnvSpec>,
     /// Explicit tags for filtering, grouping, and reporting.
@@ -1466,6 +1469,9 @@ pub struct ConcreteJob {
     pub execution: ExecutionBlock,
     /// Resource requirements.
     pub resources: BTreeMap<String, ResourceValue>,
+    /// Resolved environment variables for the job command.
+    #[serde(default)]
+    pub env: BTreeMap<String, String>,
     /// Optional environment specification.
     pub environment: Option<EnvSpec>,
     /// Error handling strategy.
@@ -2746,6 +2752,7 @@ mod tests {
                 command: "bwa mem".into(),
             },
             resources: BTreeMap::from([("cpu".into(), ResourceValue::Int(4))]),
+            env: Default::default(),
             environment: Some(EnvSpec::Conda {
                 env: "bioinfo".into(),
             }),
@@ -2812,6 +2819,7 @@ mod tests {
                 command: "bwa mem".into(),
             },
             resources: BTreeMap::new(),
+            env: Default::default(),
             environment: None,
             error_strategy: ErrorStrategy::Terminate,
             timeout: None,
@@ -2863,6 +2871,7 @@ mod tests {
                 command: "echo".into(),
             },
             resources: BTreeMap::new(),
+            env: Default::default(),
             environment: None,
             tags: BTreeMap::new(),
             meta: RuleMeta::default(),
@@ -2911,6 +2920,7 @@ mod tests {
                 command: "echo".into(),
             },
             resources: BTreeMap::new(),
+            env: Default::default(),
             environment: None,
             error_strategy: ErrorStrategy::default(),
             timeout: None,
@@ -2950,6 +2960,7 @@ mod tests {
                 command: "echo".into(),
             },
             resources: BTreeMap::new(),
+            env: Default::default(),
             environment: None,
             error_strategy: ErrorStrategy::default(),
             timeout: None,
@@ -3371,6 +3382,7 @@ mod tests {
                 command: "echo".into(),
             },
             resources: BTreeMap::new(),
+            env: Default::default(),
             environment: None,
             error_strategy: ErrorStrategy::default(),
             timeout: None,

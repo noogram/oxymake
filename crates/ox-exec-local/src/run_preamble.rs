@@ -199,6 +199,7 @@ mod tests {
                 lang: "python".into(),
             },
             resources: BTreeMap::from([("cpu".to_string(), ResourceValue::Int(4))]),
+            env: Default::default(),
             environment: None,
             error_strategy: ErrorStrategy::default(),
             timeout: None,

@@ -1,5 +1,6 @@
 ---
 source: crates/ox-format/src/parse.rs
+assertion_line: 1818
 expression: wf
 ---
 Workflow {
@@ -53,6 +54,7 @@ Workflow {
                 command: "",
             },
             resources: {},
+            env: {},
             environment: None,
             tags: {},
             meta: RuleMeta {
@@ -108,6 +110,7 @@ Workflow {
                 lang: "python",
             },
             resources: {},
+            env: {},
             environment: None,
             tags: {
                 "domain": "reporting",
@@ -173,6 +176,7 @@ Workflow {
                     "8G",
                 ),
             },
+            env: {},
             environment: None,
             tags: {
                 "domain": "genomics",
@@ -231,6 +235,7 @@ Workflow {
                 lang: "python",
             },
             resources: {},
+            env: {},
             environment: Some(
                 Uv {
                     project: Some(
@@ -270,6 +275,7 @@ Workflow {
     gates: [],
     includes: [],
     global_environment: None,
+    global_env: {},
     profiles: {},
     executor_config: ExecutorConfig {
         slurm: None,

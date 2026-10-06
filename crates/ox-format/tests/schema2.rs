@@ -56,8 +56,7 @@ fn structural_keys_are_closed_dynamic_maps_are_open() {
     for (body, key) in [
         ("variables = {}", "variables"),
         ("[rule.a]\nshel = 'true'", "shel"),
-        ("[rule.a]\nenv = 'python'", "environment"),
-        ("[rule.a]\nenv = {}", "variables table does not exist yet"),
+        ("[rule.a]\nenv = 'python'", "expected a table"),
         ("[rule.a.log]\nstdot = 'x'", "stdot"),
         ("[rule.a]\noutput = [{path='x', typo=true}]", "typo"),
         ("[gate.a]\nbefor = []", "befor"),
@@ -71,7 +70,7 @@ fn structural_keys_are_closed_dynamic_maps_are_open() {
     ] {
         reject(&format!("{header}{body}"), &["contract.toml", key]);
     }
-    parse_workflow(&format!("{header}\n[config]\ncustom = {{arbitrary='value'}}\n[rule.a]\nresources = {{custom_accelerator=1}}\ntags = {{custom='yes'}}\nparams = {{custom='value'}}\n"), Path::new("open.toml")).unwrap();
+    parse_workflow(&format!("{header}\n[config]\ncustom = {{arbitrary='value'}}\n[env]\nCUSTOM = 'value'\n[rule.a]\nresources = {{custom_accelerator=1}}\ntags = {{custom='yes'}}\nparams = {{custom='value'}}\nenv = {{ RULE_CUSTOM = 'value' }}\n"), Path::new("open.toml")).unwrap();
 }
 
 #[test]

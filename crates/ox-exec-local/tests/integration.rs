@@ -24,6 +24,7 @@ fn shell_job(id: &str, command: &str) -> ConcreteJob {
             command: command.to_owned(),
         },
         resources: BTreeMap::new(),
+        env: Default::default(),
         environment: None,
         error_strategy: ErrorStrategy::Terminate,
         timeout: None,
@@ -136,6 +137,26 @@ async fn execute_echo_returns_exit_code_zero() {
     assert_eq!(result.exit_code, 0);
     assert_eq!(result.job_id, JobId::from("echo-job"));
     assert!(result.duration.as_millis() < 5000);
+}
+
+#[tokio::test]
+#[serial]
+async fn declared_environment_reaches_local_command() {
+    let exec = LocalExecutor::new();
+    let tmp = tempfile::tempdir().unwrap();
+    let output = tmp.path().join("env.txt");
+    let mut job = shell_job(
+        "declared-env",
+        &format!("printf '%s' \"$DECLARED_VALUE\" > {}", output.display()),
+    );
+    job.env
+        .insert("DECLARED_VALUE".into(), "local value".into());
+    let ctx = test_ctx(tmp.path());
+    let ws = exec.prepare_workspace(&job, &ctx).await.unwrap();
+    let result = exec.execute(&job, &ws, &ctx).await.unwrap();
+
+    assert_eq!(result.exit_code, 0);
+    assert_eq!(std::fs::read_to_string(output).unwrap(), "local value");
 }
 
 // -----------------------------------------------------------------------
@@ -501,6 +522,7 @@ fn shell_job_with_output(id: &str, command: &str, output_path: &str) -> Concrete
             command: command.to_owned(),
         },
         resources: BTreeMap::new(),
+        env: Default::default(),
         environment: None,
         error_strategy: ErrorStrategy::Terminate,
         timeout: None,
@@ -646,6 +668,7 @@ async fn atomic_write_multi_output_all_or_nothing() {
             command: "echo a > a.csv && echo b > b.csv".to_owned(),
         },
         resources: BTreeMap::new(),
+        env: Default::default(),
         environment: None,
         error_strategy: ErrorStrategy::Terminate,
         timeout: None,

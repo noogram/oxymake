@@ -137,6 +137,7 @@ pub(crate) fn structural(
             "profile",
             "include",
             "environment",
+            "env",
             "executor",
             "resource_classes",
         ],
@@ -152,6 +153,7 @@ pub(crate) fn structural(
             "resources",
             "resource_class",
             "environment",
+            "env",
             "when",
             "expand",
             "error_strategy",
@@ -253,14 +255,6 @@ pub(crate) fn structural(
         } else {
             format!("{location}.{key}")
         };
-        if kind == "rule" && key == "env" {
-            return Err(error(
-                path,
-                format!(
-                    "{at}: use environment for the software backend; a variables table does not exist yet"
-                ),
-            ));
-        }
         if !allowed.contains(&key.as_str()) {
             return Err(error(
                 path,

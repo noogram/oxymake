@@ -76,6 +76,9 @@ pub struct ArrayTaskParams {
     pub job_id: String,
     /// Wildcard values for this task.
     pub wildcards: BTreeMap<String, String>,
+    /// Resolved environment variables for this task.
+    #[serde(default)]
+    pub env: BTreeMap<String, String>,
     /// The resolved shell command for this task.
     pub command: String,
 }
@@ -153,6 +156,7 @@ mod tests {
                 ),
             },
             resources: StdBTreeMap::new(),
+            env: Default::default(),
             environment: None,
             error_strategy: ErrorStrategy::Terminate,
             timeout: None,
@@ -263,6 +267,7 @@ mod tests {
             index: 0,
             job_id: "j-1".into(),
             wildcards: BTreeMap::from([("sample".into(), "A".into())]),
+            env: Default::default(),
             command: "echo A".into(),
         };
         let json = serde_json::to_string(&params).unwrap();

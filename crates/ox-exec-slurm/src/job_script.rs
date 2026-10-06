@@ -77,6 +77,7 @@ pub fn generate(
     script.push_str("# --- Environment setup ---\n");
     script.push_str("set -euo pipefail\n");
     generate_env_setup(&mut script, &job.environment);
+    write_declared_env(&mut script, &job.env);
     script.push('\n');
 
     // --- Working directory ---
@@ -268,6 +269,11 @@ pub fn generate_array(
     script.push_str("  exit 1\n");
     script.push_str("fi\n\n");
 
+    // Values are quoted by Python's shlex.quote before eval; emitting raw
+    // JSON values here would permit command substitution in the job shell.
+    script.push_str("# Export declared environment variables safely\n");
+    script.push_str("eval \"$(printf '%s' \"$TASK_LINE\" | python3 -c 'import sys,json,shlex; d=json.load(sys.stdin); print(\"\\n\".join(\"export \"+k+\"=\"+shlex.quote(v) for k,v in d[\"env\"].items()))')\"\n\n");
+
     // Export wildcards as environment variables (OX_WC_<name>=<value>)
     script.push_str("# Export wildcard values as environment variables\n");
     script.push_str("export OX_JOB_ID=$(echo \"$TASK_LINE\" | ");
@@ -317,6 +323,7 @@ pub fn generate_array(
             index,
             job_id: job.id.as_str().to_string(),
             wildcards: job.wildcards.clone(),
+            env: job.env.clone(),
             command,
         };
         let line = serde_json::to_string(&entry)
@@ -326,6 +333,20 @@ pub fn generate_array(
     }
 
     Ok((script, params))
+}
+
+fn write_declared_env(script: &mut String, env: &std::collections::BTreeMap<String, String>) {
+    if env.is_empty() {
+        return;
+    }
+    script.push_str("# Declared environment variables\n");
+    for (name, value) in env {
+        script.push_str(&format!("export {name}={}\n", shell_quote(value)));
+    }
+}
+
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
 }
 
 /// Generate environment setup lines for the sbatch script.
@@ -410,6 +431,7 @@ mod tests {
                 command: command.into(),
             },
             resources: BTreeMap::new(),
+            env: Default::default(),
             environment: None,
             error_strategy: ErrorStrategy::Terminate,
             timeout: None,
@@ -443,6 +465,27 @@ mod tests {
         assert!(script.contains("#SBATCH --partition=gpu"));
         assert!(script.contains("#SBATCH --account=lab-01"));
         assert!(script.contains("echo hello"));
+    }
+
+    #[test]
+    fn declared_environment_is_shell_quoted_and_not_executed() {
+        let project = tempfile::tempdir().unwrap();
+        let marker = project.path().join("pwned");
+        let mut job = test_job("j-env", "test \"$PAYLOAD\" = 'p$(touch pwned)d'");
+        job.env.insert("PAYLOAD".into(), "p$(touch pwned)d".into());
+        let script = generate(&job, &test_config(), project.path(), &[], project.path()).unwrap();
+
+        assert!(script.contains("export PAYLOAD='p$(touch pwned)d'"));
+        let status = std::process::Command::new("/bin/bash")
+            .arg("-c")
+            .arg(&script)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        assert!(
+            !marker.exists(),
+            "environment value executed command substitution"
+        );
     }
 
     #[test]
@@ -685,6 +728,7 @@ mod tests {
         assert_eq!(entry0["index"], 0);
         assert_eq!(entry0["job_id"], "j-1");
         assert_eq!(entry0["wildcards"]["sample"], "A");
+        assert!(entry0["env"].is_object());
         assert!(entry0["command"].as_str().unwrap().contains("--sample=A"));
 
         let entry2: serde_json::Value = serde_json::from_str(lines[2]).unwrap();

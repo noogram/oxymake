@@ -51,6 +51,8 @@ pub struct Workflow {
     pub includes: Vec<PathBuf>,
     /// Global default environment for all rules.
     pub global_environment: Option<EnvSpec>,
+    /// Workflow-level environment variables, merged into each rule.
+    pub global_env: BTreeMap<String, String>,
     /// Named profiles — bundles of CLI flag overrides.
     pub profiles: BTreeMap<String, Profile>,
     /// Executor-specific configuration from `[executor.*]` sections.
@@ -205,6 +207,9 @@ struct RawOxymakefile {
     /// Global default environment for all rules.
     #[serde(default)]
     environment: Option<BTreeMap<String, String>>,
+    /// Environment variables inherited by every rule in this file.
+    #[serde(default)]
+    env: Option<toml::Value>,
     /// Executor-specific configuration sections.
     #[serde(default)]
     executor: Option<RawExecutorTable>,
@@ -273,6 +278,8 @@ struct RawRule {
     resource_class: Option<toml::Value>,
     #[serde(default)]
     environment: Option<BTreeMap<String, String>>,
+    #[serde(default)]
+    env: Option<toml::Value>,
     when: Option<toml::Value>,
     expand: Option<String>,
     error_strategy: Option<toml::Value>,
@@ -420,6 +427,7 @@ fn parse_workflow_inner(
 
     // Parse global environment default.
     let global_environment = parse_environment(&raw.environment, "[environment]")?;
+    let global_env = parse_env_vars(&raw.env, "[env]", format_version == "2", file_path)?;
 
     let mut rules = Vec::new();
     let mut rule_resource_classes = BTreeMap::new();
@@ -438,11 +446,14 @@ fn parse_workflow_inner(
                 rule_resource_classes.insert(name.clone(), class.to_owned());
             }
         }
-        let mut rule = parse_rule(name, raw_rule, file_path)?;
+        let mut rule = parse_rule(name, raw_rule, file_path, &format_version)?;
         // Inherit global environment if rule doesn't specify one.
         if rule.environment.is_none() {
             rule.environment = global_environment.clone();
         }
+        let mut env = global_env.clone();
+        env.extend(rule.env);
+        rule.env = env;
         rules.push(rule);
     }
 
@@ -569,6 +580,7 @@ fn parse_workflow_inner(
         gates,
         includes,
         global_environment,
+        global_env,
         profiles,
         executor_config,
         resource_classes,
@@ -649,7 +661,7 @@ fn expand_includes(
         }
 
         // Rules: append, duplicate names are an error.
-        for rule in inc_wf.rules {
+        for mut rule in inc_wf.rules {
             if workflow.rules.iter().any(|r| r.name == rule.name) {
                 return Err(ParseError::DuplicateRule {
                     name: rule.name.as_str().to_string(),
@@ -657,6 +669,9 @@ fn expand_includes(
                     second: inc_path.clone(),
                 });
             }
+            let mut env = workflow.global_env.clone();
+            env.extend(rule.env);
+            rule.env = env;
             workflow.rules.push(rule);
         }
 
@@ -989,7 +1004,12 @@ fn resolve_file_sources(
 // Rule parsing
 // ---------------------------------------------------------------------------
 
-fn parse_rule(name: &str, raw: &RawRule, file_path: &Path) -> Result<Rule, ParseError> {
+fn parse_rule(
+    name: &str,
+    raw: &RawRule,
+    file_path: &Path,
+    format_version: &str,
+) -> Result<Rule, ParseError> {
     if let Some(value) = &raw.executor {
         if value != "local" {
             return Err(ParseError::InvalidField {
@@ -1005,6 +1025,12 @@ fn parse_rule(name: &str, raw: &RawRule, file_path: &Path) -> Result<Rule, Parse
     let execution = parse_execution(name, raw, file_path)?;
     let resources = parse_resources(&raw.resources);
     let environment = parse_environment(&raw.environment, &format!("[rule.{name}.environment]"))?;
+    let env = parse_env_vars(
+        &raw.env,
+        &format!("rule.{name}.env"),
+        format_version == "2",
+        file_path,
+    )?;
     let expand_mode = parse_expand_mode(&raw.expand);
     let error_strategy = if let Some(n) = raw.retries {
         // `retries = N` is shorthand for error_strategy = retry with defaults.
@@ -1065,6 +1091,7 @@ fn parse_rule(name: &str, raw: &RawRule, file_path: &Path) -> Result<Rule, Parse
         outputs,
         execution,
         resources,
+        env,
         environment,
         tags: raw.tags.clone(),
         meta: RuleMeta {
@@ -1588,6 +1615,51 @@ fn parse_environment(
     })
 }
 
+/// Validate environment-variable names that must work on every executor.
+fn parse_env_vars(
+    raw: &Option<toml::Value>,
+    context: &str,
+    strict: bool,
+    file_path: &Path,
+) -> Result<BTreeMap<String, String>, ParseError> {
+    let Some(raw) = raw else {
+        return Ok(BTreeMap::new());
+    };
+    let Some(table) = raw.as_table() else {
+        if strict {
+            return Err(crate::schema::error(
+                file_path,
+                format!("{context}: expected a table of string environment variables"),
+            ));
+        }
+        return Ok(BTreeMap::new());
+    };
+    let mut parsed = BTreeMap::new();
+    for (name, value) in table {
+        let Some(value) = value.as_str() else {
+            return Err(crate::schema::error(
+                file_path,
+                format!("{context}.{name}: environment variable values must be strings"),
+            ));
+        };
+        let mut chars = name.chars();
+        let valid = chars
+            .next()
+            .is_some_and(|c| c == '_' || c.is_ascii_alphabetic())
+            && chars.all(|c| c == '_' || c.is_ascii_alphanumeric());
+        if !valid {
+            return Err(crate::schema::error(
+                file_path,
+                format!(
+                    "{context}.{name}: environment variable names must match [A-Za-z_][A-Za-z0-9_]*"
+                ),
+            ));
+        }
+        parsed.insert(name.clone(), value.to_owned());
+    }
+    Ok(parsed)
+}
+
 // ---------------------------------------------------------------------------
 // Params parsing
 // ---------------------------------------------------------------------------
@@ -1719,6 +1791,44 @@ mod tests {
             );
         }
         workflow
+    }
+
+    #[test]
+    fn workflow_env_merges_with_rule_override() {
+        let workflow = parse_workflow(
+            r#"
+[env]
+SHARED = "workflow"
+OVERRIDE = "workflow"
+
+[rule.demo]
+output = ["out.txt"]
+shell = "true"
+env = { OVERRIDE = "rule" }
+"#,
+            Path::new("Oxymakefile.toml"),
+        )
+        .unwrap();
+
+        assert_eq!(workflow.rules[0].env["SHARED"], "workflow");
+        assert_eq!(workflow.rules[0].env["OVERRIDE"], "rule");
+    }
+
+    #[test]
+    fn root_environment_variables_apply_to_included_rules() {
+        let dir = tempfile::tempdir().unwrap();
+        let child = dir.path().join("child.toml");
+        std::fs::write(
+            &child,
+            "[rule.child]\noutput=['out.txt']\nshell='true'\nenv={LOCAL='child'}\n",
+        )
+        .unwrap();
+        let root = dir.path().join("Oxymakefile.toml");
+        let workflow =
+            parse_workflow("include=['child.toml']\n[env]\nSHARED='root'\n", &root).unwrap();
+
+        assert_eq!(workflow.rules[0].env["SHARED"], "root");
+        assert_eq!(workflow.rules[0].env["LOCAL"], "child");
     }
 
     #[test]

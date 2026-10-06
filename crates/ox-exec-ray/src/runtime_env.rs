@@ -5,6 +5,8 @@
 //! This module converts OxyMake's environment specifications into the
 //! corresponding Ray runtime_env JSON structure.
 
+use std::collections::BTreeMap;
+
 use ox_core::model::EnvSpec;
 use serde_json::{Value, json};
 
@@ -71,7 +73,8 @@ pub fn env_spec_to_runtime_env(env: &EnvSpec) -> Option<Value> {
 
 /// Merge a base `runtime_env` with an overlay (e.g., memory limits from resources).
 ///
-/// The overlay values take precedence over base values for top-level keys.
+/// The overlay values take precedence. `env_vars` maps are merged by variable
+/// name so independent executor features do not discard one another.
 pub fn merge_runtime_env(base: Option<Value>, overlay: Option<Value>) -> Option<Value> {
     match (base, overlay) {
         (None, None) => None,
@@ -79,12 +82,25 @@ pub fn merge_runtime_env(base: Option<Value>, overlay: Option<Value>) -> Option<
         (None, Some(o)) => Some(o),
         (Some(Value::Object(mut b)), Some(Value::Object(o))) => {
             for (k, v) in o {
+                if k == "env_vars" {
+                    if let Value::Object(overlay_vars) = &v {
+                        if let Some(Value::Object(base_vars)) = b.get_mut(&k) {
+                            base_vars.extend(overlay_vars.clone());
+                            continue;
+                        }
+                    }
+                }
                 b.insert(k, v);
             }
             Some(Value::Object(b))
         }
         (_, Some(o)) => Some(o),
     }
+}
+
+/// Build a Ray runtime environment from resolved workflow variables.
+pub fn declared_env_runtime_env(env: &BTreeMap<String, String>) -> Option<Value> {
+    (!env.is_empty()).then(|| json!({ "env_vars": env }))
 }
 
 /// Build a `runtime_env` overlay for memory limits from resource mapping.
@@ -188,6 +204,18 @@ mod tests {
         let merged = merge_runtime_env(base, overlay).unwrap();
         assert_eq!(merged["pip"][0], "numpy");
         assert_eq!(merged["env_vars"]["FOO"], "bar");
+    }
+
+    #[test]
+    fn declared_environment_survives_backend_overlays() {
+        let declared = BTreeMap::from([
+            ("OMP_NUM_THREADS".into(), "4".into()),
+            ("OXYMAKE_MEMORY_LIMIT_BYTES".into(), "user-value".into()),
+        ]);
+        let runtime = declared_env_runtime_env(&declared);
+        let merged = merge_runtime_env(runtime, Some(memory_runtime_env(1024))).unwrap();
+        assert_eq!(merged["env_vars"]["OMP_NUM_THREADS"], "4");
+        assert_eq!(merged["env_vars"]["OXYMAKE_MEMORY_LIMIT_BYTES"], "1024");
     }
 
     #[test]
