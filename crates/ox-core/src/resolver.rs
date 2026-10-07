@@ -648,6 +648,23 @@ impl<'a> ResolveState<'a> {
             &rule.resources,
             &self.config.scalars,
         )?;
+        let env = rule
+            .env
+            .iter()
+            .map(|(name, value)| {
+                interpolate_full(
+                    value,
+                    &wildcards,
+                    &named_inputs,
+                    &named_outputs,
+                    &params,
+                    &log,
+                    &rule.resources,
+                    &self.config.scalars,
+                )
+                .map(|value| (name.clone(), value))
+            })
+            .collect::<Result<BTreeMap<_, _>, _>>()?;
 
         // Build tags: explicit rule tags + wildcard values as implicit tags.
         let mut tags = rule.tags.clone();
@@ -667,6 +684,7 @@ impl<'a> ResolveState<'a> {
             outputs: resolved_outputs,
             execution,
             resources: rule.resources.clone(),
+            env,
             environment: rule.environment.clone(),
             error_strategy: rule.error_strategy.clone(),
             timeout: rule.timeout,
@@ -737,6 +755,7 @@ impl<'a> ResolveState<'a> {
 ///         command: "bwa mem ref.fa data/{sample}.fastq > results/{sample}.bam".into(),
 ///     },
 ///     resources: BTreeMap::new(),
+///     env: Default::default(),
 ///     environment: None,
 ///     tags: BTreeMap::new(),
 ///     meta: RuleMeta { description: None },
@@ -845,6 +864,7 @@ pub fn resolve_with_source_fallback_at(
 ///     outputs: vec![],
 ///     execution: ExecutionBlock::Shell { command: "echo done".into() },
 ///     resources: BTreeMap::new(),
+///     env: Default::default(),
 ///     environment: None,
 ///     tags: BTreeMap::new(),
 ///     meta: RuleMeta { description: None },
@@ -1056,6 +1076,7 @@ pub fn evaluate_guard(guard: &GuardExpr, wildcards: &Wildcards, config: &Config)
 ///     }],
 ///     execution: ExecutionBlock::Shell { command: "echo".into() },
 ///     resources: BTreeMap::new(),
+///     env: Default::default(),
 ///     environment: None,
 ///     tags: BTreeMap::new(),
 ///     meta: RuleMeta { description: None },
@@ -1676,6 +1697,7 @@ mod tests {
                 command: format!("echo {name}"),
             },
             resources: BTreeMap::new(),
+            env: Default::default(),
             environment: None,
             tags: BTreeMap::new(),
             meta: RuleMeta { description: None },
@@ -2170,6 +2192,29 @@ mod tests {
                 command: "bwa mem data/A.fastq > results/A.bam".into()
             }
         );
+    }
+
+    #[test]
+    fn environment_values_use_full_command_interpolation() {
+        let mut rule = make_rule("align", &["data/{sample}.fastq"], &["results/{sample}.bam"]);
+        rule.resources.insert("cpus".into(), ResourceValue::Int(4));
+        rule.params.insert("mode".into(), "fast".into());
+        rule.env = BTreeMap::from([
+            ("OMP_NUM_THREADS".into(), "{threads}".into()),
+            (
+                "DETAILS".into(),
+                "{sample}:{params.mode}:{config.project}".into(),
+            ),
+        ]);
+        let mut request = make_request(&["results/A.bam"], &["data/A.fastq"]);
+        request
+            .config
+            .scalars
+            .insert("project".into(), "demo".into());
+
+        let result = resolve(&[rule], &request).unwrap();
+        assert_eq!(result.jobs[0].env["OMP_NUM_THREADS"], "4");
+        assert_eq!(result.jobs[0].env["DETAILS"], "A:fast:demo");
     }
 
     // -- Job ID construction ------------------------------------------------

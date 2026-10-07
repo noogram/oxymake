@@ -48,6 +48,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --workspace
+        env:
+          # Wall-clock performance budgets are only meaningful on an idle
+          # runner; developer machines skip them. See resource_usage.rs.
+          OX_PERF_ASSERTIONS: "1"
 
   clippy:
     name: Clippy

@@ -7,6 +7,15 @@ use std::time::Duration;
 /// Compare against the SIGCHLD-driven wait used before child accounting.
 /// Paired samples and medians tolerate unrelated scheduler outliers. Five ms
 /// allows log-file/pipe-drain overhead while rejecting the old 10 ms poll floor.
+///
+/// The budget is absolute wall-clock time, so it only means anything on an
+/// idle machine: on a developer laptop running a parallel `cargo test
+/// --workspace` it fails roughly one run in three, on this branch and on an
+/// untouched `main` alike. The measurement therefore always runs — it still
+/// exercises both spawn paths and prints its numbers — but the assertion is
+/// made only when `OX_PERF_ASSERTIONS=1`, which CI sets. Do not relax the
+/// 5 ms budget instead: it has to stay under the 10 ms poll floor it exists
+/// to detect.
 #[tokio::test]
 #[serial_test::serial]
 async fn trivial_job_wall_time_stays_close_to_tokio_wait() {
@@ -47,10 +56,16 @@ async fn trivial_job_wall_time_stays_close_to_tokio_wait() {
             "streaming={streaming}: median local={actual:?}, Tokio={reference:?}, paired excess={} ms",
             excess[15] * 1000.0
         );
-        assert!(
-            excess[15] <= 0.005,
-            "trivial child wait added over 5 ms: local={actual:?}, Tokio={reference:?}"
-        );
+        if std::env::var("OX_PERF_ASSERTIONS").as_deref() == Ok("1") {
+            assert!(
+                excess[15] <= 0.005,
+                "trivial child wait added over 5 ms: local={actual:?}, Tokio={reference:?}"
+            );
+        } else {
+            eprintln!(
+                "streaming={streaming}: timing assertion skipped (set OX_PERF_ASSERTIONS=1 to enforce)"
+            );
+        }
     }
 }
 

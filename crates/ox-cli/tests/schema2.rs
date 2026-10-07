@@ -104,12 +104,11 @@ fn migration_is_coherent_across_includes_and_refuses_partial_changes() {
     let root = dir.path().join("Oxymakefile.toml");
     let child = dir.path().join("child.toml");
     let root_text = "ox_version='0.1'\ninclude=['child.toml']\n";
-    let good_child = "ox_version='0.3'\n[rule.a]\noutput=['a']\nshell='echo a > a'\nenvironment={docker='alpine'}\n";
+    let good_child = "ox_version='0.3'\n[rule.a]\noutput=['a']\nshell='echo a > a'\nenv={X='1'}\nenvironment={docker='alpine'}\n";
     for bad_child in [
         "ox_version='0.2'",
         "format_version='3'\nox_version='0.3'",
         "ox_version='0.3'\ninclude=['Oxymakefile.toml']",
-        "ox_version='0.3'\n[rule.a]\nenv={X='1'}",
     ] {
         fs::write(&root, root_text).unwrap();
         fs::write(&child, bad_child).unwrap();
@@ -135,6 +134,7 @@ fn migration_is_coherent_across_includes_and_refuses_partial_changes() {
     let migrated_root = fs::read_to_string(&root).unwrap();
     let migrated_child = fs::read_to_string(&child).unwrap();
     assert!(migrated_child.contains("shell='echo a > a'"));
+    assert!(migrated_child.contains("env={X='1'}"));
     assert_eq!(
         ox_format::parse::parse_workflow(&migrated_root, &root)
             .unwrap()

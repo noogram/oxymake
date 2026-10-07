@@ -99,7 +99,11 @@ fn write_remote_functions(script: &mut String) {
     // Generic shell task: runs a command, accepts upstream ObjectRefs as
     // implicit dependencies (Ray waits for them before scheduling this task).
     writeln!(script, "@ray.remote").unwrap();
-    writeln!(script, "def run_shell(job_id, command, work_dir, *deps):").unwrap();
+    writeln!(
+        script,
+        "def run_shell(job_id, command, work_dir, env_vars, *deps):"
+    )
+    .unwrap();
     writeln!(
         script,
         "    \"\"\"Run a shell command. *deps are ObjectRefs — Ray waits for them.\"\"\""
@@ -108,7 +112,7 @@ fn write_remote_functions(script: &mut String) {
     writeln!(script, "    start = time.time()").unwrap();
     writeln!(
         script,
-        "    result = subprocess.run(command, shell=True, cwd=work_dir, capture_output=True, text=True)"
+        "    result = subprocess.run(command, shell=True, cwd=work_dir, env={{**os.environ, **env_vars}}, capture_output=True, text=True)"
     )
     .unwrap();
     writeln!(script, "    elapsed = time.time() - start").unwrap();
@@ -135,7 +139,7 @@ fn write_remote_functions(script: &mut String) {
     writeln!(script, "@ray.remote").unwrap();
     writeln!(
         script,
-        "def run_script(job_id, interpreter, script_path, work_dir, *deps):"
+        "def run_script(job_id, interpreter, script_path, work_dir, env_vars, *deps):"
     )
     .unwrap();
     writeln!(
@@ -146,7 +150,7 @@ fn write_remote_functions(script: &mut String) {
     writeln!(script, "    start = time.time()").unwrap();
     writeln!(
         script,
-        "    result = subprocess.run([interpreter, script_path], cwd=work_dir, capture_output=True, text=True)"
+        "    result = subprocess.run([interpreter, script_path], cwd=work_dir, env={{**os.environ, **env_vars}}, capture_output=True, text=True)"
     )
     .unwrap();
     writeln!(script, "    elapsed = time.time() - start").unwrap();
@@ -262,13 +266,15 @@ fn write_task_submission(
     } else {
         format!(".options({})", options_parts.join(", "))
     };
+    let env_json = serde_json::to_string(&job.env).expect("environment variables serialize");
+    let env_arg = format!("json.loads(\"{}\")", python_string_escape(&env_json));
 
     match &job.execution {
         ExecutionBlock::Shell { command } => {
             let escaped_cmd = python_string_escape(command);
             writeln!(
                 script,
-                "{var_name} = run_shell{options_suffix}.remote(\"{escaped_id}\", \"{escaped_cmd}\", \"{project_dir}\"{deps_str})"
+                "{var_name} = run_shell{options_suffix}.remote(\"{escaped_id}\", \"{escaped_cmd}\", \"{project_dir}\", {env_arg}{deps_str})"
             )
             .unwrap();
         }
@@ -278,7 +284,7 @@ fn write_task_submission(
             let script_path = path.display();
             writeln!(
                 script,
-                "{var_name} = run_script{options_suffix}.remote(\"{escaped_id}\", \"{interpreter}\", \"{script_path}\", \"{project_dir}\"{deps_str})"
+                "{var_name} = run_script{options_suffix}.remote(\"{escaped_id}\", \"{interpreter}\", \"{script_path}\", \"{project_dir}\", {env_arg}{deps_str})"
             )
             .unwrap();
         }
@@ -292,7 +298,7 @@ fn write_task_submission(
             // The driver just references the file.
             writeln!(
                 script,
-                "{var_name} = run_script{options_suffix}.remote(\"{escaped_id}\", \"{interpreter}\", \"{script_path_display}\", \"{project_dir}\"{deps_str})"
+                "{var_name} = run_script{options_suffix}.remote(\"{escaped_id}\", \"{interpreter}\", \"{script_path_display}\", \"{project_dir}\", {env_arg}{deps_str})"
             )
             .unwrap();
 
@@ -313,7 +319,7 @@ fn write_task_submission(
             let escaped_cmd = python_string_escape(&wrapper_cmd);
             writeln!(
                 script,
-                "{var_name} = run_shell{options_suffix}.remote(\"{escaped_id}\", \"{escaped_cmd}\", \"{project_dir}\"{deps_str})"
+                "{var_name} = run_shell{options_suffix}.remote(\"{escaped_id}\", \"{escaped_cmd}\", \"{project_dir}\", {env_arg}{deps_str})"
             )
             .unwrap();
         }
@@ -435,6 +441,7 @@ mod tests {
                 command: command.to_string(),
             },
             resources: BTreeMap::new(),
+            env: Default::default(),
             environment: None,
             error_strategy: ErrorStrategy::default(),
             timeout: None,
@@ -465,6 +472,32 @@ mod tests {
 
     fn no_skip() -> HashSet<JobId> {
         HashSet::new()
+    }
+
+    #[test]
+    fn dag_tasks_receive_declared_environment() {
+        let mut job = shell_job("a", "true", vec![], vec![]);
+        job.env
+            .insert("DECLARED_VALUE".into(), "quotes \" and $()".into());
+        let graph = JobGraph::build(vec![job]).unwrap();
+        let staging = tempfile::tempdir().unwrap();
+        let script = generate_driver(&graph, &ctx(), staging.path(), &no_skip()).unwrap();
+
+        assert!(script.contains("env={**os.environ, **env_vars}"));
+        assert!(script.contains("DECLARED_VALUE"));
+        assert!(script.contains("quotes"));
+        assert!(script.contains("$()"));
+        let parsed = std::process::Command::new("python3")
+            .args(["-c", "import ast,sys; ast.parse(sys.stdin.read())"])
+            .stdin(std::process::Stdio::piped())
+            .spawn()
+            .and_then(|mut child| {
+                use std::io::Write;
+                child.stdin.as_mut().unwrap().write_all(script.as_bytes())?;
+                child.wait()
+            })
+            .unwrap();
+        assert!(parsed.success());
     }
 
     #[test]
@@ -565,7 +598,7 @@ print(json.dumps(values))
         ]);
         let graph = JobGraph::build(vec![job]).unwrap();
         let staging = tempfile::tempdir().unwrap();
-        let expected = "ref_0 = run_shell.options(num_cpus=2, memory=4096, resources=json.loads(\"{\\\"alpha\\\":1.0,\\\"metal\\\":0.5,\\\"zeta\\\":3.0}\")).remote(\"a\", \"true\", \"/tmp/project\")";
+        let expected = "ref_0 = run_shell.options(num_cpus=2, memory=4096, resources=json.loads(\"{\\\"alpha\\\":1.0,\\\"metal\\\":0.5,\\\"zeta\\\":3.0}\")).remote(\"a\", \"true\", \"/tmp/project\", json.loads(\"{}\"))";
 
         for _ in 0..32 {
             let script = generate_driver(&graph, &ctx(), staging.path(), &no_skip()).unwrap();

@@ -405,9 +405,11 @@ impl Executor for RayExecutor {
             .as_ref()
             .and_then(runtime_env::env_spec_to_runtime_env);
 
+        let declared_runtime = runtime_env::declared_env_runtime_env(&job.env);
         let mem_runtime = resources.memory_bytes.map(runtime_env::memory_runtime_env);
 
-        let merged_runtime = runtime_env::merge_runtime_env(env_runtime, mem_runtime);
+        let merged_runtime = runtime_env::merge_runtime_env(env_runtime, declared_runtime);
+        let merged_runtime = runtime_env::merge_runtime_env(merged_runtime, mem_runtime);
 
         // For Nix/Apptainer, wrap the entrypoint command since Ray doesn't
         // natively support these environment types.
@@ -971,6 +973,7 @@ mod tests {
                 command: command.to_string(),
             },
             resources: BTreeMap::new(),
+            env: Default::default(),
             environment: None,
             error_strategy: ErrorStrategy::default(),
             timeout: None,

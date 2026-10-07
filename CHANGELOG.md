@@ -21,12 +21,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Schema 2 (`format_version = "2"`) requires `ox_version = ">=MAJOR.MINOR.PATCH"`:
   the minimum capable binary is checked in every included file before config
   sources, planning, claims, submission or cache adoption. Unknown schemas and
-  unknown structural keys are errors. Rule `env` is rejected with guidance to
-  `environment`; a variables table is not implemented. Schema 1 remains
-  compatible and warns that its binary requirement is not enforced. The next
-  release version is 0.7.0 for this contract (#42).
+  unknown structural keys are errors. Schema 1 remains compatible and warns
+  that its binary requirement is not enforced. The next release version is
+  0.7.0 for this contract (#42).
 
 ### Added
+- Workflow-level `[env]` and rule-level `env = { ... }` tables declare job
+  environment variables for local, Ray, and SLURM execution. Rule values
+  override workflow values, placeholders use command interpolation, and the
+  resolved set enters cache identity without changing keys for workflows that
+  declare no variables. Library-specific thread lists, canonical memory
+  exports, and cache opt-outs remain user-controlled rather than implicit
+  (#44; supersedes #45).
 - `ox run --dry-run` now shows each job's expanded execution block in human
   output and in the NDJSON `dry_run_job.execution` field. Shell and inline
   commands preserve multi-line text; script and call rules expose their
@@ -47,6 +53,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   diagnostics and `ox_format::migrate` for preparing and applying migrations.
 
 ### Changed
+- The unstable Rust `Workflow`, `Rule`, and `ConcreteJob` structs expose the
+  declared and resolved environment-variable maps; downstream struct literals
+  must initialize the new fields (#44).
 - The unstable Rust `Workflow` struct adds `resource_classes`,
   `resource_class_origins`, and `rule_resource_classes`; downstream struct
   literals must initialize these fields (#43).

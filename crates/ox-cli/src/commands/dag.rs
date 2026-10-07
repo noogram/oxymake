@@ -172,6 +172,7 @@ mod tests {
                 command: "true".into(),
             },
             resources: BTreeMap::new(),
+            env: Default::default(),
             environment: None,
             tags: BTreeMap::new(),
             meta: RuleMeta::default(),

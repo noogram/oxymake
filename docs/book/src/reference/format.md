@@ -69,20 +69,15 @@ shell = "python process.py {input} {output}"
 | `tags` | Table of string → string | No | Key/value labels for grouping and event filtering, e.g. `tags = { stage = "align", speed = "slow" }`. An array of strings is **not** accepted. |
 | `resources` | Table | No | Resource requirements; see [Resources](#resources) below for what each executor actually does with them |
 | `resource_class` | String | No | Schema 2 only: name of a root-level resource class whose values this rule inherits before applying its `resources` overrides |
-| `environment` | Table | No | The software environment to run the command in (`uv`, conda, Nix, Apptainer/Singularity); see the environment backend section. Not to be confused with environment *variables* — there is no field for those today, and under schema 2 a rule-level `env` is rejected with that explanation. |
+| `env` | Table of string → string | No | Environment variables for the command. Merged over the workflow-level `[env]` table, with the rule winning per key. |
+| `environment` | Table | No | The software environment backend (`uv`, conda, Docker, Nix, or Apptainer); see the environment backend section. |
 | `when` | String | No | Conditional guard expression |
 | `params` | Table | No | Rule-specific parameters |
 | `clean_outputs` | String | No | `always` (default), `on-failure`, `never`; see Output cleanup below |
 | `cache_platform` | String | No | `exact` (default), `any`; see Cross-platform cache reuse below |
 
-There is no `env` field. An Oxymakefile has no way to declare environment
-variables for a job's command — not the `environment` table above (that
-selects a software backend, not variables) and not a dedicated field. A
-variable a command needs today must come from the parent shell's
-environment, from `{resources.NAME}`/`{threads}` interpolation into the
-command text (see [Resource interpolation in commands](#resource-interpolation-in-commands)),
-or from what the executor itself sets (see
-[`docs/format/env-vars.md`](https://github.com/noogram/oxymake/blob/main/docs/format/env-vars.md)).
+`environment` selects a software backend; `env` declares environment
+variables. The names are intentionally distinct and have no third alias.
 
 `materialize` belongs to an output descriptor, not directly to the rule. Its
 values are `always`, `auto`, `never`, and `final`:
@@ -418,15 +413,15 @@ inline code, including `awk '{print $1}'`, `${HOME}`, and JSON literals. Such a
 bare typo can therefore remain literal; namespaced placeholders are the
 fail-closed forms where static checking is possible.
 
-This mechanism covers **inline commands only** — `shell` and `run` blocks,
+Command interpolation covers **inline commands only** — `shell` and `run` blocks,
 where the interpolated text is the command OxyMake executes
 (`crates/ox-core/src/resolver.rs:1136-1204`). For `script`, only the path
 string is interpolated, not the file's contents; for `call`, only the
 function-reference string is interpolated, not the function body. A
 `{threads}`/`{resources.NAME}` reference inside a script file or a called
 function is not substituted — it reaches the script/function unexpanded.
-Neither placeholder is available in a shared wrapper outside the command
-(there is no such wrapper today; see the `env` field note above).
+To expose a value to a script or called function, put the placeholder in an
+`env` value instead; environment values use the same interpolation path.
 
 The interpolated execution block — the actual command text after
 substitution — is what enters the cache key as `rule_source`
@@ -591,11 +586,45 @@ declare its own:
 environment = { uv = "pyproject.toml" }
 ```
 
-There is no named-environment mechanism: `[env.NAME]` blocks and a rule-level
-`env = "NAME"` reference are not part of the format, and — because rule tables
-do not reject unknown keys — they are silently ignored rather than reported as
-an error. (Keys *inside* an `environment` table are rejected, as above.) See [Environments](../concepts/environments.md) for what each backend
-does.
+## Declared Environment Variables
+
+A root-level `[env]` table applies to every rule in that file. A rule-level
+inline `env` table overrides individual keys; other workflow-level keys
+survive the merge:
+
+```toml
+[env]
+OMP_NUM_THREADS = "{threads}"
+POLARS_MAX_THREADS = "{threads}"
+
+[rule.analyze]
+output = ["results/summary.txt"]
+shell = "python analyze.py"
+resources = { cpus = 4 }
+env = { POLARS_MAX_THREADS = "2" }
+```
+
+Values are interpolated exactly like command text, including `{threads}`,
+`{resources.NAME}`, `{params.NAME}`, `{config.NAME}`, and rule wildcards. The
+same validation applies, so an undeclared `{resources.typo}` is rejected before
+execution. Variable names must match `[A-Za-z_][A-Za-z0-9_]*` so the same
+declaration is valid on local, Ray, and SLURM executors.
+
+The resolved merged table is part of the cache key. Changing a value therefore
+invalidates affected jobs. There is no per-variable or workflow-level opt-out:
+OxyMake cannot know whether a variable changes output, so hashing every
+declared variable is the only safe default. An empty table contributes no bytes,
+and a workflow with no `env` declarations keeps its existing cache keys.
+
+OxyMake does not define `OX_CPUS`, derive `OPENBLAS_NUM_THREADS`,
+`MKL_NUM_THREADS`, or another library-specific list, or add a canonical memory
+placeholder. Use `{threads}` or the declared-text form of `{resources.mem}` in a
+variable the workflow names. Per-variable “does not affect output” annotations
+are likewise not supported.
+
+See [`docs/format/env-vars.md`](https://github.com/noogram/oxymake/blob/main/docs/format/env-vars.md)
+for composition with inherited and executor-owned variables, and
+[Environments](../concepts/environments.md) for software backends.
 
 ## Next Steps
 

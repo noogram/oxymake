@@ -41,48 +41,66 @@ fn check_execution_placeholders(workflow: &Workflow, errors: &mut Vec<ParseError
     // they are applied after validation runs. The resolver rejects an unknown
     // config key instead, once the override set is complete.
     for rule in &workflow.rules {
-        let text = execution_text(&rule.execution);
         let resources: Vec<&str> = rule.resources.keys().map(String::as_str).collect();
         let params: Vec<&str> = rule.params.keys().map(String::as_str).collect();
 
-        check_namespaced_placeholders(
-            text,
-            "resources",
+        check_placeholders_in_text(
+            execution_text(&rule.execution),
+            rule,
             &resources,
-            &rule.name.0,
-            "declared resource keys",
-            errors,
-        );
-        check_namespaced_placeholders(
-            text,
-            "params",
             &params,
-            &rule.name.0,
-            "declared parameter keys",
             errors,
         );
+        for value in rule.env.values() {
+            check_placeholders_in_text(value, rule, &resources, &params, errors);
+        }
+    }
+}
 
-        if text.contains("{threads}")
-            && !rule
-                .resources
-                .keys()
-                .any(|key| matches!(canonicalize_resource_key(key), Ok(CanonicalResource::Cpu)))
-        {
-            push_placeholder_error(
-                &rule.name.0,
-                "{threads}",
-                available("declared resource keys", &resources),
-                errors,
-            );
-        }
-        if text.contains("{log}") && rule.log.stdout.is_none() {
-            push_placeholder_error(
-                &rule.name.0,
-                "{log}",
-                "no stdout log path is configured".into(),
-                errors,
-            );
-        }
+fn check_placeholders_in_text(
+    text: &str,
+    rule: &ox_core::model::Rule,
+    resources: &[&str],
+    params: &[&str],
+    errors: &mut Vec<ParseError>,
+) {
+    check_namespaced_placeholders(
+        text,
+        "resources",
+        resources,
+        &rule.name.0,
+        "declared resource keys",
+        errors,
+    );
+    check_namespaced_placeholders(
+        text,
+        "params",
+        params,
+        &rule.name.0,
+        "declared parameter keys",
+        errors,
+    );
+
+    if text.contains("{threads}")
+        && !rule
+            .resources
+            .keys()
+            .any(|key| matches!(canonicalize_resource_key(key), Ok(CanonicalResource::Cpu)))
+    {
+        push_placeholder_error(
+            &rule.name.0,
+            "{threads}",
+            available("declared resource keys", resources),
+            errors,
+        );
+    }
+    if text.contains("{log}") && rule.log.stdout.is_none() {
+        push_placeholder_error(
+            &rule.name.0,
+            "{log}",
+            "no stdout log path is configured".into(),
+            errors,
+        );
     }
 }
 
@@ -409,6 +427,25 @@ log = { stdout = "process.log" }
 "#;
         let wf = parse_workflow(toml, Path::new("test.toml")).unwrap();
         assert!(validate(&wf).is_ok());
+    }
+
+    #[test]
+    fn rejects_unknown_resource_placeholder_in_environment_value() {
+        let toml = r#"
+[rule.process]
+output = ["out.txt"]
+shell = "true"
+resources = { cpu = 2 }
+env = { OMP_NUM_THREADS = "{resources.typo}" }
+"#;
+        let wf = parse_workflow(toml, Path::new("test.toml")).unwrap();
+        let messages: Vec<String> = validate(&wf)
+            .unwrap_err()
+            .into_iter()
+            .map(|error| error.to_string())
+            .collect();
+        assert_eq!(messages.len(), 1, "{messages:?}");
+        assert!(messages[0].contains("{resources.typo}"));
     }
 
     #[test]

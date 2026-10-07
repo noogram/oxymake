@@ -4,7 +4,27 @@ This page is the **canonical, versioned reference** for environment
 variables OxyMake reads and sets. Per `STATUS.md` §6, only the
 variables listed under **Stable** are subject to SemVer discipline.
 
-**Last reviewed:** 2026-05-27.
+**Last reviewed:** 2026-10-07.
+
+---
+
+## Variables declared by a workflow
+
+Root-level `[env]` and rule-level `env = { ... }` tables declare variables for
+job commands. The rule table overrides the workflow table per key. Resolved
+values reach local processes, Ray jobs and native Ray DAG tasks, and SLURM
+single jobs and arrays. Values are interpolated with the same placeholders as
+commands and the merged table is included in cache identity; there is no
+cache-key opt-out.
+
+Jobs inherit the executor process environment. Declared variables override an
+inherited variable of the same name. Variables that OxyMake or a backend must
+set for its own protocol are applied independently and take precedence on a
+name collision; avoid the `OX_`, `OXYMAKE_`, `RAY_`, and `SLURM_` namespaces
+for workflow-owned names. On SLURM, values are shell-quoted before `export`.
+
+`env` is not the `environment` table: `environment` selects a software backend
+such as uv, conda, Docker, Nix, or Apptainer.
 
 ---
 
@@ -59,11 +79,8 @@ route that sets it, the name and semantics are covered by `STATUS.md` §6 —
 not that every route sets it. Treat the gap as a known limitation, not an
 implementation you can rely on outside the SLURM array path.
 
-If what you need is a declared value inside a command, do not wait for these
-variables: placeholder interpolation is a separate mechanism, it runs in the
-resolver rather than in an executor, and it therefore works on every route
-today — for inline commands only. See
-[resource interpolation](../book/src/reference/format.md#resource-interpolation-in-commands).
+For a portable workflow-owned variable, use `[env]` or rule-level `env`. The
+variables below are executor metadata and remain limited to the routes stated.
 
 ### Stable (SLURM job-array path only)
 

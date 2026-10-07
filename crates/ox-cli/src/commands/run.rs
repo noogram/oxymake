@@ -360,7 +360,20 @@ pub(super) struct CacheKeyComponents {
 fn job_spec_parts(job: &ConcreteJob) -> (String, Option<String>, Option<String>, String) {
     let rule_source = execution_source(job);
     let params_hash = (!job.wildcards.is_empty()).then(|| hash_kv_map(&job.wildcards));
-    let env_hash = job.environment.as_ref().map(env_spec_content_hash);
+    let software_env_hash = job.environment.as_ref().map(env_spec_content_hash);
+    let env_hash = if job.env.is_empty() {
+        // Preserve every pre-feature cache key byte-for-byte.
+        software_env_hash
+    } else {
+        let mut hasher = blake3::Hasher::new();
+        update_opt_field(
+            &mut hasher,
+            "software",
+            software_env_hash.as_deref().map(str::as_bytes),
+        );
+        update_field(&mut hasher, "variables", hash_kv_map(&job.env).as_bytes());
+        Some(hasher.finalize().to_hex().to_string())
+    };
     let mut spec_hasher = blake3::Hasher::new();
     update_field(&mut spec_hasher, "rule", rule_source.as_bytes());
     update_opt_field(
@@ -2972,6 +2985,7 @@ mod cache_key_tests {
             outputs: vec![],
             execution,
             resources: Default::default(),
+            env: Default::default(),
             environment: None,
             error_strategy: Default::default(),
             timeout: None,
@@ -3054,6 +3068,41 @@ mod cache_key_tests {
             job.resources, raw,
             "normalization must leave the raw declarations untouched"
         );
+    }
+
+    #[test]
+    fn declared_environment_changes_cache_key_only_when_present() {
+        let legacy = make_job(ExecutionBlock::Shell {
+            command: "echo stable".into(),
+        });
+        let explicitly_empty = legacy.clone();
+        let rule_source = execution_source(&legacy);
+        let platform = current_platform();
+        let pre_feature_key = compute_cache_key(&CacheKeySpec {
+            rule_source: &rule_source,
+            inputs: &[],
+            params_hash: None,
+            env_hash: None,
+            shell_executable: None,
+            clean_outputs: legacy.clean_outputs,
+            platform_scope: legacy.platform_scope,
+            platform: &platform,
+        });
+        assert_eq!(
+            job_cache_key(&legacy, None),
+            Some(pre_feature_key),
+            "an empty declared environment contributes no cache-key bytes"
+        );
+        assert_eq!(
+            job_cache_key(&legacy, None),
+            job_cache_key(&explicitly_empty, None)
+        );
+
+        let mut first = legacy.clone();
+        first.env.insert("MODE".into(), "one".into());
+        let mut second = legacy;
+        second.env.insert("MODE".into(), "two".into());
+        assert_ne!(job_cache_key(&first, None), job_cache_key(&second, None));
     }
 
     #[test]

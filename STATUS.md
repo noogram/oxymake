@@ -137,6 +137,8 @@ bump and a `CHANGELOG.md` entry:
 
 - Schema-2 `[resource_classes.NAME]` and rule-level `resource_class` — named
   resource bundles resolved across the include graph.
+- Root-level `[env]` and rule-level `env` tables — declared job environment
+  variables, merged and interpolated before execution.
 - `clean_outputs` (`always`, `on-failure`, `never`) — local-executor output cleanup policy.
 - `cache_platform` (`exact`, `any`) — per-rule cross-platform cache reuse policy.
 - Any TOML field not in the list above is **experimental** and may be
@@ -156,8 +158,9 @@ informational `ox_version`, with a warning for every file.
 Schema 2 requires `ox_version = ">=MAJOR.MINOR.PATCH"`, a minimum capable binary
 checked for every include before external config reads. It is not a range
 language or reproducibility guarantee. Structural keys are closed; dynamic
-config, tags, params and custom resource names remain open. Rule `env` is an
-error: `environment` names the software backend, and no variables table exists.
+config, tags, params, environment-variable names and custom resource names
+remain open. `environment` names the software backend; `env` declares job
+environment variables.
 
 `ox migrate --to-format 2 [--write]` is an **unstable** CLI surface. It previews
 by default; see the book's migration guide for include-graph and refusal rules.

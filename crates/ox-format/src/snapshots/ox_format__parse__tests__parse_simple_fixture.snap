@@ -1,5 +1,6 @@
 ---
 source: crates/ox-format/src/parse.rs
+assertion_line: 1812
 expression: wf
 ---
 Workflow {
@@ -39,6 +40,7 @@ Workflow {
                 command: "",
             },
             resources: {},
+            env: {},
             environment: None,
             tags: {},
             meta: RuleMeta {
@@ -93,6 +95,7 @@ Workflow {
                 command: "cat {input} | sort > {output}",
             },
             resources: {},
+            env: {},
             environment: None,
             tags: {},
             meta: RuleMeta {
@@ -122,6 +125,7 @@ Workflow {
     gates: [],
     includes: [],
     global_environment: None,
+    global_env: {},
     profiles: {},
     executor_config: ExecutorConfig {
         slurm: None,
