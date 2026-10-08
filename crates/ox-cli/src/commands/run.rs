@@ -1703,31 +1703,89 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
         // Recording costs one transaction plus one write per job, paid
         // only on the warm path it documents.
         std::fs::create_dir_all(&oxymake_dir).ok();
+        let run_id = format!("run-{}", std::process::id());
         record_fully_cached_run(
             &oxymake_dir.join("state.db"),
-            &format!("run-{}", std::process::id()),
+            &run_id,
             &job_graph,
             &args.executor,
             args.note.as_deref(),
             &prescan_provenance,
             &cache_hits,
         );
+        // The fast path is still a run: persist the same ordered contract as
+        // a scheduled invocation rather than returning before reporters exist.
+        let events_dir = oxymake_dir.join("events");
+        std::fs::create_dir_all(&events_dir).context("failed to create events directory")?;
+        let mut reporters: Vec<Box<dyn ox_core::traits::reporter::Reporter>> = vec![Box::new(
+            ox_report_json::reporter::JsonReporter::new(
+                ox_report_json::reporter::AtomicEventFile::create(
+                    events_dir.join(format!("{run_id}.ndjson")),
+                )
+                .context("failed to create event log file")?,
+            )
+            .with_run_context(run_id.clone(), args.file.clone()),
+        )];
+        if let Some(path) = &args.report_json {
+            reporters.push(Box::new(
+                ox_report_json::reporter::JsonReporter::new(
+                    std::fs::File::create(path)
+                        .with_context(|| format!("failed to create report file: {path}"))?,
+                )
+                .with_run_context(run_id.clone(), args.file.clone()),
+            ));
+        }
+        if args.json {
+            reporters.push(Box::new(
+                ox_report_json::reporter::JsonReporter::stdout()
+                    .with_run_context(run_id.clone(), args.file.clone()),
+            ));
+        }
+        let mut cached_events = vec![Event::RunStarted {
+            total_jobs: job_count,
+            to_run: 0,
+            cached: cached_count,
+        }];
+        for job_id in job_graph.topological_order().unwrap_or_default() {
+            let job = job_graph.get_job(job_id).expect("planned graph job");
+            cached_events.push(Event::JobPlanned {
+                job_id: job_id.clone(),
+                rule: job.rule.clone(),
+                wildcards: job.wildcards.clone(),
+                resources: job.resources.clone(),
+                dependencies: job_graph.upstream(job_id).into_iter().cloned().collect(),
+            });
+            if skip_jobs.contains(job_id) {
+                cached_events.push(Event::JobSkipped {
+                    job_id: (*job_id).clone(),
+                    reason: if cache_hits.contains(&job.id) {
+                        "cached".into()
+                    } else {
+                        "not selected".into()
+                    },
+                });
+            }
+        }
+        cached_events.push(Event::RunCompleted {
+            total: job_count,
+            succeeded: 0,
+            failed: 0,
+            skipped: skip_jobs.len(),
+            cancelled: 0,
+            duration_ms: 0,
+        });
+        rt.block_on(async {
+            for event in &cached_events {
+                for reporter in &reporters {
+                    reporter.on_event(event).await;
+                }
+            }
+        });
         if !args.json {
             println!(
                 "Completed: 0 succeeded, 0 failed, {} skipped, 0 cancelled (0.0s)",
                 job_count
             );
-        } else {
-            let summary = serde_json::json!({
-                "event": "run_completed",
-                "total_jobs": job_count,
-                "succeeded": 0,
-                "failed": 0,
-                "skipped": job_count,
-                "cancelled": 0,
-                "duration_ms": 0,
-            });
-            println!("{}", summary);
         }
         timer.mark("all_cached_exit");
         timer.print();
@@ -1955,8 +2013,8 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
     let events_dir = oxymake_dir.join("events");
     std::fs::create_dir_all(&events_dir).ok();
     let event_log_path = events_dir.join(format!("{}.ndjson", ctx.run_id));
-    let event_log_file =
-        std::fs::File::create(&event_log_path).context("failed to create event log file")?;
+    let event_log_file = ox_report_json::reporter::AtomicEventFile::create(&event_log_path)
+        .context("failed to create event log file")?;
 
     // Create the --report-json file up front so an unwritable path fails
     // the run immediately, not after the work is done (H28).
@@ -2026,7 +2084,8 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
         // Always persist events to the log file for `ox subscribe`.
         {
             let mut rx = event_bus.subscribe();
-            let reporter = ox_report_json::reporter::JsonReporter::new(event_log_file);
+            let reporter = ox_report_json::reporter::JsonReporter::new(event_log_file)
+                .with_run_context(ctx.run_id.clone(), args.file.clone());
             bridge_handles.push(tokio::spawn(async move {
                 use ox_core::traits::reporter::Reporter;
                 loop {
@@ -2044,7 +2103,8 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
         // Subscribe a JsonReporter writing to the --report-json file.
         if let Some(report_file) = report_json_file {
             let mut rx = event_bus.subscribe();
-            let reporter = ox_report_json::reporter::JsonReporter::new(report_file);
+            let reporter = ox_report_json::reporter::JsonReporter::new(report_file)
+                .with_run_context(ctx.run_id.clone(), args.file.clone());
             bridge_handles.push(tokio::spawn(async move {
                 use ox_core::traits::reporter::Reporter;
                 loop {
@@ -2062,7 +2122,8 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
         // Subscribe a JsonReporter when --json is passed.
         if args.json {
             let mut rx = event_bus.subscribe();
-            let reporter = ox_report_json::reporter::JsonReporter::stdout();
+            let reporter = ox_report_json::reporter::JsonReporter::stdout()
+                .with_run_context(ctx.run_id.clone(), args.file.clone());
             bridge_handles.push(tokio::spawn(async move {
                 use ox_core::traits::reporter::Reporter;
                 loop {

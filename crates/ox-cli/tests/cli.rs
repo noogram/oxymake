@@ -4176,6 +4176,98 @@ shell = "mkdir -p results && cp data/{sample}.csv results/{sample}.txt"
 }
 
 #[test]
+fn default_event_log_records_plans_and_the_all_cached_terminal_outcome() {
+    let dir = TempDir::new().unwrap();
+    fs::write(
+        dir.path().join("Oxymakefile.toml"),
+        r#"ox_version = "0.1"
+
+[rule.all]
+input = ["out.txt"]
+
+[rule.make]
+output = ["out.txt"]
+shell = "printf done > out.txt"
+"#,
+    )
+    .unwrap();
+
+    ox().arg("run").current_dir(dir.path()).assert().success();
+    ox().arg("run").current_dir(dir.path()).assert().success();
+
+    let events_dir = dir.path().join(".oxymake/events");
+    let mut logs: Vec<_> = fs::read_dir(&events_dir)
+        .unwrap()
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.extension()
+                .is_some_and(|extension| extension == "ndjson")
+        })
+        .collect();
+    logs.sort_by_key(|path| fs::metadata(path).unwrap().modified().unwrap());
+
+    let event_streams: Vec<Vec<serde_json::Value>> = logs
+        .iter()
+        .map(|path| {
+            let content = fs::read_to_string(path).unwrap();
+            assert!(
+                !content.is_empty(),
+                "published event log {} must not be empty",
+                path.display()
+            );
+            let lines: Vec<serde_json::Value> = content
+                .lines()
+                .map(|line| serde_json::from_str(line).unwrap())
+                .collect();
+            assert_eq!(lines.first().unwrap()["event"], "run_started");
+            lines
+        })
+        .collect();
+    let normal_run = event_streams
+        .iter()
+        .find(|lines| lines.iter().any(|line| line["event"] == "job_completed"))
+        .expect("cache-miss run event log");
+    let normal_started = normal_run.first().unwrap();
+    assert!(
+        normal_started["run_id"]
+            .as_str()
+            .is_some_and(|id| id.starts_with("run-"))
+    );
+    assert_eq!(normal_started["workflow_path"], "Oxymakefile.toml");
+    assert_eq!(normal_started["total_jobs"], 1);
+
+    let content = fs::read_to_string(logs.last().expect("cached run event log")).unwrap();
+    let lines: Vec<serde_json::Value> = content
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(lines.first().unwrap()["event"], "run_started");
+    assert!(lines.iter().all(|line| {
+        line["schema_version"] == 1
+            && line["ts"]
+                .as_str()
+                .is_some_and(|ts| ts.contains('T') && ts.ends_with('Z'))
+    }));
+    assert!(lines.iter().any(|line| line["event"] == "job_planned"));
+    assert!(lines.iter().any(|line| line["event"] == "job_skipped"));
+    let terminal = lines.last().unwrap();
+    assert_eq!(terminal["event"], "run_completed");
+    assert_eq!(terminal["status"], "all_cached");
+
+    ox().args(["clean", "--events", "--dry-run", "--json"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("retained event log"));
+    ox().args(["clean", "--events", "--yes"])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+    assert!(fs::read_dir(&events_dir).unwrap().next().is_none());
+}
+
+#[test]
 fn run_report_json_unwritable_path_fails_cleanly() {
     let dir = TempDir::new().unwrap();
     let oxymakefile = dir.path().join("Oxymakefile.toml");

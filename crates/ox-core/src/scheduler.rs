@@ -633,6 +633,21 @@ pub async fn run_scheduler_with_claims<E: Executor + 'static>(
         cached: skipped_pre,
     });
 
+    // Planning is deliberately emitted before cache skips or execution. These
+    // candidates describe the selected DAG's upper bound; a later terminal
+    // event may settle a candidate, while a byte-identical upstream can leave
+    // it not run without implying a failure or pending state.
+    for job_id in &topo_order {
+        let job = graph.get_job(job_id).expect("topological job exists");
+        event_bus.emit(Event::JobPlanned {
+            job_id: (*job_id).clone(),
+            rule: job.rule.clone(),
+            wildcards: job.wildcards.clone(),
+            resources: job.resources.clone(),
+            dependencies: graph.upstream(job_id).into_iter().cloned().collect(),
+        });
+    }
+
     // Emit JobSkipped events for pre-marked cached jobs so reporters
     // can display them as instant completions in the progress bar.
     for job_id in skipped_pre_ids {
