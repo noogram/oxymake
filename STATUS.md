@@ -240,9 +240,10 @@ bump and a `CHANGELOG.md` entry.
   resources, and immediate dependency job ids. Candidates are an upper bound:
   a terminal run may leave one not run when an upstream is byte-identical.
 - `job_*` events always carry `"job_id"` (string).
-- `run_completed` and `run_summary` always carry `total`, `succeeded`,
-  `failed`, `skipped`, `duration_ms`; `run_completed` also carries terminal
-  `status` (`success`, `all_cached`, `failed`, or `interrupted`).
+- `run_completed` always carries `total`, `succeeded`, `failed`, `skipped`,
+  and `duration_ms`; `run_summary` carries the same counts with `total_jobs`
+  instead of `total`. `run_completed` also carries terminal `status`
+  (`success`, `all_cached`, `failed`, or `interrupted`).
 
 ### Unstable
 

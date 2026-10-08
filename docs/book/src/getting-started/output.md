@@ -104,10 +104,9 @@ ox run --json
 Each event carries an `event` discriminant (`run_started`, `job_planned`,
 `job_started`, `job_completed`, `run_completed`). This format is designed for
 AI agents and each line additionally carries schema version 1 and a UTC RFC
-3339 timestamp.
-scripts to parse programmatically. Use `--report-json <path>` to write the
-same stream to a file. See [Agent-Driven Workflows](../cookbook/agent-workflows.md)
-for details.
+3339 timestamp. Scripts can parse each line independently. Use
+`--report-json <path>` to write the same stream to a file. See
+[Agent-Driven Workflows](../cookbook/agent-workflows.md) for details.
 
 ## DAG Visualization
 
