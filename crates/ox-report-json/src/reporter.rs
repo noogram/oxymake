@@ -18,10 +18,15 @@
 //! `on_event` never interleave partial JSON lines. The lock is held only for
 //! the duration of a single `writeln!`, so contention is negligible.
 
+use std::fs::{self, File, OpenOptions};
 use std::future::Future;
-use std::io::Write;
+use std::io::{self, Write};
+use std::path::{Path, PathBuf};
 use std::pin::Pin;
-use std::sync::Mutex;
+use std::sync::{
+    Mutex,
+    atomic::{AtomicU64, Ordering},
+};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
@@ -29,6 +34,91 @@ use serde_json::Value;
 
 use ox_core::model::Event;
 use ox_core::traits::reporter::{Reporter, RunSummary};
+
+static TEMP_FILE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+/// A file sink that publishes its final path only after a complete first line.
+///
+/// Event logs are NDJSON streams whose first line is always `run_started`.
+/// The temporary file lets a process die before that event without leaving a
+/// visible, empty `.ndjson` file. Once the first newline is durable, renaming
+/// keeps the existing file descriptor valid so subscribers can tail the stream.
+pub struct AtomicEventFile {
+    file: File,
+    temporary_path: PathBuf,
+    final_path: PathBuf,
+    published: bool,
+}
+
+impl AtomicEventFile {
+    /// Create a temporary sibling for `final_path`; the final path is untouched.
+    pub fn create(final_path: impl AsRef<Path>) -> io::Result<Self> {
+        let final_path = final_path.as_ref().to_path_buf();
+        let parent = final_path.parent().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "event log has no parent directory",
+            )
+        })?;
+        let name = final_path.file_name().ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidInput, "event log has no file name")
+        })?;
+
+        for _ in 0..100 {
+            let sequence = TEMP_FILE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+            let temporary_path = parent.join(format!(
+                ".{}.tmp-{}-{sequence}",
+                name.to_string_lossy(),
+                std::process::id(),
+            ));
+            match OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&temporary_path)
+            {
+                Ok(file) => {
+                    return Ok(Self {
+                        file,
+                        temporary_path,
+                        final_path,
+                        published: false,
+                    });
+                }
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+                Err(error) => return Err(error),
+            }
+        }
+
+        Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "could not allocate unique temporary event log",
+        ))
+    }
+}
+
+impl Write for AtomicEventFile {
+    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+        self.file.write_all(buffer)?;
+        if !self.published && buffer.contains(&b'\n') {
+            self.file.sync_data()?;
+            fs::rename(&self.temporary_path, &self.final_path)?;
+            self.published = true;
+        }
+        Ok(buffer.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.file.flush()
+    }
+}
+
+impl Drop for AtomicEventFile {
+    fn drop(&mut self) {
+        if !self.published {
+            let _ = fs::remove_file(&self.temporary_path);
+        }
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Serializable summary wrapper
@@ -279,6 +369,7 @@ mod tests {
     use super::*;
     use ox_core::model::{GateId, JobId, RuleName};
     use std::collections::BTreeMap;
+    use std::fs;
 
     /// Helper: collect the NDJSON output of a reporter session into a `String`.
     fn output_string(reporter: JsonReporter<Vec<u8>>) -> String {
@@ -291,6 +382,44 @@ mod tests {
         raw.lines()
             .map(|line| serde_json::from_str(line).expect("valid JSON line"))
             .collect()
+    }
+
+    #[test]
+    fn atomic_event_file_publishes_only_after_a_complete_first_line() {
+        let directory = std::env::temp_dir().join(format!(
+            "ox-report-json-test-{}-{}",
+            std::process::id(),
+            TEMP_FILE_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir(&directory).unwrap();
+        let final_path = directory.join("run-123.ndjson");
+        {
+            let mut file = AtomicEventFile::create(&final_path).unwrap();
+
+            file.write_all(br#"{"event":"run_started""#).unwrap();
+            assert!(
+                !final_path.exists(),
+                "a partial first line must not create a visible event log"
+            );
+
+            file.write_all(b"}\n").unwrap();
+            assert!(
+                final_path.exists(),
+                "the complete first line publishes the log"
+            );
+            assert_eq!(
+                fs::read_to_string(&final_path).unwrap(),
+                "{\"event\":\"run_started\"}\n"
+            );
+
+            file.write_all(b"{\"event\":\"job_planned\"}\n").unwrap();
+            assert!(
+                fs::read_to_string(&final_path)
+                    .unwrap()
+                    .starts_with("{\"event\":\"run_started\"}\n")
+            );
+        }
+        fs::remove_dir_all(&directory).unwrap();
     }
 
     // -- Individual event variant tests ------------------------------------

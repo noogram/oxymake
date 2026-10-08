@@ -24,7 +24,7 @@ pub struct SubscribeArgs {
     pub session_id: Option<String>,
 
     /// Filter to specific event types (repeatable). If omitted, all events
-    /// are streamed. Valid types: run_started, job_queued, job_started,
+    /// are streamed. Valid types: run_started, job_planned, job_queued, job_started,
     /// job_completed, job_failed, job_skipped, gate_reached, gate_approved,
     /// run_completed, run_failed.
     #[arg(long = "event-type", value_name = "TYPE")]
@@ -50,6 +50,7 @@ const POLL_INTERVAL: Duration = Duration::from_millis(200);
 
 const VALID_EVENT_TYPES: &[&str] = &[
     "run_started",
+    "job_planned",
     "job_queued",
     "job_started",
     "job_completed",
@@ -259,6 +260,11 @@ fn list_event_logs(dir: &Path) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn job_planned_is_a_valid_subscription_filter() {
+        assert!(VALID_EVENT_TYPES.contains(&"job_planned"));
+    }
 
     #[test]
     fn should_emit_no_filters() {

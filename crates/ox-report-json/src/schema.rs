@@ -31,7 +31,7 @@
 //! a candidate not run without making it pending or failed.
 //!
 //! ```json
-//! {"event":"job_planned","job_id":"align_S001","rule":"align","wildcards":{"sample":"S001"},"resources":{"cpu":4},"dependencies":["download_S001"]}
+//! {"event":"job_planned","schema_version":1,"ts":"2026-10-08T12:00:00Z","job_id":"align_S001","rule":"align","wildcards":{"sample":"S001"},"resources":{"cpu":4},"dependencies":["download_S001"]}
 //! ```
 //!
 //! ## `job_queued`
@@ -39,7 +39,7 @@
 //! Emitted when a job enters the ready queue.
 //!
 //! ```json
-//! {"event":"job_queued","job_id":"align_S001","rule":"align","tags":{"sample":"S001"}}
+//! {"event":"job_queued","schema_version":1,"ts":"2026-10-08T12:00:00Z","job_id":"align_S001","rule":"align","tags":{"sample":"S001"}}
 //! ```
 //!
 //! | Field    | Type              | Description                       |
@@ -53,7 +53,7 @@
 //! Emitted when a job begins execution.
 //!
 //! ```json
-//! {"event":"job_started","job_id":"align_S001","executor":"local"}
+//! {"event":"job_started","schema_version":1,"ts":"2026-10-08T12:00:00Z","job_id":"align_S001","executor":"local"}
 //! ```
 //!
 //! | Field      | Type     | Description                           |
@@ -68,7 +68,7 @@
 //! to that attempt; earlier failed attempts and cancellations supply none.
 //!
 //! ```json
-//! {"event":"job_completed","job_id":"align_S001","duration_ms":272000,"outputs":["results/S001.bam"],"peak_memory_bytes":1536000}
+//! {"event":"job_completed","schema_version":1,"ts":"2026-10-08T12:00:00Z","job_id":"align_S001","duration_ms":272000,"outputs":["results/S001.bam"],"peak_memory_bytes":1536000}
 //! ```
 //!
 //! | Field         | Type       | Description                       |
@@ -83,7 +83,7 @@
 //! Emitted when a job fails.
 //!
 //! ```json
-//! {"event":"job_failed","job_id":"align_S002","error_message":"exit code 1","exit_code":1,"stderr_tail":"..."}
+//! {"event":"job_failed","schema_version":1,"ts":"2026-10-08T12:00:00Z","job_id":"align_S002","error_message":"exit code 1","exit_code":1,"stderr_tail":"..."}
 //! ```
 //!
 //! | Field           | Type      | Description                      |
@@ -98,7 +98,7 @@
 //! Emitted when a job is skipped (cached, guard failed, downstream of failure).
 //!
 //! ```json
-//! {"event":"job_skipped","job_id":"qc_S001","reason":"cached"}
+//! {"event":"job_skipped","schema_version":1,"ts":"2026-10-08T12:00:00Z","job_id":"qc_S001","reason":"cached"}
 //! ```
 //!
 //! | Field    | Type     | Description                        |
@@ -111,7 +111,7 @@
 //! Emitted when a human-in-the-loop gate checkpoint is reached.
 //!
 //! ```json
-//! {"event":"gate_reached","gate_id":"review-checkpoint","message":"Check alignment QC"}
+//! {"event":"gate_reached","schema_version":1,"ts":"2026-10-08T12:00:00Z","gate_id":"review-checkpoint","message":"Check alignment QC"}
 //! ```
 //!
 //! | Field     | Type     | Description                       |
@@ -124,7 +124,7 @@
 //! Emitted when a gate is approved.
 //!
 //! ```json
-//! {"event":"gate_approved","gate_id":"review-checkpoint","approved_by":"alice"}
+//! {"event":"gate_approved","schema_version":1,"ts":"2026-10-08T12:00:00Z","gate_id":"review-checkpoint","approved_by":"alice"}
 //! ```
 //!
 //! | Field        | Type     | Description                      |
@@ -137,7 +137,7 @@
 //! Emitted when all jobs have finished.
 //!
 //! ```json
-//! {"event":"run_completed","total":847,"succeeded":846,"failed":1,"skipped":0,"duration_ms":8040000,"status":"failed"}
+//! {"event":"run_completed","schema_version":1,"ts":"2026-10-08T12:00:00Z","total":847,"succeeded":846,"failed":1,"skipped":0,"duration_ms":8040000,"status":"failed"}
 //! ```
 //!
 //! | Field         | Type  | Description                        |
@@ -154,7 +154,7 @@
 //! Emitted when the run fails due to an unrecoverable error.
 //!
 //! ```json
-//! {"event":"run_failed","error_message":"DAG cycle detected"}
+//! {"event":"run_failed","schema_version":1,"ts":"2026-10-08T12:00:00Z","error_message":"DAG cycle detected"}
 //! ```
 //!
 //! | Field           | Type     | Description                     |
@@ -168,7 +168,7 @@
 //! consumers a single object summarizing the entire run.
 //!
 //! ```json
-//! {"event":"run_summary","total_jobs":100,"succeeded":98,"failed":1,"skipped":1,"cancelled":0,"duration_ms":60000}
+//! {"event":"run_summary","schema_version":1,"ts":"2026-10-08T12:00:00Z","total_jobs":100,"succeeded":98,"failed":1,"skipped":1,"cancelled":0,"duration_ms":60000}
 //! ```
 //!
 //! | Field         | Type  | Description                        |

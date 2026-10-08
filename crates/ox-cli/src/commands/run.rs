@@ -1719,8 +1719,10 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
         std::fs::create_dir_all(&events_dir).context("failed to create events directory")?;
         let mut reporters: Vec<Box<dyn ox_core::traits::reporter::Reporter>> = vec![Box::new(
             ox_report_json::reporter::JsonReporter::new(
-                std::fs::File::create(events_dir.join(format!("{run_id}.ndjson")))
-                    .context("failed to create event log file")?,
+                ox_report_json::reporter::AtomicEventFile::create(
+                    events_dir.join(format!("{run_id}.ndjson")),
+                )
+                .context("failed to create event log file")?,
             )
             .with_run_context(run_id.clone(), args.file.clone()),
         )];
@@ -2011,8 +2013,8 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
     let events_dir = oxymake_dir.join("events");
     std::fs::create_dir_all(&events_dir).ok();
     let event_log_path = events_dir.join(format!("{}.ndjson", ctx.run_id));
-    let event_log_file =
-        std::fs::File::create(&event_log_path).context("failed to create event log file")?;
+    let event_log_file = ox_report_json::reporter::AtomicEventFile::create(&event_log_path)
+        .context("failed to create event log file")?;
 
     // Create the --report-json file up front so an unwritable path fails
     // the run immediately, not after the work is done (H28).

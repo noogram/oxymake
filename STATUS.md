@@ -216,6 +216,7 @@ object per line (NDJSON). The schema lives in
 ### Stable today (event names — the discriminator `"event"` field)
 
 - `run_started`
+- `job_planned`
 - `job_queued`
 - `job_started`
 - `job_completed`
@@ -227,7 +228,7 @@ object per line (NDJSON). The schema lives in
 - `run_failed`
 - `run_summary` (terminal event)
 
-These eleven event names will not be removed or renamed without a minor
+These twelve event names will not be removed or renamed without a minor
 bump and a `CHANGELOG.md` entry.
 
 ### Stable today (required payload fields)

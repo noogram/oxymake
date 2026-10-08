@@ -4200,8 +4200,43 @@ shell = "printf done > out.txt"
         .unwrap()
         .flatten()
         .map(|entry| entry.path())
+        .filter(|path| {
+            path.extension()
+                .is_some_and(|extension| extension == "ndjson")
+        })
         .collect();
     logs.sort_by_key(|path| fs::metadata(path).unwrap().modified().unwrap());
+
+    let event_streams: Vec<Vec<serde_json::Value>> = logs
+        .iter()
+        .map(|path| {
+            let content = fs::read_to_string(path).unwrap();
+            assert!(
+                !content.is_empty(),
+                "published event log {} must not be empty",
+                path.display()
+            );
+            let lines: Vec<serde_json::Value> = content
+                .lines()
+                .map(|line| serde_json::from_str(line).unwrap())
+                .collect();
+            assert_eq!(lines.first().unwrap()["event"], "run_started");
+            lines
+        })
+        .collect();
+    let normal_run = event_streams
+        .iter()
+        .find(|lines| lines.iter().any(|line| line["event"] == "job_completed"))
+        .expect("cache-miss run event log");
+    let normal_started = normal_run.first().unwrap();
+    assert!(
+        normal_started["run_id"]
+            .as_str()
+            .is_some_and(|id| id.starts_with("run-"))
+    );
+    assert_eq!(normal_started["workflow_path"], "Oxymakefile.toml");
+    assert_eq!(normal_started["total_jobs"], 1);
+
     let content = fs::read_to_string(logs.last().expect("cached run event log")).unwrap();
     let lines: Vec<serde_json::Value> = content
         .lines()
