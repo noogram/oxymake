@@ -405,13 +405,19 @@ ox invalidate results/alice.txt     # Invalidate a specific output
 
 ### `ox clean`
 
-Remove outputs and cache.
+Remove stale local state and cache entries. Event logs are retained by default.
 
 ```bash
 ox clean                    # Remove all outputs
 ox clean --cache            # Also remove cache
 ox clean --state            # Delete a corrupt state.db (it is a regenerable cache)
+ox clean --events --dry-run # Review retained NDJSON event logs
+ox clean --events --yes     # Remove retained NDJSON event logs
 ```
+
+`--events` is the explicit retention control for `.oxymake/events/*.ndjson`.
+It follows the command's normal confirmation, `--dry-run`, and `--json`
+behaviour. OxyMake never rotates or removes event logs automatically.
 
 ### `ox cancel`
 

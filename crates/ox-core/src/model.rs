@@ -1941,6 +1941,20 @@ pub enum Event {
         /// Number of jobs satisfied from cache.
         cached: usize,
     },
+    /// Emitted after `run_started` for each candidate selected in the DAG.
+    /// A planned job is an upper bound, not a commitment to execute it.
+    JobPlanned {
+        /// The candidate job.
+        job_id: JobId,
+        /// The rule that generated the candidate.
+        rule: RuleName,
+        /// Resolved wildcard values.
+        wildcards: BTreeMap<String, String>,
+        /// Resource declarations as written for this concrete job.
+        resources: BTreeMap<String, ResourceValue>,
+        /// Immediate upstream candidate job IDs.
+        dependencies: Vec<JobId>,
+    },
     /// Emitted when a job enters the ready queue.
     JobQueued {
         /// The job that was queued.
@@ -2099,6 +2113,9 @@ impl fmt::Display for Event {
             ),
             Self::JobQueued { job_id, rule, .. } => {
                 write!(f, "queued {job_id} (rule: {rule})")
+            }
+            Self::JobPlanned { job_id, rule, .. } => {
+                write!(f, "planned {job_id} (rule: {rule})")
             }
             Self::JobStarted {
                 job_id,

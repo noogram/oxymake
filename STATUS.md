@@ -232,10 +232,16 @@ bump and a `CHANGELOG.md` entry.
 
 ### Stable today (required payload fields)
 
-- Every event has an `"event"` field (string).
+- Every event has an `"event"` field (string), `"schema_version": 1`, and
+  a UTC RFC 3339 `"ts"` timestamp.
+- `run_started` carries `run_id`, `workflow_path`, and the planned-job count.
+- `job_planned` records each candidate's id, rule, wildcards, declared
+  resources, and immediate dependency job ids. Candidates are an upper bound:
+  a terminal run may leave one not run when an upstream is byte-identical.
 - `job_*` events always carry `"job_id"` (string).
 - `run_completed` and `run_summary` always carry `total`, `succeeded`,
-  `failed`, `skipped`, `duration_ms`.
+  `failed`, `skipped`, `duration_ms`; `run_completed` also carries terminal
+  `status` (`success`, `all_cached`, `failed`, or `interrupted`).
 
 ### Unstable
 
@@ -253,8 +259,10 @@ Consumers should:
 3. Treat the absence of an optional field as "not applicable", not as
    an error.
 
-A future `"schema_version"` field at the top of each event is under
-consideration but not yet shipped — track this in `CHANGELOG.md`.
+Default event logs are retained under `.oxymake/events/` until explicitly
+removed with `ox clean --events`; they are never rotated automatically. A
+hard kill can truncate the final NDJSON line: readers should skip and count
+that incomplete line while preserving preceding complete events.
 
 **FAIR forward-compat (audited 2026-06-14).** Emitting W3C PROV / Workflow
 RO-Crate in a future release (v1.1) is **additive, non-breaking** against this

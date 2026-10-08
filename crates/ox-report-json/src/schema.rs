@@ -2,7 +2,8 @@
 //!
 //! This module serves as living documentation for the wire format emitted by
 //! [`JsonReporter`](crate::reporter::JsonReporter). Each event is a JSON object
-//! with an `"event"` field that acts as the type discriminator (set by serde's
+//! with `"schema_version": 1`, a UTC RFC 3339 `"ts"`, and an `"event"` field
+//! that acts as the type discriminator (set by serde's
 //! `#[serde(tag = "event", rename_all = "snake_case")]` on the `Event` enum).
 //!
 //! # Event catalog
@@ -12,7 +13,7 @@
 //! Emitted once when a run begins, after DAG resolution.
 //!
 //! ```json
-//! {"event":"run_started","total_jobs":103429,"to_run":847,"cached":102582}
+//! {"event":"run_started","schema_version":1,"ts":"2026-10-08T12:00:00Z","run_id":"run-123","workflow_path":"Oxymakefile.toml","total_jobs":103429,"to_run":847,"cached":102582}
 //! ```
 //!
 //! | Field        | Type   | Description                            |
@@ -20,6 +21,18 @@
 //! | `total_jobs` | `u64`  | Total number of jobs in the DAG        |
 //! | `to_run`     | `u64`  | Jobs that will actually execute         |
 //! | `cached`     | `u64`  | Jobs satisfied from cache              |
+//! | `run_id`     | `string` | Current run identifier               |
+//! | `workflow_path` | `string` | Workflow path supplied to the CLI   |
+//!
+//! ## `job_planned`
+//!
+//! Emitted after `run_started` once for each candidate in the selected DAG.
+//! It is an upper bound, not a commitment: a byte-identical upstream may leave
+//! a candidate not run without making it pending or failed.
+//!
+//! ```json
+//! {"event":"job_planned","job_id":"align_S001","rule":"align","wildcards":{"sample":"S001"},"resources":{"cpu":4},"dependencies":["download_S001"]}
+//! ```
 //!
 //! ## `job_queued`
 //!
@@ -124,7 +137,7 @@
 //! Emitted when all jobs have finished.
 //!
 //! ```json
-//! {"event":"run_completed","total":847,"succeeded":846,"failed":1,"skipped":0,"duration_ms":8040000}
+//! {"event":"run_completed","total":847,"succeeded":846,"failed":1,"skipped":0,"duration_ms":8040000,"status":"failed"}
 //! ```
 //!
 //! | Field         | Type  | Description                        |
@@ -134,6 +147,7 @@
 //! | `failed`      | `u64` | Jobs that failed                   |
 //! | `skipped`     | `u64` | Jobs that were skipped             |
 //! | `duration_ms` | `u64` | Total wall-clock duration in ms    |
+//! | `status`      | `string` | `success`, `all_cached`, `failed`, or `interrupted` |
 //!
 //! ## `run_failed`
 //!
@@ -167,6 +181,11 @@
 //! | `duration_ms` | `u64` | Total wall-clock duration in ms    |
 //!
 //! # Forward compatibility
+//!
+//! Event files are retained until an operator runs `ox clean --events`. OxyMake
+//! does not rotate them. A hard kill can truncate the final NDJSON line;
+//! readers should count and skip that incomplete line while retaining the
+//! preceding complete events.
 //!
 //! STATUS.md §4 promises that **new payload fields may be added at any time**
 //! and that **consumers must ignore unknown keys**. The FAIR forward-compat

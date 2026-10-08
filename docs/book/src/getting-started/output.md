@@ -90,18 +90,19 @@ ox run --json
 ```
 
 ```json
-{"event":"run_started","total_jobs":3,"to_run":3,"cached":0}
+{"event":"run_started","schema_version":1,"ts":"2026-10-08T12:00:00Z","run_id":"run-123","workflow_path":"Oxymakefile.toml","total_jobs":3,"to_run":3,"cached":0}
 {"event":"job_started","job_id":"stats-bob","executor":"local","reason":"cache_miss"}
 {"event":"job_completed","job_id":"stats-bob","duration_ms":209,"outputs":["results/bob_stats.json"]}
 {"event":"job_started","job_id":"stats-alice","executor":"local","reason":"cache_miss"}
 {"event":"job_completed","job_id":"stats-alice","duration_ms":200,"outputs":["results/alice_stats.json"]}
 {"event":"job_started","job_id":"summary","executor":"local","reason":"upstream_rebuilt"}
 {"event":"job_completed","job_id":"summary","duration_ms":194,"outputs":["results/summary.json"]}
-{"event":"run_completed","total":3,"succeeded":3,"failed":0,"skipped":0,"cancelled":0,"duration_ms":607}
+{"event":"run_completed","schema_version":1,"ts":"2026-10-08T12:00:00Z","total":3,"succeeded":3,"failed":0,"skipped":0,"cancelled":0,"duration_ms":607,"status":"success"}
 ```
 
 Each event carries an `event` discriminant (`run_started`, `job_started`,
 `job_completed`, `run_completed`). This format is designed for AI agents and
+each line additionally carries schema version 1 and a UTC RFC 3339 timestamp.
 scripts to parse programmatically. Use `--report-json <path>` to write the
 same stream to a file. See [Agent-Driven Workflows](../cookbook/agent-workflows.md)
 for details.

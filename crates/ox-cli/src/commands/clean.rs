@@ -24,6 +24,10 @@ pub struct CleanArgs {
     #[arg(long, conflicts_with = "cache_only")]
     pub state_only: bool,
 
+    /// Only remove retained NDJSON event logs
+    #[arg(long, conflicts_with_all = ["cache_only", "state_only", "state", "all"])]
+    pub events: bool,
+
     /// Delete the state database file entirely (recovery escape hatch
     /// for a corrupt state.db — it is a regenerable cache)
     #[arg(long, conflicts_with_all = ["cache_only", "state_only", "all"])]
@@ -79,9 +83,10 @@ pub fn cmd_clean(args: CleanArgs) -> Result<()> {
         return clean_state_file(oxymake_dir, &args);
     }
 
-    let clean_cache = !args.state_only;
-    let clean_state = !args.cache_only;
-    let clean_logs = !args.cache_only && !args.state_only;
+    let clean_cache = !args.state_only && !args.events;
+    let clean_state = !args.cache_only && !args.events;
+    let clean_logs = !args.cache_only && !args.state_only && !args.events;
+    let clean_events = args.events;
 
     // -----------------------------------------------------------------------
     // Gather what would be cleaned
@@ -172,6 +177,26 @@ pub fn cmd_clean(args: CleanArgs) -> Result<()> {
         0
     };
 
+    // Event streams are retained by default. Their removal is an explicit
+    // operator action, intentionally separate from ordinary log cleanup.
+    let events_dir = oxymake_dir.join("events");
+    let event_log_count = if clean_events && events_dir.exists() {
+        let count = std::fs::read_dir(&events_dir)
+            .map(|entries| {
+                entries
+                    .flatten()
+                    .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "ndjson"))
+                    .count()
+            })
+            .unwrap_or(0);
+        if count > 0 {
+            actions.push(format!("Remove {count} retained event log(s)"));
+        }
+        count
+    } else {
+        0
+    };
+
     // -----------------------------------------------------------------------
     // Report
     // -----------------------------------------------------------------------
@@ -237,6 +262,7 @@ pub fn cmd_clean(args: CleanArgs) -> Result<()> {
     let mut removed_cache: usize = 0;
     let mut removed_state = false;
     let mut removed_logs = false;
+    let mut removed_events = 0usize;
 
     // Cache
     if clean_cache && orphan_count > 0 {
@@ -306,6 +332,19 @@ pub fn cmd_clean(args: CleanArgs) -> Result<()> {
         removed_logs = true;
     }
 
+    if clean_events && event_log_count > 0 {
+        for entry in std::fs::read_dir(&events_dir).context("failed to read events directory")? {
+            let entry = entry.context("failed to read event log entry")?;
+            if entry.path().extension().is_some_and(|ext| ext == "ndjson") {
+                std::fs::remove_file(entry.path()).context("failed to remove event log")?;
+                removed_events += 1;
+            }
+        }
+        if !args.json {
+            println!("  Removed {removed_events} event log(s)");
+        }
+    }
+
     if args.json {
         let json = serde_json::json!({
             "actions": actions,
@@ -315,10 +354,11 @@ pub fn cmd_clean(args: CleanArgs) -> Result<()> {
                 "state": removed_state,
                 "logs": removed_logs,
                 "log_bytes": if removed_logs { log_size } else { 0 },
+                "event_logs": removed_events,
             },
         });
         println!("{}", serde_json::to_string_pretty(&json)?);
-    } else if removed_cache > 0 || removed_state || removed_logs {
+    } else if removed_cache > 0 || removed_state || removed_logs || removed_events > 0 {
         println!("Done.");
     }
 

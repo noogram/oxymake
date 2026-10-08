@@ -22,8 +22,10 @@ use std::future::Future;
 use std::io::Write;
 use std::pin::Pin;
 use std::sync::Mutex;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
+use serde_json::Value;
 
 use ox_core::model::Event;
 use ox_core::traits::reporter::{Reporter, RunSummary};
@@ -49,6 +51,54 @@ struct SummaryEvent {
     skipped: usize,
     cancelled: usize,
     duration_ms: u64,
+}
+
+/// The versioned outer contract shared by events and the synthesized summary.
+/// Payload fields remain additive and are flattened so existing consumers keep
+/// seeing the event shape they already parse.
+#[derive(Serialize)]
+struct Envelope<T: Serialize> {
+    schema_version: u8,
+    ts: String,
+    #[serde(flatten)]
+    payload: T,
+}
+
+fn utc_timestamp() -> String {
+    // Civil-date conversion for UTC Unix seconds.  This avoids making the
+    // reporting crate depend on a time library solely to format one field.
+    let seconds = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let days = (seconds / 86_400) as i64;
+    let day_seconds = seconds % 86_400;
+    let (year, month, day) = civil_from_days(days);
+    format!(
+        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}Z",
+        day_seconds / 3_600,
+        (day_seconds % 3_600) / 60,
+        day_seconds % 60
+    )
+}
+
+// Howard Hinnant's public-domain civil-date algorithm, with the Unix epoch
+// shifted to its 1970-01-01 day index.
+fn civil_from_days(days_since_epoch: i64) -> (i64, u32, u32) {
+    let z = days_since_epoch + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let year = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = mp + if mp < 10 { 3 } else { -9 };
+    (
+        year + if month <= 2 { 1 } else { 0 },
+        month as u32,
+        day as u32,
+    )
 }
 
 impl From<&RunSummary> for SummaryEvent {
@@ -89,6 +139,13 @@ impl From<&RunSummary> for SummaryEvent {
 pub struct JsonReporter<W: Write + Send> {
     /// The output sink, protected by a mutex for thread-safe writes.
     writer: Mutex<W>,
+    run_context: Option<RunContext>,
+}
+
+#[derive(Clone)]
+pub struct RunContext {
+    pub run_id: String,
+    pub workflow_path: String,
 }
 
 impl<W: Write + Send> JsonReporter<W> {
@@ -100,7 +157,19 @@ impl<W: Write + Send> JsonReporter<W> {
     pub fn new(writer: W) -> Self {
         Self {
             writer: Mutex::new(writer),
+            run_context: None,
         }
+    }
+
+    /// Attach fields that are known by the command boundary rather than the
+    /// scheduler. They are added only to `run_started` so the core event model
+    /// remains usable by embedders that do not mint CLI run identifiers.
+    pub fn with_run_context(mut self, run_id: String, workflow_path: String) -> Self {
+        self.run_context = Some(RunContext {
+            run_id,
+            workflow_path,
+        });
+        self
     }
 }
 
@@ -120,7 +189,49 @@ impl<W: Write + Send + 'static> Reporter for JsonReporter<W> {
     /// If the writer fails (broken pipe, full disk), the event is simply lost.
     fn on_event<'a>(&'a self, event: &'a Event) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
         Box::pin(async move {
-            let json = match serde_json::to_string(event) {
+            let mut payload = match serde_json::to_value(event) {
+                Ok(payload) => payload,
+                Err(e) => {
+                    eprintln!("ox-report-json: event serialization failed: {e}");
+                    return;
+                }
+            };
+            if matches!(event, Event::RunStarted { .. }) {
+                if let (Some(context), Value::Object(object)) = (&self.run_context, &mut payload) {
+                    object.insert("run_id".into(), Value::String(context.run_id.clone()));
+                    object.insert(
+                        "workflow_path".into(),
+                        Value::String(context.workflow_path.clone()),
+                    );
+                }
+            }
+            if let (
+                Event::RunCompleted {
+                    succeeded,
+                    failed,
+                    skipped,
+                    cancelled,
+                    ..
+                },
+                Value::Object(object),
+            ) = (event, &mut payload)
+            {
+                let status = if *failed > 0 {
+                    "failed"
+                } else if *cancelled > 0 {
+                    "interrupted"
+                } else if *succeeded == 0 && *skipped > 0 {
+                    "all_cached"
+                } else {
+                    "success"
+                };
+                object.insert("status".into(), Value::String(status.into()));
+            }
+            let json = match serde_json::to_string(&Envelope {
+                schema_version: 1,
+                ts: utc_timestamp(),
+                payload,
+            }) {
                 Ok(j) => j,
                 Err(e) => {
                     eprintln!("ox-report-json: event serialization failed: {e}");
@@ -142,7 +253,11 @@ impl<W: Write + Send + 'static> Reporter for JsonReporter<W> {
     ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
         Box::pin(async move {
             let envelope = SummaryEvent::from(summary);
-            let json = match serde_json::to_string(&envelope) {
+            let json = match serde_json::to_string(&Envelope {
+                schema_version: 1,
+                ts: utc_timestamp(),
+                payload: envelope,
+            }) {
                 Ok(j) => j,
                 Err(e) => {
                     eprintln!("ox-report-json: summary serialization failed: {e}");
@@ -196,6 +311,39 @@ mod tests {
         assert_eq!(v["total_jobs"], 100);
         assert_eq!(v["to_run"], 10);
         assert_eq!(v["cached"], 90);
+    }
+
+    #[tokio::test]
+    async fn every_line_has_the_versioned_timestamped_envelope() {
+        let r = JsonReporter::new(Vec::new());
+        r.on_event(&Event::RunStarted {
+            total_jobs: 1,
+            to_run: 1,
+            cached: 0,
+        })
+        .await;
+        r.finish(&RunSummary {
+            total_jobs: 1,
+            succeeded: 1,
+            failed: 0,
+            skipped: 0,
+            cancelled: 0,
+            duration_ms: 1,
+        })
+        .await;
+
+        for line in parse_lines(&output_string(r)) {
+            assert_eq!(line["schema_version"], 1);
+            let timestamp = line["ts"].as_str().expect("timestamp string");
+            assert!(
+                timestamp.ends_with('Z'),
+                "timestamp must be UTC RFC 3339: {timestamp}"
+            );
+            assert!(
+                timestamp.contains('T'),
+                "timestamp must be RFC 3339: {timestamp}"
+            );
+        }
     }
 
     #[tokio::test]

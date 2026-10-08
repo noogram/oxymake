@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Versioned, timestamped NDJSON run-event envelopes, planned-job events, and
+  explicit terminal statuses; fully cached runs now write default event logs.
+- `ox clean --events` for deliberate removal of retained NDJSON event logs.
+
 ### Breaking changes
 - `{threads}` now expands from either documented CPU spelling, `cpu` or `cpus`.
   Workflows using `cpus` with `{threads}` rerun once because their corrected
