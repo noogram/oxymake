@@ -480,12 +480,16 @@ The `meta.json` contract:
     "ray_address": "http://127.0.0.1:8265",
     "ray_job_id": "raysubmit_abc123"
   },
-  "run_id": "run-20250401-120000",
+  "run_id": "run-550e8400-e29b-41d4-a716-446655440000",
   "total_jobs": 847,
   "active_jobs": 847,
   "skipped_jobs": 102582
 }
 ```
+
+An explicit status selector resolves this exact local ID and its bound driver;
+an address override changes only the endpoint. Failure to resolve that driver
+does not fall back to enumerating unrelated Ray jobs.
 
 ### Resource Mapping
 

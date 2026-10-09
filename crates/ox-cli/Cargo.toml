@@ -45,6 +45,7 @@ serde.workspace = true
 blake3.workspace = true
 miette.workspace = true
 regex.workspace = true
+uuid.workspace = true
 indicatif.workspace = true
 console.workspace = true
 open.workspace = true

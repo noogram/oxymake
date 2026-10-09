@@ -55,6 +55,118 @@ fn version_shows_version() {
         .stdout(predicates::str::contains(env!("CARGO_PKG_VERSION")));
 }
 
+fn seed_empty_runs(dir: &std::path::Path, ids: &[&str]) {
+    let oxdir = dir.join(".oxymake");
+    fs::create_dir_all(&oxdir).unwrap();
+    let db = ox_state::db::StateDb::open(&oxdir.join("state.db")).unwrap();
+    for id in ids {
+        db.begin_run(id, None, 0, None).unwrap();
+    }
+}
+
+#[test]
+fn explicit_run_selectors_are_exact_case_sensitive_keys() {
+    let dir = TempDir::new().unwrap();
+    let legacy = "legacy-Run-A";
+    let canonical = "run-550e8400-e29b-41d4-a716-446655440000";
+    let extension = "run-550e8400-e29b-41d4-a716-446655440000-extra";
+    seed_empty_runs(
+        dir.path(),
+        &[legacy, canonical, extension, "prefix-one", "prefix-two"],
+    );
+
+    for args in [
+        vec!["history", "--run-id", legacy],
+        vec!["history", "--run-id", canonical],
+        vec!["status", "--run", legacy],
+        vec!["status", "--run", canonical],
+    ] {
+        ox().current_dir(dir.path()).args(args).assert().success();
+    }
+
+    for (command, flag, selector) in [
+        ("history", "--run-id", "LEGACY-RUN-A"),
+        ("history", "--run-id", "legacy-Run"),
+        ("history", "--run-id", "run-550e8400"),
+        ("history", "--run-id", "prefix-"),
+        ("status", "--run", "LEGACY-RUN-A"),
+        ("status", "--run", "legacy-Run"),
+        ("status", "--run", "run-550e8400"),
+        ("status", "--run", "prefix-"),
+    ] {
+        ox().current_dir(dir.path())
+            .args([command, flag, selector])
+            .assert()
+            .failure()
+            .stdout(predicates::str::is_empty())
+            .stderr(predicates::str::contains(format!(
+                "run '{selector}' not found"
+            )));
+    }
+}
+
+#[test]
+fn missing_explicit_run_json_is_one_stderr_diagnostic() {
+    let dir = TempDir::new().unwrap();
+    seed_empty_runs(dir.path(), &["known-empty"]);
+
+    for (command, flag) in [("history", "--run-id"), ("status", "--run")] {
+        let output = ox()
+            .current_dir(dir.path())
+            .args([command, flag, "Missing-Exact", "--json"])
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        assert!(output.stdout.is_empty());
+        let stderr = std::str::from_utf8(&output.stderr).unwrap();
+        assert_eq!(stderr.lines().count(), 1, "{stderr:?}");
+        let diagnostic: serde_json::Value = serde_json::from_str(stderr).unwrap();
+        assert_eq!(diagnostic["error"]["code"], "run_not_found");
+        assert_eq!(diagnostic["error"]["selector"], "Missing-Exact");
+    }
+
+    ox().current_dir(dir.path())
+        .args(["history", "--run-id", "known-empty", "--json"])
+        .assert()
+        .success()
+        .stdout(predicates::str::is_empty());
+}
+
+#[test]
+fn new_runs_preserve_legacy_rows_and_artifacts_byte_for_byte() {
+    let dir = TempDir::new().unwrap();
+    let legacy = "run-72860";
+    seed_empty_runs(dir.path(), &[legacy]);
+    let legacy_event = dir.path().join(format!(".oxymake/events/{legacy}.ndjson"));
+    fs::create_dir_all(legacy_event.parent().unwrap()).unwrap();
+    let original = b"{\"event\":\"legacy\",\"run_id\":\"run-72860\"}\n";
+    fs::write(&legacy_event, original).unwrap();
+    let copied = TempDir::new().unwrap();
+    fs::create_dir_all(copied.path().join(".oxymake")).unwrap();
+    fs::copy(
+        dir.path().join(".oxymake/state.db"),
+        copied.path().join(".oxymake/state.db"),
+    )
+    .unwrap();
+    ox().current_dir(copied.path())
+        .args(["history", "--run-id", legacy, "--json"])
+        .assert()
+        .success()
+        .stdout(predicates::str::is_empty());
+    fs::write(
+        dir.path().join("Oxymakefile.toml"),
+        "[rule.a]\noutput=['out.txt']\nshell='printf new > out.txt'\n",
+    )
+    .unwrap();
+
+    ox().current_dir(dir.path()).arg("run").assert().success();
+
+    assert_eq!(fs::read(&legacy_event).unwrap(), original);
+    let db = ox_state::db::StateDb::open(&dir.path().join(".oxymake/state.db")).unwrap();
+    assert!(db.list_runs().unwrap().iter().any(|run| run.id == legacy));
+    assert_eq!(db.list_runs().unwrap().len(), 2);
+}
+
 /// A completed run records where each artefact was produced and whether its
 /// rule opted into cross-platform reuse. The scope column must also make all
 /// `any` entries directly enumerable for recall.
@@ -4224,16 +4336,32 @@ shell = "printf done > out.txt"
             lines
         })
         .collect();
+    assert_eq!(event_streams.len(), 2);
+    let run_ids: Vec<&str> = event_streams
+        .iter()
+        .map(|lines| lines[0]["run_id"].as_str().unwrap())
+        .collect();
+    assert_ne!(run_ids[0], run_ids[1]);
+    for (path, run_id) in logs.iter().zip(&run_ids) {
+        assert_eq!(run_id.len(), 40);
+        let uuid = uuid::Uuid::parse_str(run_id.strip_prefix("run-").unwrap()).unwrap();
+        assert_eq!(uuid.get_version_num(), 4);
+        assert_eq!(path.file_stem().unwrap().to_str().unwrap(), *run_id);
+    }
+    let db = ox_state::db::StateDb::open(&dir.path().join(".oxymake/state.db")).unwrap();
+    let db_ids: std::collections::HashSet<String> = db
+        .list_runs()
+        .unwrap()
+        .into_iter()
+        .map(|run| run.id)
+        .collect();
+    assert_eq!(db_ids, run_ids.iter().map(|id| (*id).to_string()).collect());
     let normal_run = event_streams
         .iter()
         .find(|lines| lines.iter().any(|line| line["event"] == "job_completed"))
         .expect("cache-miss run event log");
     let normal_started = normal_run.first().unwrap();
-    assert!(
-        normal_started["run_id"]
-            .as_str()
-            .is_some_and(|id| id.starts_with("run-"))
-    );
+    assert!(normal_started["run_id"].as_str().is_some());
     assert_eq!(normal_started["workflow_path"], "Oxymakefile.toml");
     assert_eq!(normal_started["total_jobs"], 1);
 

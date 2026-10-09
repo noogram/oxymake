@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Executing `ox run` invocations now mint one opaque
+  `run-<lowercase-hyphenated-UUIDv4>` identity and carry it unchanged through
+  state, events, executor metadata, and run artifacts. Existing run IDs and
+  artifact names remain valid and are not migrated.
 - Versioned, timestamped NDJSON run-event envelopes, planned-job events, and
   explicit terminal statuses; fully cached runs now write default event logs.
 - `ox clean --events` for deliberate removal of retained NDJSON event logs.
@@ -59,6 +63,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   diagnostics and `ox_format::migrate` for preparing and applying migrations.
 
 ### Changed
+- `ox status --run ID` and `ox history --run-id ID` now require an exact,
+  case-sensitive local run ID. Missing IDs fail without prefix matching,
+  normalization, or unrelated Ray discovery; a known run with no history is
+  still a successful selection. `ox cancel` selectors are unchanged.
 - The unstable Rust `Workflow`, `Rule`, and `ConcreteJob` structs expose the
   declared and resolved environment-variable maps; downstream struct literals
   must initialize the new fields (#44).

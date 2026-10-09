@@ -126,6 +126,13 @@ fn rollup_by_rule(views: &[JobView]) -> Vec<RuleRollup> {
 pub fn cmd_status(args: StatusArgs, theme: &ox_render::Theme) -> Result<()> {
     let db_path = Path::new(".oxymake/state.db");
     if !db_path.exists() {
+        if let Some(selector) = args.run.as_deref() {
+            return if args.json {
+                Err(super::selector_error("run_not_found", selector, None))
+            } else {
+                anyhow::bail!("run '{selector}' not found")
+            };
+        }
         if args.json {
             // Emit a structured object so an agent parsing stdout as JSON does
             // not crash on a human-readable sentence. Absence of state is a
@@ -156,6 +163,16 @@ pub fn cmd_status(args: StatusArgs, theme: &ox_render::Theme) -> Result<()> {
     }
 
     let db = ox_state::db::StateDb::open(db_path)?;
+
+    if let Some(selector) = args.run.as_deref()
+        && !super::exact_run_exists(&db, selector)?
+    {
+        return if args.json {
+            Err(super::selector_error("run_not_found", selector, None))
+        } else {
+            anyhow::bail!("run '{selector}' not found")
+        };
+    }
 
     // Resolve the target run: explicit --run, or latest from the runs table.
     let run_id = match args.run {
@@ -208,6 +225,18 @@ pub fn cmd_status(args: StatusArgs, theme: &ox_render::Theme) -> Result<()> {
                 if let Err(error) =
                     super::ray_remote::sync_driver_failures(&db, rid, ray_addr.as_deref())
                 {
+                    if args.run.is_some() {
+                        let reason = format!("{error:#}");
+                        return if args.json {
+                            Err(super::selector_error(
+                                "run_remote_unavailable",
+                                rid,
+                                Some(&reason),
+                            ))
+                        } else {
+                            anyhow::bail!("remote status for run '{rid}' is unavailable: {reason}")
+                        };
+                    }
                     eprintln!("Warning: failed to sync Ray driver: {error:#}");
                 }
             }
@@ -215,6 +244,20 @@ pub fn cmd_status(args: StatusArgs, theme: &ox_render::Theme) -> Result<()> {
             _ => {}
         }
     }
+
+    // A user-supplied selector is a closed namespace. Resolve its one bound
+    // Ray driver before emitting local status, and never broaden to a cluster
+    // listing when that driver is unavailable.
+    let strict_ray_printed = if args.run.is_some() {
+        if let Some(ref addr) = ray_addr {
+            sync_and_print_ray_status(addr, run_id.as_deref(), true, args.json, theme)?;
+            true
+        } else {
+            false
+        }
+    } else {
+        false
+    };
 
     let now_secs = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -500,14 +543,22 @@ pub fn cmd_status(args: StatusArgs, theme: &ox_render::Theme) -> Result<()> {
         }
     }
 
-    if let Some(ref addr) = ray_addr {
+    if let Some(ref addr) = ray_addr
+        && !strict_ray_printed
+    {
         // Print run metadata from meta.json if available.
         if !args.json {
             if let Some(ref rid) = run_id {
                 print_run_meta(rid, theme);
             }
         }
-        sync_and_print_ray_status(addr, run_id.as_deref(), args.json, theme)?;
+        sync_and_print_ray_status(
+            addr,
+            run_id.as_deref(),
+            args.run.is_some(),
+            args.json,
+            theme,
+        )?;
     }
 
     Ok(())
@@ -584,6 +635,7 @@ fn print_run_meta(run_id: &str, theme: &ox_render::Theme) {
 fn sync_and_print_ray_status(
     ray_address: &str,
     run_id: Option<&str>,
+    explicit_selector: bool,
     json_output: bool,
     theme: &ox_render::Theme,
 ) -> Result<()> {
@@ -648,10 +700,35 @@ fn sync_and_print_ray_status(
                         return Ok(());
                     }
                     Err(e) => {
+                        if explicit_selector {
+                            let reason = format!("failed to poll Ray driver {driver_job_id}: {e}");
+                            return if json_output {
+                                Err(super::selector_error(
+                                    "run_remote_unavailable",
+                                    rid,
+                                    Some(&reason),
+                                ))
+                            } else {
+                                anyhow::bail!(
+                                    "remote status for run '{rid}' is unavailable: {reason}"
+                                )
+                            };
+                        }
                         eprintln!("\nFailed to poll Ray driver job {}: {}", driver_job_id, e);
-                        // Fall through to list-all mode.
                     }
                 }
+            }
+            if explicit_selector {
+                let reason = "the selected run has no bound Ray driver metadata";
+                return if json_output {
+                    Err(super::selector_error(
+                        "run_remote_unavailable",
+                        rid,
+                        Some(reason),
+                    ))
+                } else {
+                    anyhow::bail!("remote status for run '{rid}' is unavailable: {reason}")
+                };
             }
         }
 

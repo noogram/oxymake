@@ -168,7 +168,7 @@ details and formatting conventions.
   Submitted 75 jobs to Ray (25 cached)
   Dashboard: http://127.0.0.1:8265
   Driver job: raysubmit_abc123
-  Run: run-20250401-120000
+  Run: run-550e8400-e29b-41d4-a716-446655440000
 
   Monitor: ox status
   Follow:  ox status --follow
@@ -176,7 +176,7 @@ details and formatting conventions.
 
 **on_poll:**
 ```
-  Run run-20250401-120000 (Ray)
+  Run run-550e8400-e29b-41d4-a716-446655440000 (Ray)
   Progress: 45/75 (60.0%)  12 running  18 pending  0 failed
   Elapsed: 3m42s
 

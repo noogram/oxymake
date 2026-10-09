@@ -154,8 +154,8 @@ that look like this:
 ```bash
 #!/bin/bash
 #SBATCH --job-name=ox_process_j-042
-#SBATCH --output=/scratch/staging/run-001/j-042/slurm-%j.out
-#SBATCH --error=/scratch/staging/run-001/j-042/slurm-%j.err
+#SBATCH --output=/scratch/staging/run-550e8400-e29b-41d4-a716-446655440000/j-042/slurm-%j.out
+#SBATCH --error=/scratch/staging/run-550e8400-e29b-41d4-a716-446655440000/j-042/slurm-%j.err
 #SBATCH --partition=gpu
 #SBATCH --account=my-lab
 #SBATCH --cpus-per-task=4
@@ -327,7 +327,7 @@ The `meta.json` contract:
 {
   "executor": "slurm",
   "version": 1,
-  "run_id": "run-20250401-120000",
+  "run_id": "run-550e8400-e29b-41d4-a716-446655440000",
   "total_jobs": 847,
   "active_jobs": 847,
   "skipped_jobs": 102582,

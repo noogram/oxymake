@@ -30,6 +30,13 @@ pub struct HistoryArgs {
 pub fn cmd_history(args: HistoryArgs, theme: &ox_render::Theme) -> Result<()> {
     let db_path = Path::new(".oxymake/state.db");
     if !db_path.exists() {
+        if let Some(selector) = args.run_id.as_deref() {
+            return if args.json {
+                Err(super::selector_error("run_not_found", selector, None))
+            } else {
+                anyhow::bail!("run '{selector}' not found")
+            };
+        }
         println!("No OxyMake state found. Run 'ox run' first.");
         return Ok(());
     }
@@ -150,6 +157,13 @@ fn show_run_detail(
     json: bool,
     theme: &ox_render::Theme,
 ) -> Result<()> {
+    if !super::exact_run_exists(db, run_id)? {
+        return if json {
+            Err(super::selector_error("run_not_found", run_id, None))
+        } else {
+            anyhow::bail!("run '{run_id}' not found")
+        };
+    }
     let jobs = db.job_history_for_run(run_id)?;
     if jobs.is_empty() {
         if json {

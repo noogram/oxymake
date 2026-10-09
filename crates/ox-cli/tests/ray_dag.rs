@@ -69,6 +69,13 @@ async fn dash_f_file_submits_the_driver_written_beside_the_oxymakefile() {
         .unwrap();
     let payload: serde_json::Value = serde_json::from_slice(&request.body).unwrap();
     let run_id = payload["metadata"]["oxymake_run_id"].as_str().unwrap();
+    assert_eq!(run_id.len(), 40);
+    assert_eq!(
+        uuid::Uuid::parse_str(run_id.strip_prefix("run-").unwrap())
+            .unwrap()
+            .get_version_num(),
+        4
+    );
     let driver_path = project_dir
         .path()
         .canonicalize()
@@ -81,6 +88,20 @@ async fn dash_f_file_submits_the_driver_written_beside_the_oxymakefile() {
         driver_path.is_file(),
         "{driver_path:?} must exist when submitted"
     );
+    let meta: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(driver_path.parent().unwrap().join("meta.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(meta["run_id"], run_id);
+    let db = ox_state::db::StateDb::open(
+        &project_dir
+            .path()
+            .canonicalize()
+            .unwrap()
+            .join(".oxymake/state.db"),
+    )
+    .unwrap();
+    assert!(db.list_runs().unwrap().iter().any(|run| run.id == run_id));
     assert_eq!(
         payload["entrypoint"],
         format!(
@@ -158,6 +179,69 @@ async fn driver_crash_without_results_is_visible_in_status_and_logs() {
         ));
     let db = ox_state::db::StateDb::open(&dir.path().join(".oxymake/state.db")).unwrap();
     assert_eq!(db.job_status("a").unwrap().as_deref(), Some("failed"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn unknown_explicit_run_never_contacts_or_enumerates_ray() {
+    let server = MockServer::start().await;
+    let dir = tempfile::tempdir().unwrap();
+    recorded_run(dir.path(), &server.uri());
+
+    let output = ox()
+        .current_dir(dir.path())
+        .args([
+            "status",
+            "--run",
+            "missing-run",
+            "--ray-address",
+            &server.uri(),
+            "--json",
+        ])
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    let diagnostic: serde_json::Value = serde_json::from_slice(&output.stderr).unwrap();
+    assert_eq!(diagnostic["error"]["code"], "run_not_found");
+    assert_eq!(diagnostic["error"]["selector"], "missing-run");
+    assert!(server.received_requests().await.unwrap().is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn unavailable_selected_driver_never_falls_back_to_ray_listing() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/jobs/driver"))
+        .respond_with(ResponseTemplate::new(503))
+        .mount(&server)
+        .await;
+    let dir = tempfile::tempdir().unwrap();
+    recorded_run(dir.path(), &server.uri());
+
+    let output = ox()
+        .current_dir(dir.path())
+        .args(["status", "--run", "run-1", "--json"])
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    let diagnostic: serde_json::Value = serde_json::from_slice(&output.stderr).unwrap();
+    assert_eq!(diagnostic["error"]["code"], "run_remote_unavailable");
+    assert_eq!(diagnostic["error"]["selector"], "run-1");
+    assert!(
+        diagnostic["error"]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("503")
+    );
+    let requests = server.received_requests().await.unwrap();
+    assert!(
+        requests
+            .iter()
+            .all(|request| request.url.path() != "/api/jobs/")
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

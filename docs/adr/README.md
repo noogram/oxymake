@@ -65,6 +65,7 @@ the corpus by concern without changing the URL of any ADR.
 | 017 | Artifact Residence Topology (Topology B)         | decision            | EXT    | Accepted                               |
 | 018 | Differentiation After the CWL Review             | decision            | CAS    | Proposed                               |
 | 019 | Cross-Machine Continuation                       | decision            | CAS    | Proposed                               |
+| 020 | UUIDv4 Run Identity and Exact Selection          | decision            | COOP   | Accepted                               |
 
 † ADR-011's filename retains the historical `three-layer` slug (renaming
 breaks the URL, per the flat 3-digit no-rename rule above); its title was

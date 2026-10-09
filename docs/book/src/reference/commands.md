@@ -225,7 +225,16 @@ Show current execution status.
 ```bash
 ox status                   # Summary of current state
 ox status --json            # Structured status
+ox status --run run-550e8400-e29b-41d4-a716-446655440000
 ```
+
+`--run` is an exact, case-sensitive local lookup. Prefixes, implicit `run-`,
+case normalization, and remote-only discovery are not supported. A missing ID
+exits nonzero before synchronization or remote calls. With `--json`, stdout is
+empty and stderr contains exactly
+`{"error":{"code":"run_not_found","selector":"<supplied>"}}`. If a known
+run's bound remote driver cannot be resolved, the code is
+`run_remote_unavailable` and the diagnostic also includes `reason`.
 
 #### Running vs. orphaned
 
@@ -276,8 +285,13 @@ uses `executor`.
 ```bash
 ox history                     # Recent runs
 ox history --json              # Structured history
-ox history --run-id run-1234   # Per-job detail for one run
+ox history --run-id run-550e8400-e29b-41d4-a716-446655440000
 ```
+
+`--run-id` uses the same exact, case-sensitive local-key contract as
+`ox status --run`. A registered run with no job-history rows succeeds and
+emits an empty NDJSON stream under `--json`; an absent exact key fails with
+`run_not_found`.
 
 With `--run-id … --json`, each job is emitted as one JSON object per line.
 Besides timing and exit code, the object carries the provenance of the
@@ -432,6 +446,8 @@ ox cancel stats-alice       # Cancel a specific job
 `SIGTERM` to the owning `ox run`, which handles it on the same graceful path
 as Ctrl+C — including the bounded `SIGTERM` → `SIGKILL` escalation described
 under [`ox run`](#ox-run).
+It has no run selector: job/output selection and sibling-driver cancellation
+retain their existing meanings.
 
 ### `ox top`
 
