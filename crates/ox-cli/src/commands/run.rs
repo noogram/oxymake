@@ -642,14 +642,33 @@ fn resolve_lease_secs() -> u64 {
         .unwrap_or(ox_state::claim::DEFAULT_LEASE_SECS)
 }
 
+/// Mint the opaque identity for one executing invocation.
+fn mint_run_id() -> String {
+    format!("run-{}", uuid::Uuid::new_v4())
+}
+
+/// Register a run before any jobs or history can refer to it.
+fn register_run(
+    db: &ox_state::db::StateDb,
+    run_id: &str,
+    job_count: usize,
+    note: Option<&str>,
+) -> Result<()> {
+    db.begin_run(run_id, None, job_count, note)
+        .with_context(|| format!("failed to register new run identity '{run_id}'"))
+}
+
 /// Record a run in which every job was a cache hit.
 ///
 /// The all-cached fast path never reaches the scheduler, so nothing else
 /// writes to `state.db` for it.  Without this the state database could not
 /// answer "did this run hit the cache?" — the question issue #12 is about.
 ///
-/// Best-effort throughout: a state database that cannot be opened or
-/// written is a degraded audit trail, never a failed run.
+/// Opening the database stays **best-effort**: a `state.db` that cannot be
+/// opened — a read-only checkout, a restrictive mode, a restored CI artifact —
+/// is a degraded audit trail, never a failed run. What is *not* best-effort is
+/// the run identity: `runs.id` is a primary key, so a colliding id fails
+/// registration before any job or history row attaches to it (ADR-020).
 fn record_fully_cached_run(
     state_db_path: &Path,
     run_id: &str,
@@ -658,9 +677,9 @@ fn record_fully_cached_run(
     note: Option<&str>,
     provenance: &HashMap<String, ox_state::db::JobProvenance>,
     cached: &HashSet<JobId>,
-) {
+) -> Result<()> {
     let Ok(db) = ox_state::db::StateDb::open(state_db_path) else {
-        return;
+        return Ok(());
     };
     let job_ids = job_graph.topological_order().unwrap_or_default();
     let records: Vec<ox_state::db::JobRecord> = job_ids
@@ -679,7 +698,7 @@ fn record_fully_cached_run(
         .collect();
 
     // The run record comes first: jobs.run_id references runs(id).
-    let _ = db.begin_run(run_id, None, records.len(), note);
+    register_run(&db, run_id, records.len(), note)?;
     let _ = db.register_jobs(&records);
     // Rows a dead session left `running` / `failed` / `cancelled` are not
     // this run's verdict; a live peer's rows are left alone (ADR-012).
@@ -702,6 +721,7 @@ fn record_fully_cached_run(
         provenance,
     );
     let _ = db.end_run(run_id, 0, 0, ids.len());
+    Ok(())
 }
 
 fn cache_status_reason(status: CacheHitStatus) -> Result<(), RunReason> {
@@ -1703,7 +1723,7 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
         // Recording costs one transaction plus one write per job, paid
         // only on the warm path it documents.
         std::fs::create_dir_all(&oxymake_dir).ok();
-        let run_id = format!("run-{}", std::process::id());
+        let run_id = mint_run_id();
         record_fully_cached_run(
             &oxymake_dir.join("state.db"),
             &run_id,
@@ -1712,7 +1732,7 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
             args.note.as_deref(),
             &prescan_provenance,
             &cache_hits,
-        );
+        )?;
         // The fast path is still a run: persist the same ordered contract as
         // a scheduled invocation rather than returning before reporters exist.
         let events_dir = oxymake_dir.join("events");
@@ -1864,7 +1884,7 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
 
     let ctx = ExecContext {
         global_job_limit: args.jobs,
-        run_id: format!("run-{}", std::process::id()),
+        run_id: mint_run_id(),
         log_dir: PathBuf::from(".oxymake/logs"),
         project_dir,
         trusted_dirs,
@@ -1909,12 +1929,7 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
     if let Some(ref db) = state_db {
         // Begin audit-trail run record BEFORE registering jobs, because
         // jobs.run_id references runs(id) via foreign key.
-        let _ = db.begin_run(
-            &run_id,
-            None, // workflow_hash — not yet computed
-            job_count,
-            args.note.as_deref(),
-        );
+        register_run(db, &run_id, job_count, args.note.as_deref())?;
 
         let records: Vec<ox_state::db::JobRecord> = job_graph
             .topological_order()
@@ -3318,6 +3333,45 @@ mod resource_budget_tests {
     fn resource_budget_requires_whole_token_capacities() {
         let err = parse_resource_budget(&["cpu=0.5".into()]).unwrap_err();
         assert!(err.to_string().contains("whole token"));
+    }
+}
+
+#[cfg(test)]
+mod run_identity_tests {
+    use super::{mint_run_id, register_run};
+
+    #[test]
+    fn minted_run_ids_are_distinct_canonical_uuid_v4_values() {
+        let first = mint_run_id();
+        let second = mint_run_id();
+
+        assert_ne!(first, second);
+        for run_id in [first, second] {
+            assert_eq!(run_id.len(), 40);
+            let uuid = uuid::Uuid::parse_str(run_id.strip_prefix("run-").unwrap()).unwrap();
+            assert_eq!(uuid.get_version_num(), 4);
+            assert_eq!(run_id, format!("run-{uuid}"));
+        }
+    }
+
+    #[test]
+    fn duplicate_run_registration_fails_without_overwriting() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = ox_state::db::StateDb::open(&dir.path().join("state.db")).unwrap();
+        let run_id = "run-00000000-0000-4000-8000-000000000000";
+
+        register_run(&db, run_id, 1, Some("original")).unwrap();
+        let error = register_run(&db, run_id, 99, Some("replacement")).unwrap_err();
+
+        assert!(error.to_string().contains(run_id));
+        let stored = db
+            .list_runs()
+            .unwrap()
+            .into_iter()
+            .find(|run| run.id == run_id)
+            .unwrap();
+        assert_eq!(stored.job_count, Some(1));
+        assert_eq!(stored.note.as_deref(), Some("original"));
     }
 }
 

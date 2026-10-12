@@ -199,6 +199,9 @@ pub fn run() -> i32 {
             let _ = usage.print();
             return usage.exit_code();
         }
+        if e.downcast_ref::<commands::ReportedError>().is_some() {
+            return 1;
+        }
         eprintln!("error: {e:#}");
         1
     } else {
@@ -252,6 +255,13 @@ mod tests {
         // (exit 2) rather than accepted and ignored.
         assert!(Cli::try_parse_from(["ox", "run", "--where", "a=b"]).is_err());
         assert!(Cli::try_parse_from(["ox", "run", "--materialize", "final"]).is_err());
+    }
+
+    #[test]
+    fn cancel_has_no_run_selector() {
+        assert!(Cli::try_parse_from(["ox", "cancel", "--run", "run-1"]).is_err());
+        let cancel = Cli::command().find_subcommand("cancel").unwrap().clone();
+        assert!(cancel.get_arguments().all(|arg| arg.get_id() != "run"));
     }
 
     #[test]

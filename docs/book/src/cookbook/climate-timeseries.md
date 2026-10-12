@@ -297,14 +297,14 @@ ox history
 
 ```
 RUN          STARTED              DURATION   OK  FAIL  SKIP  NOTE
-run-a1b2c3   2025-01-15 09:12     12.3s     42    0     0   Baseline: 5 stations, 4 windows
-run-d4e5f6   2025-01-15 09:45      4.1s     15    0    40   Added seasonal metric, 120d window
+run-550e8400-e29b-41d4-a716-446655440000   2025-01-15 09:12     12.3s     42    0     0   Baseline: 5 stations, 4 windows
+run-6ba7b810-9dad-41d1-80b4-00c04fd430c8   2025-01-15 09:45      4.1s     15    0    40   Added seasonal metric, 120d window
 ```
 
 Drill into a specific run:
 
 ```bash
-ox history --run-id run-a1b2c3
+ox history --run-id run-550e8400-e29b-41d4-a716-446655440000
 ```
 
 This shows per-job wall time and exit codes, plus peak RSS in MiB for local

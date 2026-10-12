@@ -90,7 +90,7 @@ ox run --json
 ```
 
 ```json
-{"event":"run_started","schema_version":1,"ts":"2026-10-08T12:00:00Z","run_id":"run-123","workflow_path":"Oxymakefile.toml","total_jobs":3,"to_run":3,"cached":0}
+{"event":"run_started","schema_version":1,"ts":"2026-10-08T12:00:00Z","run_id":"run-550e8400-e29b-41d4-a716-446655440000","workflow_path":"Oxymakefile.toml","total_jobs":3,"to_run":3,"cached":0}
 {"event":"job_planned","schema_version":1,"ts":"2026-10-08T12:00:00Z","job_id":"stats-bob","rule":"stats","wildcards":{"student":"bob"},"resources":{},"dependencies":[]}
 {"event":"job_started","schema_version":1,"ts":"2026-10-08T12:00:00Z","job_id":"stats-bob","executor":"local","reason":"cache_miss"}
 {"event":"job_completed","schema_version":1,"ts":"2026-10-08T12:00:00Z","job_id":"stats-bob","duration_ms":209,"outputs":["results/bob_stats.json"]}
@@ -107,6 +107,11 @@ AI agents and each line additionally carries schema version 1 and a UTC RFC
 3339 timestamp. Scripts can parse each line independently. Use
 `--report-json <path>` to write the same stream to a file. See
 [Agent-Driven Workflows](../cookbook/agent-workflows.md) for details.
+
+Each executing invocation mints one opaque UUIDv4-based run ID. The same full
+value names its default event file and appears in state, run artifacts, and
+executor metadata. Legacy IDs remain valid exact keys. Run IDs do not sort by
+creation time; use recorded timestamps.
 
 ## DAG Visualization
 

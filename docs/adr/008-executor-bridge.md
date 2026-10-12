@@ -171,7 +171,7 @@ Every bridge writes a standard `meta.json` to `.oxymake/runs/{run_id}/`:
     "ray_address": "http://127.0.0.1:8265",
     "ray_job_id": "raysubmit_abc123"
   },
-  "run_id": "run-20250401-120000",
+  "run_id": "run-550e8400-e29b-41d4-a716-446655440000",
   "total_jobs": 100,
   "active_jobs": 75,
   "skipped_jobs": 25,

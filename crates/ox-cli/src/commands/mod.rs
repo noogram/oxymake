@@ -36,6 +36,33 @@ mod subscribe;
 mod test;
 mod translate;
 
+#[derive(Debug)]
+pub(crate) struct ReportedError;
+
+impl std::fmt::Display for ReportedError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("diagnostic already reported")
+    }
+}
+
+impl std::error::Error for ReportedError {}
+
+pub(crate) fn selector_error(code: &str, selector: &str, reason: Option<&str>) -> anyhow::Error {
+    let mut error = serde_json::json!({
+        "code": code,
+        "selector": selector,
+    });
+    if let Some(reason) = reason {
+        error["reason"] = reason.into();
+    }
+    eprintln!("{}", serde_json::json!({ "error": error }));
+    ReportedError.into()
+}
+
+pub(crate) fn exact_run_exists(db: &ox_state::db::StateDb, selector: &str) -> anyhow::Result<bool> {
+    Ok(db.list_runs()?.iter().any(|run| run.id == selector))
+}
+
 pub use cache_export::{CacheExportArgs, cmd_cache_export};
 pub use cache_import::{CacheImportArgs, cmd_cache_import};
 pub use cancel::{CancelArgs, cmd_cancel};

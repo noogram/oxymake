@@ -68,6 +68,15 @@ The `ox` binary exposes 27 subcommands today (see `crates/ox-cli/src/lib.rs`).
   (see §7).
 - **`ox cancel`**, **`ox invalidate`**, **`ox clean`** — names and the
   fact that they mutate state stable; specific flags unstable.
+
+Explicit `ox status --run ID` and `ox history --run-id ID` selectors are
+exact, case-sensitive local keys. OxyMake does not add `run-`, fold case, or
+accept unique or ambiguous prefixes. A missing selector exits 1 before path
+reads, synchronization, or remote requests. In JSON mode it writes one
+`run_not_found` diagnostic to stderr and no success payload to stdout. A known
+run with no job-history rows remains a successful selection. `ox cancel` keeps
+its job, output, rule, tag, session, and all-jobs selectors; it has no run
+selector.
 - **`ox translate`**, **`ox export`** — *names* and the positional
   `FORMAT` argument (`snakemake`, `wdl`) are stable. Promoted in 0.4.0, the
   release that chose not to touch them: the cache-adoption commands were
@@ -236,6 +245,12 @@ bump and a `CHANGELOG.md` entry.
 - Every event has an `"event"` field (string), `"schema_version": 1`, and
   a UTC RFC 3339 `"ts"` timestamp.
 - `run_started` carries `run_id`, `workflow_path`, and the planned-job count.
+  New executing invocations use one opaque 40-character
+  `run-<lowercase-hyphenated-UUIDv4>` value everywhere: the `runs.id` key,
+  event filename and payload, job/gate/DAG references, run directory, staging,
+  and executor metadata. Legacy IDs remain exact valid keys and are never
+  rewritten. IDs do not encode chronology; use `started_at` or event `ts`.
+  UUIDv4 provides practical collision resistance, not an impossibility claim.
 - `job_planned` records each candidate's id, rule, wildcards, declared
   resources, and immediate dependency job ids. Candidates are an upper bound:
   a terminal run may leave one not run when an upstream is byte-identical.

@@ -25,5 +25,6 @@ Status is the first non-empty line under each ADR's `## Status` section, verbati
 | ADR-017 | Artifact Residence Topology (Topology B) | Accepted (release-readiness review). | — | — | — |
 | ADR-018 | Differentiation After the CWL Review — Envelope, Not Primitive | Proposed | — | — | cache_validation, mtime, sqlite |
 | ADR-019 | Cross-Machine Continuation — Adoption Is the Primitive, `cache_platform` Is the Flag | Accepted (operator arbitration 2026-09-10 on delib-20260910-b20f: adoption-primitive framing kept, provenance columns block the release, issue #12 stays decoupled). | ADR-001 | — | blake3, cache_validation, mtime, state_db |
+| ADR-020 | UUIDv4 Run Identity and Exact Selection | Accepted | — | — | ray |
 
-*19 ADRs scanned. Regenerate after every ADR edit.*
+*20 ADRs scanned. Regenerate after every ADR edit.*
