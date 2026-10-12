@@ -664,6 +664,11 @@ fn register_run(
 /// writes to `state.db` for it.  Without this the state database could not
 /// answer "did this run hit the cache?" — the question issue #12 is about.
 ///
+/// Opening the database stays **best-effort**: a `state.db` that cannot be
+/// opened — a read-only checkout, a restrictive mode, a restored CI artifact —
+/// is a degraded audit trail, never a failed run. What is *not* best-effort is
+/// the run identity: `runs.id` is a primary key, so a colliding id fails
+/// registration before any job or history row attaches to it (ADR-020).
 fn record_fully_cached_run(
     state_db_path: &Path,
     run_id: &str,
@@ -673,8 +678,9 @@ fn record_fully_cached_run(
     provenance: &HashMap<String, ox_state::db::JobProvenance>,
     cached: &HashSet<JobId>,
 ) -> Result<()> {
-    let db = ox_state::db::StateDb::open(state_db_path)
-        .context("failed to open state database for cached run")?;
+    let Ok(db) = ox_state::db::StateDb::open(state_db_path) else {
+        return Ok(());
+    };
     let job_ids = job_graph.topological_order().unwrap_or_default();
     let records: Vec<ox_state::db::JobRecord> = job_ids
         .iter()

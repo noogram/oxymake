@@ -167,6 +167,50 @@ fn new_runs_preserve_legacy_rows_and_artifacts_byte_for_byte() {
     assert_eq!(db.list_runs().unwrap().len(), 2);
 }
 
+/// A `state.db` that cannot be opened is a degraded audit trail, never a
+/// failed run. The all-cached fast path is the only writer for a warm run, so
+/// it is where this contract is observable: a read-only checkout, a
+/// restrictive mode or a restored CI artifact must still let the run succeed.
+/// Run identity stays strict — `runs.id` is a primary key and a collision
+/// still fails registration (ADR-020).
+#[test]
+#[cfg(unix)]
+fn fully_cached_run_survives_an_unopenable_state_db() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = TempDir::new().unwrap();
+    fs::write(
+        dir.path().join("Oxymakefile.toml"),
+        "[rule.a]\noutput=['out.txt']\nshell='printf warm > out.txt'\n",
+    )
+    .unwrap();
+
+    // First run populates the cache and the state database.
+    ox().current_dir(dir.path()).arg("run").assert().success();
+
+    let db_path = dir.path().join(".oxymake/state.db");
+    let restore = fs::metadata(&db_path).unwrap().permissions();
+    fs::set_permissions(&db_path, fs::Permissions::from_mode(0o000)).unwrap();
+
+    // Every job is a cache hit, so this takes the fast path and is the only
+    // code that would touch state.db for this run.
+    let assertion = ox()
+        .current_dir(dir.path())
+        .arg("run")
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("up-to-date"));
+
+    fs::set_permissions(&db_path, restore).unwrap();
+    drop(assertion);
+
+    // The output the cache guaranteed is still in place.
+    assert_eq!(
+        fs::read_to_string(dir.path().join("out.txt")).unwrap(),
+        "warm"
+    );
+}
+
 /// A completed run records where each artefact was produced and whether its
 /// rule opted into cross-platform reuse. The scope column must also make all
 /// `any` entries directly enumerable for recall.
