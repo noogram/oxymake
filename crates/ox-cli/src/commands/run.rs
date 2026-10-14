@@ -1740,19 +1740,13 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
         // only on the warm path it documents.
         std::fs::create_dir_all(&oxymake_dir).ok();
         let run_id = mint_run_id();
-        record_fully_cached_run(
-            &oxymake_dir.join("state.db"),
-            &run_id,
-            &job_graph,
-            &args.executor,
-            args.note.as_deref(),
-            &prescan_provenance,
-            &cache_hits,
-        )?;
         // The fast path is still a run: persist the same ordered contract as
         // a scheduled invocation rather than returning before reporters exist.
+        // Its sinks are created before the run is recorded, like the
+        // scheduled path's: a run that cannot write its event log fails
+        // before it can appear completed in state.db.
         let events_dir = oxymake_dir.join("events");
-        std::fs::create_dir_all(&events_dir).context("failed to create events directory")?;
+        std::fs::create_dir_all(&events_dir).ok();
         let mut reporters: Vec<Box<dyn ox_core::traits::reporter::Reporter>> = vec![Box::new(
             ox_report_json::reporter::JsonReporter::new(
                 ox_report_json::reporter::AtomicEventFile::create(
@@ -1777,6 +1771,15 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
                     .with_run_context(run_id.clone(), args.file.clone()),
             ));
         }
+        record_fully_cached_run(
+            &oxymake_dir.join("state.db"),
+            &run_id,
+            &job_graph,
+            &args.executor,
+            args.note.as_deref(),
+            &prescan_provenance,
+            &cache_hits,
+        )?;
         let mut cached_events = vec![Event::RunStarted {
             total_jobs: job_count,
             to_run: 0,
@@ -1913,6 +1916,25 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
     // still need the directory for state.db.
     std::fs::create_dir_all(&oxymake_dir).ok();
 
+    // Always write events to an NDJSON log file so `ox subscribe` can tail it.
+    // Created before state.db records a session or the run, so an unwritable
+    // event directory fails the run before it is registered or does work.
+    let events_dir = oxymake_dir.join("events");
+    std::fs::create_dir_all(&events_dir).ok();
+    let event_log_path = events_dir.join(format!("{}.ndjson", ctx.run_id));
+    let event_log_file = ox_report_json::reporter::AtomicEventFile::create(&event_log_path)
+        .context("failed to create event log file")?;
+
+    // Create the --report-json file up front so an unwritable path fails
+    // the run immediately, not after the work is done (H28).
+    let report_json_file = match args.report_json {
+        Some(ref path) => Some(
+            std::fs::File::create(path)
+                .with_context(|| format!("failed to create report file: {path}"))?,
+        ),
+        None => None,
+    };
+
     // Open state database for job persistence.
     let state_db_path = oxymake_dir.join("state.db");
     let state_db = match ox_state::db::StateDb::open(&state_db_path) {
@@ -2039,23 +2061,6 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
     let scheduler_cache: Option<Arc<dyn CacheCheck>> = scheduler_cache_impl
         .clone()
         .map(|sc| sc as Arc<dyn CacheCheck>);
-
-    // Always write events to an NDJSON log file so `ox subscribe` can tail it.
-    let events_dir = oxymake_dir.join("events");
-    std::fs::create_dir_all(&events_dir).ok();
-    let event_log_path = events_dir.join(format!("{}.ndjson", ctx.run_id));
-    let event_log_file = ox_report_json::reporter::AtomicEventFile::create(&event_log_path)
-        .context("failed to create event log file")?;
-
-    // Create the --report-json file up front so an unwritable path fails
-    // the run immediately, not after the work is done (H28).
-    let report_json_file = match args.report_json {
-        Some(ref path) => Some(
-            std::fs::File::create(path)
-                .with_context(|| format!("failed to create report file: {path}"))?,
-        ),
-        None => None,
-    };
 
     // Collect per-job duration_ms from events for the audit trail (ox-mnbb).
     let job_durations: Arc<Mutex<HashMap<String, u64>>> = Arc::new(Mutex::new(HashMap::new()));

@@ -263,6 +263,57 @@ fn runs_survive_a_read_only_state_db() {
     );
 }
 
+/// The scheduled path refuses to start when its event log cannot be created,
+/// so an unwritable `.oxymake/events` fails both paths alike, and before the
+/// run is recorded: a run that exits 1 must not appear completed in state.db,
+/// and no job may have executed.
+#[test]
+#[cfg(unix)]
+fn unwritable_event_dir_fails_both_paths_before_recording_the_run() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = TempDir::new().unwrap();
+    fs::write(
+        dir.path().join("Oxymakefile.toml"),
+        "[rule.a]\noutput=['out.txt']\nshell='printf x >> runs.log; printf warm > out.txt'\n",
+    )
+    .unwrap();
+    ox().current_dir(dir.path()).arg("run").assert().success();
+
+    let events = dir.path().join(".oxymake/events");
+    let restore = fs::metadata(&events).unwrap().permissions();
+    fs::set_permissions(&events, fs::Permissions::from_mode(0o555)).unwrap();
+
+    let cached = ox().current_dir(dir.path()).arg("run").output().unwrap();
+    let scheduled = ox()
+        .current_dir(dir.path())
+        .args(["run", "--forcerun", "a"])
+        .output()
+        .unwrap();
+
+    fs::set_permissions(&events, restore).unwrap();
+
+    for (path, output) in [("cached", &cached), ("scheduled", &scheduled)] {
+        assert!(!output.status.success(), "{path} run should fail");
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("event log"),
+            "{path} run names the cause: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    let db = ox_state::db::StateDb::open(&dir.path().join(".oxymake/state.db")).unwrap();
+    assert_eq!(
+        db.list_runs().unwrap().len(),
+        1,
+        "no failed run is recorded"
+    );
+    assert_eq!(
+        fs::read_to_string(dir.path().join("runs.log")).unwrap(),
+        "x",
+        "the job did not execute again"
+    );
+}
+
 /// A completed run records where each artefact was produced and whether its
 /// rule opted into cross-platform reuse. The scope column must also make all
 /// `any` entries directly enumerable for recall.
