@@ -154,6 +154,18 @@ struct Envelope<T: Serialize> {
     payload: T,
 }
 
+/// Serialize an event that the CLI builds outside the [`Event`] model
+/// (`dry_run_*`, `run_submitted`, `run_follow_stopped`) as one NDJSON line,
+/// with the same `schema_version` and `ts` envelope as reporter events.
+pub fn envelope_line(payload: &Value) -> String {
+    serde_json::to_string(&Envelope {
+        schema_version: 1,
+        ts: utc_timestamp(),
+        payload,
+    })
+    .expect("a JSON value always serializes")
+}
+
 fn utc_timestamp() -> String {
     // Civil-date conversion for UTC Unix seconds.  This avoids making the
     // reporting crate depend on a time library solely to format one field.

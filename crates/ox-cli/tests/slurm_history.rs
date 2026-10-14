@@ -157,3 +157,52 @@ fn slurm_follow_cancellation_does_not_record_memory() {
         false,
     );
 }
+
+/// A fire-and-forget submission ends with `run_submitted`, which carries the
+/// same envelope as every other event of the stream.
+#[test]
+fn run_submitted_carries_the_event_envelope() {
+    let dir = TempDir::new().unwrap();
+    let bin = dir.path().join("bin");
+    fs::create_dir(&bin).unwrap();
+    script(&bin, "sinfo", "echo 'slurm 24.11'");
+    script(&bin, "sbatch", "echo 42");
+    fs::write(
+        dir.path().join("Oxymakefile.toml"),
+        format!(
+            r#"ox_version = "0.1"
+[executor.slurm]
+staging_dir = "{}"
+[rule.work]
+output = ["result.txt"]
+shell = "echo done > result.txt"
+"#,
+            dir.path().join("staging").display()
+        ),
+    )
+    .unwrap();
+    let path = std::env::join_paths(
+        std::iter::once(bin).chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
+    )
+    .unwrap();
+    let output = Command::cargo_bin("ox")
+        .unwrap()
+        .args(["run", "--executor", "slurm", "--json", "--no-cache"])
+        .current_dir(dir.path())
+        .env("PATH", path)
+        .timeout(Duration::from_secs(30))
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let submitted: serde_json::Value = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .find(|event| event["event"] == "run_submitted")
+        .expect("submission ends with run_submitted");
+    assert_eq!(submitted["schema_version"], 1);
+    assert!(submitted["ts"].as_str().is_some_and(|ts| ts.ends_with('Z')));
+}

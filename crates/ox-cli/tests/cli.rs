@@ -1393,6 +1393,15 @@ shell = "cat data/{sample}.csv > results/{sample}.txt"
         .map(|l| serde_json::from_str(l).expect("each line should be valid JSON"))
         .collect();
 
+    // Every line carries the same envelope as the run event stream.
+    for line in &lines {
+        assert_eq!(line["schema_version"], 1, "{line}");
+        assert!(
+            line["ts"].as_str().is_some_and(|ts| ts.ends_with('Z')),
+            "{line}"
+        );
+    }
+
     // First line: dry_run_summary
     assert_eq!(lines[0]["event"], "dry_run_summary");
     assert_eq!(lines[0]["total_jobs"], 1);

@@ -132,6 +132,8 @@ async fn both_commands_report_endpoint_loss_without_success() {
                 .expect("stopped follow must emit its distinct terminal outcome");
             assert!(!events.iter().any(|event| event["event"] == "run_completed"));
             assert_eq!(event["reason"], "endpoint_unreachable");
+            assert_eq!(event["schema_version"], 1);
+            assert!(event["ts"].as_str().is_some_and(|ts| ts.ends_with('Z')));
             assert_eq!(event["exit_code"], 1);
             assert_eq!(event["failed"], 0);
         }
@@ -269,6 +271,8 @@ async fn interrupt_in_flight(ray: bool, cancel_fails: bool) {
             .find(|e| e["event"] == "run_follow_stopped")
             .unwrap();
         assert_eq!(event["reason"], "interrupted");
+        assert_eq!(event["schema_version"], 1);
+        assert!(event["ts"].as_str().is_some_and(|ts| ts.ends_with('Z')));
         assert_eq!(event["exit_code"], 130);
         assert!(!events.iter().any(|e| e["event"] == "run_completed"));
         if cancel_fails {

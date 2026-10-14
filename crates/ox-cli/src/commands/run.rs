@@ -1414,7 +1414,7 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
                 "total_jobs": effective_count,
                 "total_targets": targets.len(),
             });
-            println!("{}", summary);
+            println!("{}", ox_report_json::reporter::envelope_line(&summary));
             if let Ok(topo) = job_graph.topological_order() {
                 for job_id in topo {
                     if selective_skip.contains(job_id) {
@@ -1451,7 +1451,7 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
                             "inputs": inputs,
                             "execution": &job.execution,
                         });
-                        println!("{}", job_event);
+                        println!("{}", ox_report_json::reporter::envelope_line(&job_event));
                     }
                 }
             }
@@ -2902,13 +2902,13 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
                 if args.json {
                     println!(
                         "{}",
-                        serde_json::json!({
+                        ox_report_json::reporter::envelope_line(&serde_json::json!({
                             "event": "run_follow_stopped", "executor": args.executor,
                             "reason": if stop.exit_code() == 130 { "interrupted" } else { "endpoint_unreachable" },
                             "message": message, "exit_code": stop.exit_code(),
                             "succeeded": sched_result.succeeded, "failed": sched_result.failed,
                             "skipped": sched_result.skipped,
-                        })
+                        }))
                     );
                 } else {
                     println!("{message}");
@@ -2939,7 +2939,7 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
                         "cached_jobs": sched_result.skipped,
                         "total_jobs": sched_result.total_jobs,
                     });
-                    println!("{}", summary);
+                    println!("{}", ox_report_json::reporter::envelope_line(&summary));
                 } else {
                     println!(
                         "Submitted: {} job(s) to {} ({} cached, {} total)",
