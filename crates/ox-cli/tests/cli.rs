@@ -211,6 +211,109 @@ fn fully_cached_run_survives_an_unopenable_state_db() {
     );
 }
 
+/// A read-only `state.db` opens, then refuses the run registration with
+/// "attempt to write a readonly database". That is a degraded audit trail like
+/// an unopenable database, not a run-identity collision (ADR-020), so neither
+/// the all-cached fast path nor the scheduled path may fail on it.
+#[test]
+#[cfg(unix)]
+fn runs_survive_a_read_only_state_db() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = TempDir::new().unwrap();
+    fs::write(
+        dir.path().join("Oxymakefile.toml"),
+        "[rule.a]\noutput=['out.txt']\nshell='printf warm > out.txt'\n",
+    )
+    .unwrap();
+    ox().current_dir(dir.path()).arg("run").assert().success();
+
+    let db_path = dir.path().join(".oxymake/state.db");
+    let restore = fs::metadata(&db_path).unwrap().permissions();
+    fs::set_permissions(&db_path, fs::Permissions::from_mode(0o444)).unwrap();
+
+    let cached = ox().current_dir(dir.path()).arg("run").output().unwrap();
+    // `--forcerun` sends the job through the scheduler.
+    let scheduled = ox()
+        .current_dir(dir.path())
+        .args(["run", "--forcerun", "a"])
+        .output()
+        .unwrap();
+
+    fs::set_permissions(&db_path, restore).unwrap();
+
+    assert!(
+        cached.status.success(),
+        "cached run failed: {}",
+        String::from_utf8_lossy(&cached.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&cached.stdout).contains("up-to-date"),
+        "the second run should take the all-cached fast path"
+    );
+    assert!(
+        scheduled.status.success(),
+        "scheduled run failed: {}",
+        String::from_utf8_lossy(&scheduled.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&scheduled.stderr);
+    assert!(
+        stderr.contains("warning"),
+        "degradation is reported: {stderr}"
+    );
+}
+
+/// The scheduled path refuses to start when its event log cannot be created,
+/// so an unwritable `.oxymake/events` fails both paths alike, and before the
+/// run is recorded: a run that exits 1 must not appear completed in state.db,
+/// and no job may have executed.
+#[test]
+#[cfg(unix)]
+fn unwritable_event_dir_fails_both_paths_before_recording_the_run() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = TempDir::new().unwrap();
+    fs::write(
+        dir.path().join("Oxymakefile.toml"),
+        "[rule.a]\noutput=['out.txt']\nshell='printf x >> runs.log; printf warm > out.txt'\n",
+    )
+    .unwrap();
+    ox().current_dir(dir.path()).arg("run").assert().success();
+
+    let events = dir.path().join(".oxymake/events");
+    let restore = fs::metadata(&events).unwrap().permissions();
+    fs::set_permissions(&events, fs::Permissions::from_mode(0o555)).unwrap();
+
+    let cached = ox().current_dir(dir.path()).arg("run").output().unwrap();
+    let scheduled = ox()
+        .current_dir(dir.path())
+        .args(["run", "--forcerun", "a"])
+        .output()
+        .unwrap();
+
+    fs::set_permissions(&events, restore).unwrap();
+
+    for (path, output) in [("cached", &cached), ("scheduled", &scheduled)] {
+        assert!(!output.status.success(), "{path} run should fail");
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("event log"),
+            "{path} run names the cause: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    let db = ox_state::db::StateDb::open(&dir.path().join(".oxymake/state.db")).unwrap();
+    assert_eq!(
+        db.list_runs().unwrap().len(),
+        1,
+        "no failed run is recorded"
+    );
+    assert_eq!(
+        fs::read_to_string(dir.path().join("runs.log")).unwrap(),
+        "x",
+        "the job did not execute again"
+    );
+}
+
 /// A completed run records where each artefact was produced and whether its
 /// rule opted into cross-platform reuse. The scope column must also make all
 /// `any` entries directly enumerable for recall.
@@ -1289,6 +1392,15 @@ shell = "cat data/{sample}.csv > results/{sample}.txt"
         .lines()
         .map(|l| serde_json::from_str(l).expect("each line should be valid JSON"))
         .collect();
+
+    // Every line carries the same envelope as the run event stream.
+    for line in &lines {
+        assert_eq!(line["schema_version"], 1, "{line}");
+        assert!(
+            line["ts"].as_str().is_some_and(|ts| ts.ends_with('Z')),
+            "{line}"
+        );
+    }
 
     // First line: dry_run_summary
     assert_eq!(lines[0]["event"], "dry_run_summary");
@@ -4329,6 +4441,86 @@ shell = "mkdir -p results && cp data/{sample}.csv results/{sample}.txt"
         content.lines().any(|l| l.contains("run_started")),
         "report must contain run_started"
     );
+}
+
+const CACHED_CHAIN: &str = r#"[rule.all]
+input = ["second.txt"]
+
+[rule.first]
+output = ["first.txt"]
+shell = "printf 1 > first.txt"
+
+[rule.second]
+input = ["first.txt"]
+output = ["second.txt"]
+shell = "cat first.txt > second.txt"
+"#;
+
+fn cached_run_events(dir: &std::path::Path, extra: &[&str]) -> Vec<serde_json::Value> {
+    let output = ox()
+        .args(["run", "--json"])
+        .args(extra)
+        .current_dir(dir)
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    String::from_utf8(output.stdout)
+        .unwrap()
+        .lines()
+        .filter(|line| line.starts_with('{'))
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect()
+}
+
+/// The all-cached fast path emits the scheduler's order: every `job_planned`
+/// right after `run_started`, before any job settles.
+#[test]
+fn fully_cached_run_plans_every_job_before_skipping_any() {
+    let dir = TempDir::new().unwrap();
+    fs::write(dir.path().join("Oxymakefile.toml"), CACHED_CHAIN).unwrap();
+    ox().arg("run").current_dir(dir.path()).assert().success();
+
+    let events: Vec<String> = cached_run_events(dir.path(), &[])
+        .iter()
+        .map(|line| line["event"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(
+        events,
+        [
+            "run_started",
+            "job_planned",
+            "job_planned",
+            "job_skipped",
+            "job_skipped",
+            "run_completed"
+        ]
+    );
+}
+
+/// `all_cached` means every skipped job was a cache hit. A job excluded by
+/// `--until` or `--omit-from` was skipped without being a hit, so a run whose
+/// other jobs were all cached is a plain `success`.
+#[test]
+fn not_selected_skips_do_not_make_a_run_all_cached() {
+    let dir = TempDir::new().unwrap();
+    fs::write(dir.path().join("Oxymakefile.toml"), CACHED_CHAIN).unwrap();
+    ox().arg("run").current_dir(dir.path()).assert().success();
+
+    for selector in [["--until", "first"], ["--omit-from", "second"]] {
+        let events = cached_run_events(dir.path(), &selector);
+        let skips: Vec<&str> = events
+            .iter()
+            .filter(|line| line["event"] == "job_skipped")
+            .map(|line| line["reason"].as_str().unwrap())
+            .collect();
+        assert_eq!(skips, ["cached", "not selected"], "{selector:?}");
+        let terminal = events.last().unwrap();
+        assert_eq!(terminal["event"], "run_completed");
+        assert_eq!(terminal["status"], "success", "{selector:?}");
+    }
+
+    let all_hits = cached_run_events(dir.path(), &[]);
+    assert_eq!(all_hits.last().unwrap()["status"], "all_cached");
 }
 
 #[test]

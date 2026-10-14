@@ -76,6 +76,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Schema-2 resource values must be integers, floats, or strings. Class alias
   errors name the source file, and schema-1 files warn when class declarations
   or references are ignored (#43).
+- The unstable Rust `ox_core::model::Event` enum gains a `JobPlanned` variant;
+  downstream exhaustive `match` expressions must handle it.
+- The `dry_run_summary`, `dry_run_job`, `run_submitted`, and
+  `run_follow_stopped` NDJSON lines now carry `schema_version` and `ts` like
+  every other event.
 
 ### Fixed
 - Class overrides keep the inherited resource spelling, so a rule's `cpus`

@@ -648,14 +648,30 @@ fn mint_run_id() -> String {
 }
 
 /// Register a run before any jobs or history can refer to it.
+///
+/// Only a constraint violation is fatal: `runs.id` is a primary key, so a
+/// colliding id must stop the run before any row attaches to it (ADR-020).
+/// Any other failure — a read-only `state.db`, a full disk — is a degraded
+/// audit trail, reported and tolerated like the job and history writes.
 fn register_run(
     db: &ox_state::db::StateDb,
     run_id: &str,
     job_count: usize,
     note: Option<&str>,
 ) -> Result<()> {
-    db.begin_run(run_id, None, job_count, note)
-        .with_context(|| format!("failed to register new run identity '{run_id}'"))
+    match db.begin_run(run_id, None, job_count, note) {
+        Ok(()) => Ok(()),
+        Err(e) if e.is_constraint_violation() => {
+            Err(e).with_context(|| format!("failed to register new run identity '{run_id}'"))
+        }
+        Err(e) => {
+            eprintln!(
+                "warning: could not record run '{run_id}' in state.db ({e}); \
+                 status/history will not include it"
+            );
+            Ok(())
+        }
+    }
 }
 
 /// Record a run in which every job was a cache hit.
@@ -1398,7 +1414,7 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
                 "total_jobs": effective_count,
                 "total_targets": targets.len(),
             });
-            println!("{}", summary);
+            println!("{}", ox_report_json::reporter::envelope_line(&summary));
             if let Ok(topo) = job_graph.topological_order() {
                 for job_id in topo {
                     if selective_skip.contains(job_id) {
@@ -1435,7 +1451,7 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
                             "inputs": inputs,
                             "execution": &job.execution,
                         });
-                        println!("{}", job_event);
+                        println!("{}", ox_report_json::reporter::envelope_line(&job_event));
                     }
                 }
             }
@@ -1724,19 +1740,13 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
         // only on the warm path it documents.
         std::fs::create_dir_all(&oxymake_dir).ok();
         let run_id = mint_run_id();
-        record_fully_cached_run(
-            &oxymake_dir.join("state.db"),
-            &run_id,
-            &job_graph,
-            &args.executor,
-            args.note.as_deref(),
-            &prescan_provenance,
-            &cache_hits,
-        )?;
         // The fast path is still a run: persist the same ordered contract as
         // a scheduled invocation rather than returning before reporters exist.
+        // Its sinks are created before the run is recorded, like the
+        // scheduled path's: a run that cannot write its event log fails
+        // before it can appear completed in state.db.
         let events_dir = oxymake_dir.join("events");
-        std::fs::create_dir_all(&events_dir).context("failed to create events directory")?;
+        std::fs::create_dir_all(&events_dir).ok();
         let mut reporters: Vec<Box<dyn ox_core::traits::reporter::Reporter>> = vec![Box::new(
             ox_report_json::reporter::JsonReporter::new(
                 ox_report_json::reporter::AtomicEventFile::create(
@@ -1761,30 +1771,42 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
                     .with_run_context(run_id.clone(), args.file.clone()),
             ));
         }
+        record_fully_cached_run(
+            &oxymake_dir.join("state.db"),
+            &run_id,
+            &job_graph,
+            &args.executor,
+            args.note.as_deref(),
+            &prescan_provenance,
+            &cache_hits,
+        )?;
         let mut cached_events = vec![Event::RunStarted {
             total_jobs: job_count,
             to_run: 0,
             cached: cached_count,
         }];
-        for job_id in job_graph.topological_order().unwrap_or_default() {
+        // Same order as the scheduler: every candidate is planned before
+        // any of them settles.
+        let topo_order = job_graph.topological_order().unwrap_or_default();
+        for job_id in &topo_order {
             let job = job_graph.get_job(job_id).expect("planned graph job");
             cached_events.push(Event::JobPlanned {
-                job_id: job_id.clone(),
+                job_id: (*job_id).clone(),
                 rule: job.rule.clone(),
                 wildcards: job.wildcards.clone(),
                 resources: job.resources.clone(),
                 dependencies: job_graph.upstream(job_id).into_iter().cloned().collect(),
             });
-            if skip_jobs.contains(job_id) {
-                cached_events.push(Event::JobSkipped {
-                    job_id: (*job_id).clone(),
-                    reason: if cache_hits.contains(&job.id) {
-                        "cached".into()
-                    } else {
-                        "not selected".into()
-                    },
-                });
-            }
+        }
+        for job_id in topo_order.into_iter().filter(|id| skip_jobs.contains(*id)) {
+            cached_events.push(Event::JobSkipped {
+                job_id: job_id.clone(),
+                reason: if cache_hits.contains(job_id) {
+                    "cached".into()
+                } else {
+                    "not selected".into()
+                },
+            });
         }
         cached_events.push(Event::RunCompleted {
             total: job_count,
@@ -1896,6 +1918,25 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
     // enabled, but with --no-cache (or any executor, including slurm) we
     // still need the directory for state.db.
     std::fs::create_dir_all(&oxymake_dir).ok();
+
+    // Always write events to an NDJSON log file so `ox subscribe` can tail it.
+    // Created before state.db records a session or the run, so an unwritable
+    // event directory fails the run before it is registered or does work.
+    let events_dir = oxymake_dir.join("events");
+    std::fs::create_dir_all(&events_dir).ok();
+    let event_log_path = events_dir.join(format!("{}.ndjson", ctx.run_id));
+    let event_log_file = ox_report_json::reporter::AtomicEventFile::create(&event_log_path)
+        .context("failed to create event log file")?;
+
+    // Create the --report-json file up front so an unwritable path fails
+    // the run immediately, not after the work is done (H28).
+    let report_json_file = match args.report_json {
+        Some(ref path) => Some(
+            std::fs::File::create(path)
+                .with_context(|| format!("failed to create report file: {path}"))?,
+        ),
+        None => None,
+    };
 
     // Open state database for job persistence.
     let state_db_path = oxymake_dir.join("state.db");
@@ -2023,23 +2064,6 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
     let scheduler_cache: Option<Arc<dyn CacheCheck>> = scheduler_cache_impl
         .clone()
         .map(|sc| sc as Arc<dyn CacheCheck>);
-
-    // Always write events to an NDJSON log file so `ox subscribe` can tail it.
-    let events_dir = oxymake_dir.join("events");
-    std::fs::create_dir_all(&events_dir).ok();
-    let event_log_path = events_dir.join(format!("{}.ndjson", ctx.run_id));
-    let event_log_file = ox_report_json::reporter::AtomicEventFile::create(&event_log_path)
-        .context("failed to create event log file")?;
-
-    // Create the --report-json file up front so an unwritable path fails
-    // the run immediately, not after the work is done (H28).
-    let report_json_file = match args.report_json {
-        Some(ref path) => Some(
-            std::fs::File::create(path)
-                .with_context(|| format!("failed to create report file: {path}"))?,
-        ),
-        None => None,
-    };
 
     // Collect per-job duration_ms from events for the audit trail (ox-mnbb).
     let job_durations: Arc<Mutex<HashMap<String, u64>>> = Arc::new(Mutex::new(HashMap::new()));
@@ -2878,13 +2902,13 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
                 if args.json {
                     println!(
                         "{}",
-                        serde_json::json!({
+                        ox_report_json::reporter::envelope_line(&serde_json::json!({
                             "event": "run_follow_stopped", "executor": args.executor,
                             "reason": if stop.exit_code() == 130 { "interrupted" } else { "endpoint_unreachable" },
                             "message": message, "exit_code": stop.exit_code(),
                             "succeeded": sched_result.succeeded, "failed": sched_result.failed,
                             "skipped": sched_result.skipped,
-                        })
+                        }))
                     );
                 } else {
                     println!("{message}");
@@ -2915,7 +2939,7 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
                         "cached_jobs": sched_result.skipped,
                         "total_jobs": sched_result.total_jobs,
                     });
-                    println!("{}", summary);
+                    println!("{}", ox_report_json::reporter::envelope_line(&summary));
                 } else {
                     println!(
                         "Submitted: {} job(s) to {} ({} cached, {} total)",

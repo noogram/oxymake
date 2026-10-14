@@ -68,6 +68,13 @@ The `ox` binary exposes 27 subcommands today (see `crates/ox-cli/src/lib.rs`).
   (see §7).
 - **`ox cancel`**, **`ox invalidate`**, **`ox clean`** — names and the
   fact that they mutate state stable; specific flags unstable.
+- **`ox translate`**, **`ox export`** — *names* and the positional
+  `FORMAT` argument (`snakemake`, `wdl`) are stable. Promoted in 0.4.0, the
+  release that chose not to touch them: the cache-adoption commands were
+  named `cache-export` / `cache-import` precisely so that `ox export` keeps
+  its one meaning (ADR-019 amendment). Output shape is unstable.
+- Global flags: `--color {auto,always,never}` is stable. `--version` is
+  stable (Cargo guarantee).
 
 Explicit `ox status --run ID` and `ox history --run-id ID` selectors are
 exact, case-sensitive local keys. OxyMake does not add `run-`, fold case, or
@@ -77,13 +84,6 @@ reads, synchronization, or remote requests. In JSON mode it writes one
 run with no job-history rows remains a successful selection. `ox cancel` keeps
 its job, output, rule, tag, session, and all-jobs selectors; it has no run
 selector.
-- **`ox translate`**, **`ox export`** — *names* and the positional
-  `FORMAT` argument (`snakemake`, `wdl`) are stable. Promoted in 0.4.0, the
-  release that chose not to touch them: the cache-adoption commands were
-  named `cache-export` / `cache-import` precisely so that `ox export` keeps
-  its one meaning (ADR-019 amendment). Output shape is unstable.
-- Global flags: `--color {auto,always,never}` is stable. `--version` is
-  stable (Cargo guarantee).
 
 ### Unstable
 
@@ -258,7 +258,9 @@ bump and a `CHANGELOG.md` entry.
 - `run_completed` always carries `total`, `succeeded`, `failed`, `skipped`,
   and `duration_ms`; `run_summary` carries the same counts with `total_jobs`
   instead of `total`. `run_completed` also carries terminal `status`
-  (`success`, `all_cached`, `failed`, or `interrupted`).
+  (`success`, `all_cached`, `failed`, or `interrupted`). `all_cached` means
+  nothing ran and every skipped job was a cache hit; a run whose other skips
+  are jobs excluded by `--until` / `--omit-from` is `success`.
 
 ### Unstable
 
