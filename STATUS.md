@@ -258,7 +258,9 @@ bump and a `CHANGELOG.md` entry.
 - `run_completed` always carries `total`, `succeeded`, `failed`, `skipped`,
   and `duration_ms`; `run_summary` carries the same counts with `total_jobs`
   instead of `total`. `run_completed` also carries terminal `status`
-  (`success`, `all_cached`, `failed`, or `interrupted`).
+  (`success`, `all_cached`, `failed`, or `interrupted`). `all_cached` means
+  nothing ran and every skipped job was a cache hit; a run whose other skips
+  are jobs excluded by `--until` / `--omit-from` is `success`.
 
 ### Unstable
 

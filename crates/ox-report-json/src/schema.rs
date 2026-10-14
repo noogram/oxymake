@@ -149,6 +149,10 @@
 //! | `duration_ms` | `u64` | Total wall-clock duration in ms    |
 //! | `status`      | `string` | `success`, `all_cached`, `failed`, or `interrupted` |
 //!
+//! `all_cached` means nothing ran and every skipped job was a cache hit
+//! (`job_skipped` with reason `cached`). A run that executed nothing because
+//! the remaining jobs were excluded by `--until` / `--omit-from` is `success`.
+//!
 //! ## `run_failed`
 //!
 //! Emitted when the run fails due to an unrecoverable error.

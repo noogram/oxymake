@@ -4488,6 +4488,32 @@ fn fully_cached_run_plans_every_job_before_skipping_any() {
     );
 }
 
+/// `all_cached` means every skipped job was a cache hit. A job excluded by
+/// `--until` or `--omit-from` was skipped without being a hit, so a run whose
+/// other jobs were all cached is a plain `success`.
+#[test]
+fn not_selected_skips_do_not_make_a_run_all_cached() {
+    let dir = TempDir::new().unwrap();
+    fs::write(dir.path().join("Oxymakefile.toml"), CACHED_CHAIN).unwrap();
+    ox().arg("run").current_dir(dir.path()).assert().success();
+
+    for selector in [["--until", "first"], ["--omit-from", "second"]] {
+        let events = cached_run_events(dir.path(), &selector);
+        let skips: Vec<&str> = events
+            .iter()
+            .filter(|line| line["event"] == "job_skipped")
+            .map(|line| line["reason"].as_str().unwrap())
+            .collect();
+        assert_eq!(skips, ["cached", "not selected"], "{selector:?}");
+        let terminal = events.last().unwrap();
+        assert_eq!(terminal["event"], "run_completed");
+        assert_eq!(terminal["status"], "success", "{selector:?}");
+    }
+
+    let all_hits = cached_run_events(dir.path(), &[]);
+    assert_eq!(all_hits.last().unwrap()["status"], "all_cached");
+}
+
 #[test]
 fn default_event_log_records_plans_and_the_all_cached_terminal_outcome() {
     let dir = TempDir::new().unwrap();

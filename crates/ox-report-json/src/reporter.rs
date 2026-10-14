@@ -25,7 +25,7 @@ use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::{
     Mutex,
-    atomic::{AtomicU64, Ordering},
+    atomic::{AtomicU64, AtomicUsize, Ordering},
 };
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -230,6 +230,9 @@ pub struct JsonReporter<W: Write + Send> {
     /// The output sink, protected by a mutex for thread-safe writes.
     writer: Mutex<W>,
     run_context: Option<RunContext>,
+    /// `job_skipped` events seen with reason `cached`. `all_cached` requires
+    /// every skip counted by `run_completed` to be one of these.
+    cache_hit_skips: AtomicUsize,
 }
 
 #[derive(Clone)]
@@ -248,6 +251,7 @@ impl<W: Write + Send> JsonReporter<W> {
         Self {
             writer: Mutex::new(writer),
             run_context: None,
+            cache_hit_skips: AtomicUsize::new(0),
         }
     }
 
@@ -286,6 +290,11 @@ impl<W: Write + Send + 'static> Reporter for JsonReporter<W> {
                     return;
                 }
             };
+            if let Event::JobSkipped { reason, .. } = event {
+                if reason == "cached" {
+                    self.cache_hit_skips.fetch_add(1, Ordering::Relaxed);
+                }
+            }
             if matches!(event, Event::RunStarted { .. }) {
                 if let (Some(context), Value::Object(object)) = (&self.run_context, &mut payload) {
                     object.insert("run_id".into(), Value::String(context.run_id.clone()));
@@ -310,7 +319,10 @@ impl<W: Write + Send + 'static> Reporter for JsonReporter<W> {
                     "failed"
                 } else if *cancelled > 0 {
                     "interrupted"
-                } else if *succeeded == 0 && *skipped > 0 {
+                } else if *succeeded == 0
+                    && *skipped > 0
+                    && self.cache_hit_skips.load(Ordering::Relaxed) == *skipped
+                {
                     "all_cached"
                 } else {
                     "success"
