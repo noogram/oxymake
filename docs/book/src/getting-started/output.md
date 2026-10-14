@@ -92,6 +92,8 @@ ox run --json
 ```json
 {"event":"run_started","schema_version":1,"ts":"2026-10-08T12:00:00Z","run_id":"run-550e8400-e29b-41d4-a716-446655440000","workflow_path":"Oxymakefile.toml","total_jobs":3,"to_run":3,"cached":0}
 {"event":"job_planned","schema_version":1,"ts":"2026-10-08T12:00:00Z","job_id":"stats-bob","rule":"stats","wildcards":{"student":"bob"},"resources":{},"dependencies":[]}
+{"event":"job_planned","schema_version":1,"ts":"2026-10-08T12:00:00Z","job_id":"stats-alice","rule":"stats","wildcards":{"student":"alice"},"resources":{},"dependencies":[]}
+{"event":"job_planned","schema_version":1,"ts":"2026-10-08T12:00:00Z","job_id":"summary","rule":"summary","wildcards":{},"resources":{},"dependencies":["stats-alice","stats-bob"]}
 {"event":"job_started","schema_version":1,"ts":"2026-10-08T12:00:00Z","job_id":"stats-bob","executor":"local","reason":"cache_miss"}
 {"event":"job_completed","schema_version":1,"ts":"2026-10-08T12:00:00Z","job_id":"stats-bob","duration_ms":209,"outputs":["results/bob_stats.json"]}
 {"event":"job_started","schema_version":1,"ts":"2026-10-08T12:00:00Z","job_id":"stats-alice","executor":"local","reason":"cache_miss"}
@@ -102,11 +104,17 @@ ox run --json
 ```
 
 Each event carries an `event` discriminant (`run_started`, `job_planned`,
-`job_started`, `job_completed`, `run_completed`). This format is designed for
-AI agents and each line additionally carries schema version 1 and a UTC RFC
-3339 timestamp. Scripts can parse each line independently. Use
+`job_started`, `job_completed`, `run_completed`), a `schema_version` (`1`) and
+a UTC RFC 3339 `ts` timestamp. Every planned job gets its `job_planned` line
+right after `run_started`, before any job starts or is skipped. The format is
+designed for AI agents and scripts: each line parses independently. Use
 `--report-json <path>` to write the same stream to a file. See
 [Agent-Driven Workflows](../cookbook/agent-workflows.md) for details.
+
+Every executing run, fully cached runs included, also writes this stream to
+`.oxymake/events/<run-id>.ndjson`. The file is created before the run is
+recorded or any job starts: if it cannot be created (for example, the
+directory is not writable), `ox run` exits 1 without recording the run.
 
 Each executing invocation mints one opaque UUIDv4-based run ID. The same full
 value names its default event file and appears in state, run artifacts, and
