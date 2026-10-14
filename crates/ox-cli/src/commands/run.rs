@@ -648,14 +648,30 @@ fn mint_run_id() -> String {
 }
 
 /// Register a run before any jobs or history can refer to it.
+///
+/// Only a constraint violation is fatal: `runs.id` is a primary key, so a
+/// colliding id must stop the run before any row attaches to it (ADR-020).
+/// Any other failure — a read-only `state.db`, a full disk — is a degraded
+/// audit trail, reported and tolerated like the job and history writes.
 fn register_run(
     db: &ox_state::db::StateDb,
     run_id: &str,
     job_count: usize,
     note: Option<&str>,
 ) -> Result<()> {
-    db.begin_run(run_id, None, job_count, note)
-        .with_context(|| format!("failed to register new run identity '{run_id}'"))
+    match db.begin_run(run_id, None, job_count, note) {
+        Ok(()) => Ok(()),
+        Err(e) if e.is_constraint_violation() => {
+            Err(e).with_context(|| format!("failed to register new run identity '{run_id}'"))
+        }
+        Err(e) => {
+            eprintln!(
+                "warning: could not record run '{run_id}' in state.db ({e}); \
+                 status/history will not include it"
+            );
+            Ok(())
+        }
+    }
 }
 
 /// Record a run in which every job was a cache hit.

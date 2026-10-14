@@ -211,6 +211,58 @@ fn fully_cached_run_survives_an_unopenable_state_db() {
     );
 }
 
+/// A read-only `state.db` opens, then refuses the run registration with
+/// "attempt to write a readonly database". That is a degraded audit trail like
+/// an unopenable database, not a run-identity collision (ADR-020), so neither
+/// the all-cached fast path nor the scheduled path may fail on it.
+#[test]
+#[cfg(unix)]
+fn runs_survive_a_read_only_state_db() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = TempDir::new().unwrap();
+    fs::write(
+        dir.path().join("Oxymakefile.toml"),
+        "[rule.a]\noutput=['out.txt']\nshell='printf warm > out.txt'\n",
+    )
+    .unwrap();
+    ox().current_dir(dir.path()).arg("run").assert().success();
+
+    let db_path = dir.path().join(".oxymake/state.db");
+    let restore = fs::metadata(&db_path).unwrap().permissions();
+    fs::set_permissions(&db_path, fs::Permissions::from_mode(0o444)).unwrap();
+
+    let cached = ox().current_dir(dir.path()).arg("run").output().unwrap();
+    // `--forcerun` sends the job through the scheduler.
+    let scheduled = ox()
+        .current_dir(dir.path())
+        .args(["run", "--forcerun", "a"])
+        .output()
+        .unwrap();
+
+    fs::set_permissions(&db_path, restore).unwrap();
+
+    assert!(
+        cached.status.success(),
+        "cached run failed: {}",
+        String::from_utf8_lossy(&cached.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&cached.stdout).contains("up-to-date"),
+        "the second run should take the all-cached fast path"
+    );
+    assert!(
+        scheduled.status.success(),
+        "scheduled run failed: {}",
+        String::from_utf8_lossy(&scheduled.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&scheduled.stderr);
+    assert!(
+        stderr.contains("warning"),
+        "degradation is reported: {stderr}"
+    );
+}
+
 /// A completed run records where each artefact was produced and whether its
 /// rule opted into cross-platform reuse. The scope column must also make all
 /// `any` entries directly enumerable for recall.

@@ -59,3 +59,16 @@ pub enum StateError {
     #[error("gate error: {0}")]
     Gate(String),
 }
+
+impl StateError {
+    /// Whether SQLite refused the statement because it would break a
+    /// constraint (primary key, unique, foreign key, …), as opposed to the
+    /// database being unwritable or unavailable.
+    pub fn is_constraint_violation(&self) -> bool {
+        matches!(
+            self,
+            Self::Db(rusqlite::Error::SqliteFailure(e, _))
+                if e.code == rusqlite::ErrorCode::ConstraintViolation
+        )
+    }
+}
