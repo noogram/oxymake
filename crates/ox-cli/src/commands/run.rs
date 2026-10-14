@@ -1785,25 +1785,28 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
             to_run: 0,
             cached: cached_count,
         }];
-        for job_id in job_graph.topological_order().unwrap_or_default() {
+        // Same order as the scheduler: every candidate is planned before
+        // any of them settles.
+        let topo_order = job_graph.topological_order().unwrap_or_default();
+        for job_id in &topo_order {
             let job = job_graph.get_job(job_id).expect("planned graph job");
             cached_events.push(Event::JobPlanned {
-                job_id: job_id.clone(),
+                job_id: (*job_id).clone(),
                 rule: job.rule.clone(),
                 wildcards: job.wildcards.clone(),
                 resources: job.resources.clone(),
                 dependencies: job_graph.upstream(job_id).into_iter().cloned().collect(),
             });
-            if skip_jobs.contains(job_id) {
-                cached_events.push(Event::JobSkipped {
-                    job_id: (*job_id).clone(),
-                    reason: if cache_hits.contains(&job.id) {
-                        "cached".into()
-                    } else {
-                        "not selected".into()
-                    },
-                });
-            }
+        }
+        for job_id in topo_order.into_iter().filter(|id| skip_jobs.contains(*id)) {
+            cached_events.push(Event::JobSkipped {
+                job_id: job_id.clone(),
+                reason: if cache_hits.contains(job_id) {
+                    "cached".into()
+                } else {
+                    "not selected".into()
+                },
+            });
         }
         cached_events.push(Event::RunCompleted {
             total: job_count,

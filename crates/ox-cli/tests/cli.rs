@@ -4434,6 +4434,60 @@ shell = "mkdir -p results && cp data/{sample}.csv results/{sample}.txt"
     );
 }
 
+const CACHED_CHAIN: &str = r#"[rule.all]
+input = ["second.txt"]
+
+[rule.first]
+output = ["first.txt"]
+shell = "printf 1 > first.txt"
+
+[rule.second]
+input = ["first.txt"]
+output = ["second.txt"]
+shell = "cat first.txt > second.txt"
+"#;
+
+fn cached_run_events(dir: &std::path::Path, extra: &[&str]) -> Vec<serde_json::Value> {
+    let output = ox()
+        .args(["run", "--json"])
+        .args(extra)
+        .current_dir(dir)
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    String::from_utf8(output.stdout)
+        .unwrap()
+        .lines()
+        .filter(|line| line.starts_with('{'))
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect()
+}
+
+/// The all-cached fast path emits the scheduler's order: every `job_planned`
+/// right after `run_started`, before any job settles.
+#[test]
+fn fully_cached_run_plans_every_job_before_skipping_any() {
+    let dir = TempDir::new().unwrap();
+    fs::write(dir.path().join("Oxymakefile.toml"), CACHED_CHAIN).unwrap();
+    ox().arg("run").current_dir(dir.path()).assert().success();
+
+    let events: Vec<String> = cached_run_events(dir.path(), &[])
+        .iter()
+        .map(|line| line["event"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(
+        events,
+        [
+            "run_started",
+            "job_planned",
+            "job_planned",
+            "job_skipped",
+            "job_skipped",
+            "run_completed"
+        ]
+    );
+}
+
 #[test]
 fn default_event_log_records_plans_and_the_all_cached_terminal_outcome() {
     let dir = TempDir::new().unwrap();
