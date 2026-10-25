@@ -1533,6 +1533,66 @@ impl StateDb {
         cpu_times_ms: &std::collections::HashMap<String, u64>,
         nodes: &std::collections::HashMap<String, String>,
     ) -> Result<usize, StateError> {
+        self.record_unrecorded_history(
+            run_id,
+            None,
+            executor,
+            hostname,
+            wall_times,
+            peak_memory_bytes,
+            provenance,
+            executors,
+            cpu_times_ms,
+            nodes,
+        )
+    }
+
+    /// Record history for the listed jobs of `run_id` that are terminal and
+    /// have no row yet: the jobs a remote-executor synchronisation (Ray task
+    /// records) has just terminalised. Unlisted jobs are left to the run's
+    /// own finalisation, which holds their cache provenance. Idempotent.
+    #[allow(clippy::too_many_arguments)]
+    pub fn record_synced_job_history(
+        &self,
+        run_id: &str,
+        job_ids: &[String],
+        executor: &str,
+        hostname: &str,
+        wall_times: &std::collections::HashMap<String, u64>,
+        peak_memory_bytes: &std::collections::HashMap<String, u64>,
+        cpu_times_ms: &std::collections::HashMap<String, u64>,
+        nodes: &std::collections::HashMap<String, String>,
+    ) -> Result<usize, StateError> {
+        self.record_unrecorded_history(
+            run_id,
+            Some(job_ids),
+            executor,
+            hostname,
+            wall_times,
+            peak_memory_bytes,
+            &std::collections::HashMap::new(),
+            &std::collections::HashMap::new(),
+            cpu_times_ms,
+            nodes,
+        )
+    }
+
+    /// Insert a history row for every terminal job of `run_id` (restricted
+    /// to `only` when given) that has none yet.
+    #[allow(clippy::too_many_arguments)]
+    fn record_unrecorded_history(
+        &self,
+        run_id: &str,
+        only: Option<&[String]>,
+        executor: &str,
+        hostname: &str,
+        wall_times: &std::collections::HashMap<String, u64>,
+        peak_memory_bytes: &std::collections::HashMap<String, u64>,
+        provenance: &std::collections::HashMap<String, JobProvenance>,
+        executors: &std::collections::HashMap<String, String>,
+        cpu_times_ms: &std::collections::HashMap<String, u64>,
+        nodes: &std::collections::HashMap<String, String>,
+    ) -> Result<usize, StateError> {
         let mut stmt = self.conn.prepare(
             "SELECT id, rule_name, wildcards, status, started_at, completed_at, exit_code
              FROM jobs
@@ -1586,6 +1646,13 @@ impl StateDb {
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
+        let entries: Vec<JobHistoryEntry> = match only {
+            Some(ids) => entries
+                .into_iter()
+                .filter(|entry| ids.contains(&entry.job_id))
+                .collect(),
+            None => entries,
+        };
 
         let count = entries.len();
         for entry in &entries {
@@ -3088,6 +3155,51 @@ mod tests {
         assert_eq!((a.started_at, a.completed_at), (Some(100), Some(160)));
         let b = history.iter().find(|h| h.job_id == "b").unwrap();
         assert_eq!((b.cpu_time_ms, b.node.as_deref()), (None, None));
+    }
+
+    #[test]
+    fn synced_history_covers_only_the_listed_terminal_jobs() {
+        use std::collections::HashMap;
+        let (_tmp, db) = temp_db();
+        let sid = db.create_session(1, "head", None).unwrap();
+        let run_id = "run-sync";
+        db.begin_run(run_id, None, 3, None).unwrap();
+        let record = |id: &str| JobRecord {
+            id: id.into(),
+            rule_name: "r".into(),
+            wildcards: "{}".into(),
+            cache_key: None,
+            run_id: Some(run_id.into()),
+        };
+        db.register_jobs(&[record("synced"), record("cached"), record("pending")])
+            .unwrap();
+        db.claim_job("synced", &sid).unwrap();
+        db.reconcile_complete_job("synced", 0, "").unwrap();
+        db.skip_job("cached").unwrap();
+
+        let wall = HashMap::from([("synced".to_string(), 2_000_u64)]);
+        let memory = HashMap::from([("synced".to_string(), 3 * 1024 * 1024 + 1)]);
+        let cpu = HashMap::from([("synced".to_string(), 1_900_u64)]);
+        let nodes = HashMap::from([("synced".to_string(), "worker-2".to_string())]);
+        let ids = ["synced".to_string(), "pending".to_string()];
+        let sync = || {
+            db.record_synced_job_history(run_id, &ids, "ray", "head", &wall, &memory, &cpu, &nodes)
+                .unwrap()
+        };
+        // `pending` is not terminal and `cached` is not listed: the run's
+        // own finalisation records it, with its cache provenance.
+        assert_eq!(sync(), 1);
+        assert_eq!(sync(), 0);
+
+        let history = db.job_history_for_run(run_id).unwrap();
+        assert_eq!(history.len(), 1);
+        let row = &history[0];
+        assert_eq!(row.job_id, "synced");
+        assert_eq!(row.executor.as_deref(), Some("ray"));
+        assert_eq!(row.wall_time_ms, Some(2_000));
+        assert_eq!(row.peak_mem_mb, Some(4));
+        assert_eq!(row.cpu_time_ms, Some(1_900));
+        assert_eq!(row.node.as_deref(), Some("worker-2"));
     }
 
     #[test]

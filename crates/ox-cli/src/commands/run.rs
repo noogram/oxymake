@@ -1925,8 +1925,16 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
     let events_dir = oxymake_dir.join("events");
     std::fs::create_dir_all(&events_dir).ok();
     let event_log_path = events_dir.join(format!("{}.ndjson", ctx.run_id));
-    let event_log_file = ox_report_json::reporter::AtomicEventFile::create(&event_log_path)
+    let mut event_log_file = ox_report_json::reporter::AtomicEventFile::create(&event_log_path)
         .context("failed to create event log file")?;
+    // A Ray DAG run emits no event before a task record is synchronised,
+    // possibly by `ox status` in another process: publish the log now, so
+    // that process appends to it rather than racing this one's first line.
+    if args.executor == "ray" {
+        event_log_file
+            .publish()
+            .context("failed to create event log file")?;
+    }
 
     // Create the --report-json file up front so an unwritable path fails
     // the run immediately, not after the work is done (H28).
@@ -2692,6 +2700,19 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
 
                 if args.follow {
                     eprintln!("Following execution progress…\n");
+                    // A task's record settles its job as soon as it ends;
+                    // jobs without one follow the driver's state.
+                    let records = super::ray_records::Follower::new(
+                        super::ray_records::tasks_dir(
+                            &ctx.project_dir.join(".oxymake/runs"),
+                            &dag_result.run_id,
+                        ),
+                        &dag_result.run_id,
+                        state_db.as_ref(),
+                        session_id.as_deref(),
+                        &job_graph,
+                        &event_bus,
+                    );
                     // Preserve the existing follow block formatting.
                     #[rustfmt::skip]
                     let (result, stop) = remote_follow::follow(FollowRequest {
@@ -2702,7 +2723,13 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
                         interrupted: &interrupted, shutdown: &shutdown,
                     }, |job| {
                         let executor = &executor;
-                        async move { executor.poll_status(&JobId::from(job.as_str())).await }
+                        let records = &records;
+                        async move {
+                            if let Some(status) = records.poll(&job) {
+                                return Ok(status);
+                            }
+                            executor.poll_status(&JobId::from(job.as_str())).await
+                        }
                     }, |line| eprintln!("{line}")).await;
                     // The controller drops an in-flight poll on the first signal.
                     // Restore Ray's driver cancellation before leaving follow;
