@@ -71,8 +71,10 @@ impl AtomicEventFile {
                 name.to_string_lossy(),
                 std::process::id(),
             ));
+            // Append mode: `ox status` may append synchronised remote job
+            // events to a published log this reporter is still writing.
             match OpenOptions::new()
-                .write(true)
+                .append(true)
                 .create_new(true)
                 .open(&temporary_path)
             {
@@ -352,8 +354,10 @@ impl<W: Write + Send + 'static> Reporter for JsonReporter<W> {
                     return;
                 }
             };
+            // One write per line, so lines from two appending writers
+            // cannot interleave.
             let mut w = self.writer.lock().unwrap();
-            writeln!(w, "{json}").ok();
+            w.write_all(format!("{json}\n").as_bytes()).ok();
         })
     }
 
@@ -378,8 +382,10 @@ impl<W: Write + Send + 'static> Reporter for JsonReporter<W> {
                     return;
                 }
             };
+            // One write per line, so lines from two appending writers
+            // cannot interleave.
             let mut w = self.writer.lock().unwrap();
-            writeln!(w, "{json}").ok();
+            w.write_all(format!("{json}\n").as_bytes()).ok();
         })
     }
 }
@@ -406,6 +412,60 @@ mod tests {
         raw.lines()
             .map(|line| serde_json::from_str(line).expect("valid JSON line"))
             .collect()
+    }
+
+    /// `ox status` appends synchronised Ray job events to a run's log while
+    /// a following `ox run` may still be writing to it: neither writer may
+    /// overwrite the other's lines.
+    #[test]
+    fn atomic_event_file_keeps_lines_appended_by_another_writer() {
+        let directory = std::env::temp_dir().join(format!(
+            "ox-report-json-test-{}-{}",
+            std::process::id(),
+            TEMP_FILE_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir(&directory).unwrap();
+        let final_path = directory.join("run-123.ndjson");
+        let mut file = AtomicEventFile::create(&final_path).unwrap();
+        file.write_all(b"{\"n\":1}\n").unwrap();
+        OpenOptions::new()
+            .append(true)
+            .open(&final_path)
+            .unwrap()
+            .write_all(b"{\"n\":2}\n")
+            .unwrap();
+        file.write_all(b"{\"n\":3}\n").unwrap();
+        assert_eq!(
+            fs::read_to_string(&final_path).unwrap(),
+            "{\"n\":1}\n{\"n\":2}\n{\"n\":3}\n"
+        );
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    /// With an appending file, one `write` per event keeps two writers'
+    /// lines from interleaving.
+    #[tokio::test]
+    async fn each_event_is_a_single_write() {
+        #[derive(Default)]
+        struct Writes(Vec<Vec<u8>>);
+        impl Write for Writes {
+            fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+                self.0.push(buffer.to_vec());
+                Ok(buffer.len())
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        let r = JsonReporter::new(Writes::default());
+        r.on_event(&Event::JobSkipped {
+            job_id: JobId("j".into()),
+            reason: "cached".into(),
+        })
+        .await;
+        let writes = r.writer.into_inner().unwrap().0;
+        assert_eq!(writes.len(), 1);
+        assert!(writes[0].ends_with(b"\n"));
     }
 
     #[test]
