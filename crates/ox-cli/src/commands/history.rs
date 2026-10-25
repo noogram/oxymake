@@ -89,6 +89,7 @@ fn list_runs(db: &ox_state::db::StateDb, json: bool, theme: &ox_render::Theme) -
                 "started_at": format_iso8601(run.started_at),
                 "completed_at": run.completed_at.map(format_iso8601),
                 "note": run.note,
+                "metadata": run.metadata,
                 "workflow_hash": run.workflow_hash,
                 "total_jobs": run.job_count,
                 "succeeded": run.succeeded,

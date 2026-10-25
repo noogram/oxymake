@@ -65,6 +65,8 @@ async fn assert_submitted_driver_python(python: Option<&str>) {
         &server.uri(),
         "--ray-allow-pending",
         "--no-cache",
+        "--metadata",
+        "external.id=driver-test",
     ]);
     if let Some(python) = python {
         command.args(["--ray-python", python]);
@@ -79,7 +81,20 @@ async fn assert_submitted_driver_python(python: Option<&str>) {
         .find(|request| request.method == "POST" && request.url.path() == "/api/jobs/")
         .unwrap();
     let payload: serde_json::Value = serde_json::from_slice(&request.body).unwrap();
+    assert_eq!(payload["metadata"]["external.id"], "driver-test");
+    assert_eq!(payload["metadata"]["oxymake_dag_driver"], "true");
+    assert!(payload["metadata"].get("oxymake_job_id").is_none());
+    assert!(payload["metadata"].get("oxymake_rule").is_none());
     let run_id = payload["metadata"]["oxymake_run_id"].as_str().unwrap();
+    let log = std::fs::read_to_string(
+        project_dir
+            .path()
+            .join(format!(".oxymake/events/{run_id}.ndjson")),
+    )
+    .unwrap();
+    let start: serde_json::Value = serde_json::from_str(log.lines().next().unwrap()).unwrap();
+    assert_eq!(start["event"], "run_started");
+    assert_eq!(start["metadata"]["external.id"], "driver-test");
     assert_eq!(run_id.len(), 40);
     assert_eq!(
         uuid::Uuid::parse_str(run_id.strip_prefix("run-").unwrap())

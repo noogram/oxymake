@@ -25,7 +25,7 @@ use rusqlite::Connection;
 use crate::error::StateError;
 
 /// The latest schema version.  Bump this when adding a migration.
-const LATEST_VERSION: u32 = 11;
+const LATEST_VERSION: u32 = 12;
 
 /// Run all pending migrations, bringing the database up to
 /// `LATEST_VERSION`.
@@ -87,6 +87,7 @@ fn migrate_locked(conn: &Connection) -> Result<(), StateError> {
             8 => migrate_v8_to_v9(conn)?,
             9 => migrate_v9_to_v10(conn)?,
             10 => migrate_v10_to_v11(conn)?,
+            11 => migrate_v11_to_v12(conn)?,
             _ => {
                 return Err(StateError::Migration {
                     from: v,
@@ -569,10 +570,49 @@ fn migrate_v10_to_v11(conn: &Connection) -> Result<(), StateError> {
     Ok(())
 }
 
+/// Add invocation labels; legacy runs have an empty metadata object.
+fn migrate_v11_to_v12(conn: &Connection) -> Result<(), StateError> {
+    conn.execute_batch(
+        "SAVEPOINT migration_step;
+         ALTER TABLE runs ADD COLUMN metadata TEXT NOT NULL DEFAULT '{}';
+         DELETE FROM schema_version;
+         INSERT INTO schema_version (version) VALUES (12);
+         RELEASE migration_step;",
+    )
+    .map_err(|e| StateError::Migration {
+        from: 11,
+        to: 12,
+        reason: e.to_string(),
+    })?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use rusqlite::Connection;
+
+    #[test]
+    fn v12_preserves_legacy_runs_with_empty_metadata() {
+        let conn = v9_database();
+        migrate_v9_to_v10(&conn).unwrap();
+        migrate_v10_to_v11(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO runs (id, started_at, note) VALUES ('legacy', 42, 'keep')",
+            [],
+        )
+        .unwrap();
+        migrate(&conn).unwrap();
+        let row: (String, u64, String, String) = conn
+            .query_row(
+                "SELECT id, started_at, note, metadata FROM runs",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(row, ("legacy".into(), 42, "keep".into(), "{}".into()));
+        migrate(&conn).unwrap();
+    }
 
     #[test]
     fn fresh_database_migrates_to_v1() {
@@ -582,7 +622,7 @@ mod tests {
         let version: u32 = conn
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 11);
+        assert_eq!(version, LATEST_VERSION);
     }
 
     #[test]
@@ -595,7 +635,7 @@ mod tests {
         let version: u32 = conn
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 11);
+        assert_eq!(version, LATEST_VERSION);
     }
 
     /// Verification finding 3: two connections migrating the same fresh
@@ -764,7 +804,7 @@ mod tests {
         let version: u32 = conn
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 11);
+        assert_eq!(version, LATEST_VERSION);
     }
 
     /// Bring an in-memory database to schema v9 exactly as a pre-v10
@@ -808,7 +848,7 @@ mod tests {
         let version: u32 = conn
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 11);
+        assert_eq!(version, LATEST_VERSION);
 
         let (id, name, run_id, rule, job, status, decided_by): (
             i64,

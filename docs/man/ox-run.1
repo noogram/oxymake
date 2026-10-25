@@ -1,10 +1,10 @@
 .ie \n(.g .ds Aq \(aq
 .el .ds Aq '
-.TH ox-run 1  "ox-run " 
+.TH ox-run 1  "ox-run "
 .SH NAME
 ox\-run \- Execute a workflow, ensuring requested outputs exist
 .SH SYNOPSIS
-\fBox\-run\fR [\fB\-j\fR|\fB\-\-jobs\fR] [\fB\-\-resource\-budget\fR] [\fB\-\-rule\fR] [\fB\-\-json\fR] [\fB\-\-report\-json\fR] [\fB\-n\fR|\fB\-\-dry\-run\fR] [\fB\-k\fR|\fB\-\-keep\-going\fR] [\fB\-\-note\fR] [\fB\-\-set\fR] [\fB\-\-executor\fR] [\fB\-\-partition\fR] [\fB\-\-account\fR] [\fB\-\-qos\fR] [\fB\-\-slurm\-api\fR] [\fB\-\-ray\-address\fR] [\fB\-\-ray\-python\fR] [\fB\-\-ray\-allow\-pending\fR] [\fB\-\-follow\fR] [\fB\-f\fR|\fB\-\-file\fR] [\fB\-\-no\-cache\fR] [\fB\-\-cache\-validation\fR] [\fB\-\-cache\-remote\fR] [\fB\-v\fR|\fB\-\-verbose\fR]... [\fB\-\-until\fR] [\fB\-\-omit\-from\fR] [\fB\-\-touch\fR] [\fB\-\-forcerun\fR] [\fB\-\-profile\fR] [\fB\-\-timings\fR] [\fB\-\-open\-dashboard\fR] [\fB\-\-memory\-budget\fR] [\fB\-\-warm\-workers\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fITARGETS\fR]
+\fBox\-run\fR [\fB\-j\fR|\fB\-\-jobs\fR] [\fB\-\-resource\-budget\fR] [\fB\-\-rule\fR] [\fB\-\-json\fR] [\fB\-\-report\-json\fR] [\fB\-n\fR|\fB\-\-dry\-run\fR] [\fB\-k\fR|\fB\-\-keep\-going\fR] [\fB\-\-note\fR] [\fB\-\-metadata\fR] [\fB\-\-set\fR] [\fB\-\-executor\fR] [\fB\-\-partition\fR] [\fB\-\-account\fR] [\fB\-\-qos\fR] [\fB\-\-slurm\-api\fR] [\fB\-\-ray\-address\fR] [\fB\-\-ray\-python\fR] [\fB\-\-ray\-allow\-pending\fR] [\fB\-\-follow\fR] [\fB\-f\fR|\fB\-\-file\fR] [\fB\-\-no\-cache\fR] [\fB\-\-cache\-validation\fR] [\fB\-\-cache\-remote\fR] [\fB\-v\fR|\fB\-\-verbose\fR]... [\fB\-\-until\fR] [\fB\-\-omit\-from\fR] [\fB\-\-touch\fR] [\fB\-\-forcerun\fR] [\fB\-\-profile\fR] [\fB\-\-timings\fR] [\fB\-\-open\-dashboard\fR] [\fB\-\-memory\-budget\fR] [\fB\-\-warm\-workers\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fITARGETS\fR]
 .SH DESCRIPTION
 Execute a workflow, ensuring requested outputs exist
 .PP
@@ -38,6 +38,11 @@ Continue on independent branches after failure
 .TP
 \fB\-\-note\fR \fI<NOTE>\fR
 Annotate this run
+.TP
+\fB\-\-metadata\fR \fI<KEY=VALUE>\fR
+Attach a run label (repeatable; excluded from cache identity).
+
+Keys match [a\-z0\-9_.\-]{1,64}; oxymake_ is reserved. Values are at most 1024 UTF\-8 bytes. Duplicate keys are rejected. Ray submissions receive these labels; SLURM comments are not supported.
 .TP
 \fB\-\-set\fR \fI<KEY=VALUE>\fR
 Override config or resource values

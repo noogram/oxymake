@@ -52,8 +52,8 @@ The `ox` binary exposes 27 subcommands today (see `crates/ox-cli/src/lib.rs`).
     default `mtime+hash`, content-verifying — ADR-006 amendment)
   - `--no-cache`
 
-  Four `ox run` flags are shipped but **unstable**: `--cache-remote <dir>`,
-  `--resource-budget KEY=VALUE`, `--ray-python PATH`, and
+  Five `ox run` flags are shipped but **unstable**: `--cache-remote <dir>`,
+  `--resource-budget KEY=VALUE`, `--metadata KEY=VALUE`, `--ray-python PATH`, and
   `--ray-allow-pending`. `--cache-remote`
   stores output blobs in and restores missing outputs from a shared
   directory, forcing content-hash validation. It is a blob transport: the
@@ -88,6 +88,10 @@ selector.
 
 ### Unstable
 
+- `ox run --metadata KEY=VALUE` attaches repeatable run labels to Ray
+  submission metadata, `run_started.metadata`, and `ox history --json` run
+  records. Labels are excluded from cache identity; SLURM comments are not
+  supported. Event and history schema versions stay at 1 (additive fields).
 - `ox run --resource-budget KEY=VALUE` enables per-run local admission with
   repeatable, comma-separated capacities. It validates the selected DAG even
   when all jobs are cached; in mixed SLURM runs only selected local jobs
@@ -518,3 +522,8 @@ are an **unstable** Rust surface shared by local and Ray executors. They append
 `.oxytmp` to the complete output path. Ray's post-execution cleanup contract is
 documented in the [format reference](docs/book/src/reference/format.md#output-cleanup)
 and [Ray guide](docs/book/src/concepts/ray-integration.md#output-finalization).
+
+Run-label support adds unstable Rust surfaces
+`ox_state::db::{StateDb::begin_run_with_metadata, RunRecord::metadata}` and
+`ox_report_json::reporter::JsonReporter::with_metadata`. Existing `begin_run`
+callers and legacy database rows default to empty labels.

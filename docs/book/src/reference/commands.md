@@ -27,6 +27,7 @@ ox run -j 8 --resource-budget cpu=6,mem_gb=32
 ox run --rule stats             # Only run jobs from a rule (exact or /regex/)
 ox run --json                   # Structured NDJSON output
 ox run --note "experiment v2"   # Annotate the run
+ox run --metadata external.id=123 --metadata team=research
 ox run --no-cache               # Ignore the cache, re-run everything
 ```
 
@@ -43,6 +44,19 @@ ox run --no-cache               # Ignore the cache, re-run everything
 - `--json` -- Emit NDJSON events on stdout
 - `--report-json PATH` -- Write the NDJSON event stream to a file
 - `--note TEXT` -- Attach a note to this run
+- `--metadata KEY=VALUE` -- Attach a run label; repeat for several labels.
+  Keys match `[a-z0-9_.-]{1,64}`; the `oxymake_` prefix is reserved and
+  duplicate keys are rejected as usage errors. Values are UTF-8, at most
+  1024 bytes; empty values are allowed. Only the first `=` separates key
+  and value, so commas and further `=` characters remain literal. No
+  environment variables are read. Labels do not enter cache identity.
+  Labels appear once in `run_started.metadata` (including cached runs) and
+  in run records from `ox history --json`. Ray merges them into the submitted
+  DAG driver's metadata, or into a standalone job's metadata when using
+  the executor API; internal `oxymake_*` fields always take precedence.
+  A DAG driver has no synthetic job/rule identity. SLURM `--comment`
+  propagation is not supported; labels still enter the local journal and
+  history for SLURM runs.
 - `--no-cache` -- Ignore cached outputs and re-execute
 - `--cache-remote DIR` -- Share output blobs through a directory blob store
   (forces `hash` validation; see below)
