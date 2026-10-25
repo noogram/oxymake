@@ -67,7 +67,8 @@
 //! including a failed attempt under `ErrorStrategy::Ignore`. Memory and CPU
 //! time belong to that attempt; earlier failed attempts and cancellations
 //! supply none. A Ray DAG run emits it when a task's record is synchronised
-//! (`ox run --follow`, `ox status`), not when the task ends.
+//! (`ox run --follow`, `ox status`), not when the task ends; `ox status` does
+//! not load the workflow, so the events it appends list no `outputs`.
 //!
 //! ```json
 //! {"event":"job_completed","schema_version":1,"ts":"2026-10-08T12:00:00Z","job_id":"align_S001","duration_ms":272000,"outputs":["results/S001.bam"],"peak_memory_bytes":1536000,"cpu_time_ms":270400,"node":null}

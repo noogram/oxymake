@@ -317,6 +317,38 @@ Ray Dashboard → Jobs → raysubmit_abc123
 ```
 
 
+### Per-task records
+
+The driver's `results.json` is written only once every task has finished and
+holds only status and exit code; a killed driver leaves none. Each task
+therefore also writes its own record, `.oxymake/runs/<run-id>/tasks/<job>.json`,
+as soon as its command exits, successfully or not (a temporary file is written
+and then renamed, so a reader never sees a partial record):
+
+```json
+{"job_id": "align-A", "status": "completed", "exit_code": 0,
+ "started_at": 1792954442.37, "ended_at": 1792954442.53, "wall_time_ms": 150,
+ "cpu_time_ms": 129, "peak_rss_bytes": 54951936,
+ "node_id": "fcc1d6c6…", "hostname": "worker-3"}
+```
+
+The task reaps its command's process with `os.wait4`, so `cpu_time_ms` (user +
+system) and `peak_rss_bytes` cover that process and the descendants it waited
+for; background or daemonised work escapes them. `RUSAGE_CHILDREN` is not used
+because Ray reuses worker processes and that counter accumulates across tasks.
+
+`ox run --follow` reads a job's record on each poll and settles the job when
+it appears; without `--follow`, `ox status` reads all records of the run. The
+first process to read a record moves the job to its terminal state, keeps the
+task's own start and end, writes its history row (`ox history --run-id ID
+--json`: `wall_time_ms`, `peak_mem_mb`, `cpu_time_ms`, `node`) and emits one
+`job_completed` or `job_failed` event to the run's event log. `node` is the
+task's host name; the Ray node ID stays in the record. Usage reaches history
+for completed jobs only. Events appended by `ox status` list no `outputs`,
+because it does not load the workflow. A job without a record (its task never
+ran) still takes its state from `results.json` or the driver. The record format
+is internal and may change; read usage through `ox history` or the event log.
+
 ## Call Mode and the Ray Object Store
 
 This is where OxyMake and Ray truly complement each other. In `call` mode,

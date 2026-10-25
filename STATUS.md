@@ -212,7 +212,7 @@ should not query it directly.
 - Table names, column names, indexes, triggers — all internal. Tools
   that parse `state.db` outside of `ox` will break and we will not
   treat that as a regression.
-- The current schema version (`9`) will keep climbing.
+- The current schema version (`11`) will keep climbing.
 
 ---
 

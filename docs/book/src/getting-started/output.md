@@ -95,24 +95,30 @@ ox run --json
 {"event":"job_planned","schema_version":1,"ts":"2026-10-08T12:00:00Z","job_id":"stats-alice","rule":"stats","wildcards":{"student":"alice"},"resources":{},"dependencies":[]}
 {"event":"job_planned","schema_version":1,"ts":"2026-10-08T12:00:00Z","job_id":"summary","rule":"summary","wildcards":{},"resources":{},"dependencies":["stats-alice","stats-bob"]}
 {"event":"job_started","schema_version":1,"ts":"2026-10-08T12:00:00Z","job_id":"stats-bob","executor":"local","reason":"cache_miss"}
-{"event":"job_completed","schema_version":1,"ts":"2026-10-08T12:00:00Z","job_id":"stats-bob","duration_ms":209,"outputs":["results/bob_stats.json"]}
+{"event":"job_completed","schema_version":1,"ts":"2026-10-08T12:00:00Z","job_id":"stats-bob","duration_ms":209,"outputs":["results/bob_stats.json"],"peak_memory_bytes":12091392,"cpu_time_ms":41,"node":null}
 {"event":"job_started","schema_version":1,"ts":"2026-10-08T12:00:00Z","job_id":"stats-alice","executor":"local","reason":"cache_miss"}
-{"event":"job_completed","schema_version":1,"ts":"2026-10-08T12:00:00Z","job_id":"stats-alice","duration_ms":200,"outputs":["results/alice_stats.json"]}
+{"event":"job_completed","schema_version":1,"ts":"2026-10-08T12:00:00Z","job_id":"stats-alice","duration_ms":200,"outputs":["results/alice_stats.json"],"peak_memory_bytes":12058624,"cpu_time_ms":39,"node":null}
 {"event":"job_started","schema_version":1,"ts":"2026-10-08T12:00:00Z","job_id":"summary","executor":"local","reason":"upstream_rebuilt"}
-{"event":"job_completed","schema_version":1,"ts":"2026-10-08T12:00:00Z","job_id":"summary","duration_ms":194,"outputs":["results/summary.json"]}
+{"event":"job_completed","schema_version":1,"ts":"2026-10-08T12:00:00Z","job_id":"summary","duration_ms":194,"outputs":["results/summary.json"],"peak_memory_bytes":11943936,"cpu_time_ms":37,"node":null}
 {"event":"run_completed","schema_version":1,"ts":"2026-10-08T12:00:00Z","total":3,"succeeded":3,"failed":0,"skipped":0,"cancelled":0,"duration_ms":607,"status":"success"}
 ```
 
 Each event carries an `event` discriminant (`run_started`, `job_planned`,
 `job_started`, `job_completed`, `run_completed`), a `schema_version` (`1`) and
-a UTC RFC 3339 `ts` timestamp. Every planned job gets its `job_planned` line
+a UTC RFC 3339 `ts` timestamp. `job_completed` reports the executor's
+observation of the job: peak RSS in bytes (`peak_memory_bytes`), user +
+system CPU time (`cpu_time_ms`) and, for Ray tasks, the host it ran on
+(`node`); each is `null` when the executor did not measure it. Every planned job gets its `job_planned` line
 right after `run_started`, before any job starts or is skipped. The format is
 designed for AI agents and scripts: each line parses independently. Use
 `--report-json <path>` to write the same stream to a file. See
 [Agent-Driven Workflows](../cookbook/agent-workflows.md) for details.
 
 Every executing run, fully cached runs included, also writes this stream to
-`.oxymake/events/<run-id>.ndjson`. The file is created before the run is
+`.oxymake/events/<run-id>.ndjson`. A Ray DAG run creates its log, empty, at
+submission: its `job_completed` and `job_failed` lines are appended when a
+task's record is synchronised, by `ox run --follow` or by a later `ox status`,
+so their `ts` is the synchronisation time. The file is created before the run is
 recorded or any job starts: if it cannot be created (for example, the
 directory is not writable), `ox run` exits 1 without recording the run.
 

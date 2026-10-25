@@ -61,6 +61,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   endings, may be normalized (#42).
 - The unstable Rust API exposes `Workflow::warnings` for per-file legacy
   diagnostics and `ox_format::migrate` for preparing and applying migrations.
+- Ray DAG runs record each task's peak RSS, user + system CPU time, wall time,
+  start and end, and the node it ran on. Each task writes
+  `.oxymake/runs/<run>/tasks/<job>.json` as soon as its command exits, so the
+  tasks that finished are no longer lost when the driver is killed. `ox status`
+  and `ox run --follow` synchronise these records into job state, history and
+  the run's event log, once per job (#58).
+- `ox history --run-id ID --json` reports `cpu_time_ms` and `node` for each
+  job, `null` when unmeasured. Local cold and warm-fork jobs now record in
+  history the CPU time that was previously only in benchmark TSV (#58).
+- `job_completed` events carry `cpu_time_ms` and `node` (#58).
 
 ### Changed
 - `ox status --run ID` and `ox history --run-id ID` now require an exact,
@@ -81,6 +91,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The `dry_run_summary`, `dry_run_job`, `run_submitted`, and
   `run_follow_stopped` NDJSON lines now carry `schema_version` and `ts` like
   every other event.
+- `job_completed` always carries `peak_memory_bytes`, `cpu_time_ms` and
+  `node`; an unmeasured value is `null`, where `peak_memory_bytes` used to be
+  omitted (#58).
+- `ox run --executor ray --follow` settles each job when its task's record
+  appears instead of when the driver ends, and emits its `job_completed` or
+  `job_failed` event. A Ray DAG run's event log is created, empty, at
+  submission; `ox status` appends the job events it synchronises. Event logs
+  are written in append mode, one write per line (#58).
+- The unstable Rust `Event::JobCompleted` variant and `JobHistoryEntry` gain
+  `cpu_time_ms` and `node`; downstream struct literals must initialise them.
+  `StateDb::finalize_job_history_with_executors` takes CPU-time and node maps
+  and skips jobs that already have a history row for the run. The state
+  database schema is now version 11 (#58).
 
 ### Fixed
 - Class overrides keep the inherited resource spelling, so a rule's `cpus`
