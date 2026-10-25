@@ -218,6 +218,13 @@ should not query it directly.
 
 ## 4. `--json` / NDJSON event stream
 
+`ox status --json` success objects and `ox history --json` NDJSON records
+carry top-level integer `schema_version = 1`. Each command's schema is
+**unstable** and versioned independently of the other and of run events.
+Non-additive changes increment the affected version; additive fields do not.
+This covers absent/grouped/selected/Ray status and run/job history records.
+Empty history remains an empty stream; stderr diagnostics are separate.
+
 `ox run --report-json <path>` and the `JsonReporter` write one JSON
 object per line (NDJSON). The schema lives in
 `crates/ox-report-json/src/schema.rs`.

@@ -43,6 +43,9 @@ pub struct StatusArgs {
 // Command
 // ---------------------------------------------------------------------------
 
+// Snapshot schema, independent of history records and run-event envelopes.
+const SCHEMA_VERSION: u32 = 1;
+
 /// Supported `--group-by` dimensions.  Currently only `rule_name` is stored
 /// in the database; `stage` is accepted as an alias (the TUI already treats
 /// rule names as pipeline stages).
@@ -140,6 +143,7 @@ pub fn cmd_status(args: StatusArgs, theme: &ox_render::Theme) -> Result<()> {
             println!(
                 "{}",
                 serde_json::json!({
+                    "schema_version": SCHEMA_VERSION,
                     "state": "absent",
                     "message": "No OxyMake state found.",
                     "hint": "Run 'ox run' first.",
@@ -332,6 +336,7 @@ pub fn cmd_status(args: StatusArgs, theme: &ox_render::Theme) -> Result<()> {
             .collect();
 
         let mut json = serde_json::json!({
+            "schema_version": SCHEMA_VERSION,
             "run_id": run_id,
             "executor": executor_type,
             "sessions": sessions.len(),
@@ -670,6 +675,7 @@ fn sync_and_print_ray_status(
                             println!(
                                 "\n{}",
                                 serde_json::to_string_pretty(&serde_json::json!({
+                                    "schema_version": SCHEMA_VERSION,
                                     "ray_driver": {
                                         "run_id": rid,
                                         "driver_job_id": driver_job_id,
@@ -786,6 +792,7 @@ fn sync_and_print_ray_status(
             println!(
                 "\n{}",
                 serde_json::to_string_pretty(&serde_json::json!({
+                    "schema_version": SCHEMA_VERSION,
                     "ray_dag_submissions": ray_status
                 }))?
             );

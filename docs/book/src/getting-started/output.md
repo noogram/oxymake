@@ -121,6 +121,27 @@ value names its default event file and appears in state, run artifacts, and
 executor metadata. Legacy IDs remain valid exact keys. Run IDs do not sort by
 creation time; use recorded timestamps.
 
+## Status and History JSON
+
+`ox status --json` includes top-level integer `"schema_version": 1` in
+every emitted object: the current or selected run (`--run ID`), grouped
+summaries (`--group-by rule` or `stage`), absent state, and any separate Ray
+driver or cluster summary. Ray status can emit several consecutive JSON
+objects; consumers should parse a stream of JSON values.
+
+`ox history --json` includes the same field in each NDJSON run record and
+each job record selected by `--run-id ID`. No state, no runs, or a selected
+run with no job history produces an empty stream.
+
+Status and history each have their own schema version, independent of each
+other and of the run-event journal. They start at 1; keeping them independent
+lets a snapshot or history format change without forcing event-log consumers
+to migrate. A non-additive change (removing or renaming a field, changing its
+type or meaning, or changing the record structure) increments the affected
+version. Additive fields do not increment it; readers should ignore unknown
+fields. These payloads remain unstable before 1.0. Error diagnostics on
+stderr are separate from these success-record schemas.
+
 ## DAG Visualization
 
 Use `ox dag` to render the dependency graph. The default format is Graphviz
