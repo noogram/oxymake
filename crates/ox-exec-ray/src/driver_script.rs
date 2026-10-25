@@ -57,7 +57,7 @@ pub fn generate_driver(
     let mut script = String::with_capacity(8192);
 
     write_header(&mut script);
-    write_remote_functions(&mut script);
+    write_remote_functions(&mut script, staging_dir);
     write_dag_tasks(&mut script, graph, &active_order, ctx, staging_dir)?;
     write_wait_and_report(&mut script, graph, &active_order, staging_dir);
 
@@ -84,8 +84,10 @@ fn write_header(script: &mut String) {
     .unwrap();
     writeln!(script, "import json").unwrap();
     writeln!(script, "import os").unwrap();
+    writeln!(script, "import socket").unwrap();
     writeln!(script, "import subprocess").unwrap();
     writeln!(script, "import sys").unwrap();
+    writeln!(script, "import tempfile").unwrap();
     writeln!(script, "import time").unwrap();
     writeln!(script).unwrap();
     writeln!(script, "import ray").unwrap();
@@ -94,8 +96,104 @@ fn write_header(script: &mut String) {
     writeln!(script).unwrap();
 }
 
+/// Python helpers shared by the task functions: run the task's single child,
+/// read its `os.wait4` usage, and publish the per-task record (see
+/// [`crate::task_record`]) by writing a temporary file and renaming it.
+/// Expects `TASKS_DIR` to be defined before it.
+const MEASURED_TASK_HELPERS: &str = r#"
+def _record_path(job_id):
+    name = job_id.replace('%', '%25').replace('/', '%2F') + '.json'
+    return os.path.join(TASKS_DIR, name)
+
+
+def _write_record(record):
+    """Publish a task record atomically. A record never fails its task."""
+    try:
+        os.makedirs(TASKS_DIR, exist_ok=True)
+        path = _record_path(record['job_id'])
+        temporary = f'{path}.tmp-{os.getpid()}'
+        with open(temporary, 'w') as f:
+            json.dump(record, f)
+        os.replace(temporary, path)
+    except Exception as e:
+        print(f"OxyMake: could not write the record of {record['job_id']}: {e}", file=sys.stderr)
+
+
+def _node_id():
+    try:
+        return ray.get_runtime_context().get_node_id()
+    except Exception:
+        return None
+
+
+def _run_measured(job_id, args, shell, work_dir, env_vars):
+    """Run one command and record its usage, wherever and however it ends.
+
+    The child is reaped with os.wait4 rather than read from RUSAGE_CHILDREN:
+    Ray reuses worker processes, and that counter accumulates across tasks.
+    """
+    start = time.time()
+    record = {'job_id': job_id, 'started_at': start, 'node_id': _node_id(),
+              'hostname': socket.gethostname()}
+    try:
+        with tempfile.TemporaryFile() as err:
+            child = subprocess.Popen(args, shell=shell, cwd=work_dir, env={**os.environ, **env_vars},
+                                     stdout=subprocess.DEVNULL, stderr=err)
+            try:
+                if hasattr(os, 'wait4'):
+                    _, status, usage = os.wait4(child.pid, 0)
+                    child.returncode = os.WEXITSTATUS(status) if os.WIFEXITED(status) else -os.WTERMSIG(status)
+                else:  # No per-child usage on this platform (Windows).
+                    child.wait()
+                    usage = None
+            except BaseException:
+                child.kill()
+                child.wait()
+                raise
+            err.seek(0, os.SEEK_END)
+            err.seek(max(0, err.tell() - 8192))
+            stderr = err.read().decode(errors='replace')
+    except Exception as e:
+        end = time.time()
+        record.update(status='failed', exit_code=None, ended_at=end,
+                      wall_time_ms=int((end - start) * 1000), cpu_time_ms=None,
+                      peak_rss_bytes=None, error=str(e)[-500:])
+        _write_record(record)
+        raise
+    end = time.time()
+    elapsed = end - start
+    record.update(
+        status='completed' if child.returncode == 0 else 'failed',
+        exit_code=child.returncode,
+        ended_at=end,
+        wall_time_ms=int(elapsed * 1000),
+        cpu_time_ms=None if usage is None else int(round((usage.ru_utime + usage.ru_stime) * 1000)),
+        # ru_maxrss is in bytes on macOS and in KiB on Linux.
+        peak_rss_bytes=None if usage is None else usage.ru_maxrss * (1 if sys.platform == 'darwin' else 1024),
+    )
+    if child.returncode != 0:
+        msg = stderr[-2000:] if stderr else '(no stderr)'
+        record['error'] = msg[-500:]
+        _write_record(record)
+        raise RuntimeError(f'Job {job_id} failed (exit {child.returncode}, {elapsed:.1f}s): {msg}')
+    _write_record(record)
+    print(f'Job {job_id} succeeded ({elapsed:.1f}s)')
+    return child.returncode
+
+"#;
+
 /// Write the `@ray.remote` task functions.
-fn write_remote_functions(script: &mut String) {
+fn write_remote_functions(script: &mut String, staging_dir: &std::path::Path) {
+    let tasks_dir = staging_dir.join(crate::task_record::TASKS_DIR);
+    writeln!(
+        script,
+        "TASKS_DIR = \"{}\"",
+        python_string_escape(&tasks_dir.to_string_lossy())
+    )
+    .unwrap();
+    script.push_str(MEASURED_TASK_HELPERS);
+    writeln!(script).unwrap();
+
     // Generic shell task: runs a command, accepts upstream ObjectRefs as
     // implicit dependencies (Ray waits for them before scheduling this task).
     writeln!(script, "@ray.remote").unwrap();
@@ -109,30 +207,11 @@ fn write_remote_functions(script: &mut String) {
         "    \"\"\"Run a shell command. *deps are ObjectRefs — Ray waits for them.\"\"\""
     )
     .unwrap();
-    writeln!(script, "    start = time.time()").unwrap();
     writeln!(
         script,
-        "    result = subprocess.run(command, shell=True, cwd=work_dir, env={{**os.environ, **env_vars}}, capture_output=True, text=True)"
+        "    return _run_measured(job_id, command, True, work_dir, env_vars)"
     )
     .unwrap();
-    writeln!(script, "    elapsed = time.time() - start").unwrap();
-    writeln!(script, "    if result.returncode != 0:").unwrap();
-    writeln!(
-        script,
-        "        msg = result.stderr[-2000:] if result.stderr else '(no stderr)'"
-    )
-    .unwrap();
-    writeln!(
-        script,
-        "        raise RuntimeError(f'Job {{job_id}} failed (exit {{result.returncode}}, {{elapsed:.1f}}s): {{msg}}')"
-    )
-    .unwrap();
-    writeln!(
-        script,
-        "    print(f'Job {{job_id}} succeeded ({{elapsed:.1f}}s)')"
-    )
-    .unwrap();
-    writeln!(script, "    return result.returncode").unwrap();
     writeln!(script).unwrap();
 
     // Script task: runs an interpreter with a script file.
@@ -147,30 +226,11 @@ fn write_remote_functions(script: &mut String) {
         "    \"\"\"Run a script file. *deps are ObjectRefs — Ray waits for them.\"\"\""
     )
     .unwrap();
-    writeln!(script, "    start = time.time()").unwrap();
     writeln!(
         script,
-        "    result = subprocess.run([interpreter, script_path], cwd=work_dir, env={{**os.environ, **env_vars}}, capture_output=True, text=True)"
+        "    return _run_measured(job_id, [interpreter, script_path], False, work_dir, env_vars)"
     )
     .unwrap();
-    writeln!(script, "    elapsed = time.time() - start").unwrap();
-    writeln!(script, "    if result.returncode != 0:").unwrap();
-    writeln!(
-        script,
-        "        msg = result.stderr[-2000:] if result.stderr else '(no stderr)'"
-    )
-    .unwrap();
-    writeln!(
-        script,
-        "        raise RuntimeError(f'Job {{job_id}} failed (exit {{result.returncode}}, {{elapsed:.1f}}s): {{msg}}')"
-    )
-    .unwrap();
-    writeln!(
-        script,
-        "    print(f'Job {{job_id}} succeeded ({{elapsed:.1f}}s)')"
-    )
-    .unwrap();
-    writeln!(script, "    return result.returncode").unwrap();
     writeln!(script).unwrap();
 }
 
@@ -640,6 +700,135 @@ def get(ref): raise RuntimeError('synthetic task failure')
                 .unwrap();
         assert_eq!(results["a"]["status"], "failed");
         assert_eq!(results["a"]["error"], "synthetic task failure");
+    }
+
+    /// Synchronous stand-in for Ray: each `.remote()` runs its task at once,
+    /// so recipes really execute. `OX_STUB_KILL_AFTER=n` SIGKILLs the driver
+    /// before the (n+1)-th task, as `ray job stop` or an OOM kill would.
+    const SYNC_RAY_STUB: &str = r#"
+import os, signal
+_runs = 0
+class _Context:
+    def get_node_id(self): return 'stub-node'
+def get_runtime_context(): return _Context()
+def init(): pass
+class _Ref:
+    def __init__(self, value=None, error=None): self.value, self.error = value, error
+class _Task:
+    def __init__(self, fn): self.fn = fn
+    def options(self, **_): return self
+    def remote(self, *args):
+        global _runs
+        limit = os.environ.get('OX_STUB_KILL_AFTER')
+        if limit is not None and _runs >= int(limit):
+            os.kill(os.getpid(), signal.SIGKILL)
+        _runs += 1
+        try:
+            return _Ref(value=self.fn(*args))
+        except Exception as e:
+            return _Ref(error=e)
+def remote(fn): return _Task(fn)
+def get(ref):
+    if ref.error is not None:
+        raise ref.error
+    return ref.value
+"#;
+
+    /// A recipe that holds `mib` MiB resident and burns `cpu_s` seconds of CPU.
+    fn allocate_and_burn(mib: u64, cpu_s: f64) -> String {
+        format!(
+            "python3 -c \"import time; b = b'x' * ({mib} << 20); t = time.process_time(); \
+             [0 for _ in iter(lambda: time.process_time() - t < {cpu_s}, False)]\""
+        )
+    }
+
+    fn run_with_stub(staging: &std::path::Path, script: String, kill_after: Option<u32>) -> i32 {
+        let path = staging.join("driver.py");
+        std::fs::write(&path, script).unwrap();
+        std::fs::write(staging.join("ray.py"), SYNC_RAY_STUB).unwrap();
+        let mut command = std::process::Command::new("python3");
+        command.arg(path);
+        if let Some(n) = kill_after {
+            command.env("OX_STUB_KILL_AFTER", n.to_string());
+        }
+        let output = command.output().unwrap();
+        output.status.code().unwrap_or(-1)
+    }
+
+    #[test]
+    fn every_task_records_its_usage_and_node_when_it_ends() {
+        // Job IDs with `/` and `%` exercise the shared file-name rule.
+        let jobs = vec![
+            shell_job("small", &allocate_and_burn(20, 0.05), vec![], vec![]),
+            shell_job("big/x%y", &allocate_and_burn(200, 0.5), vec![], vec![]),
+            shell_job("bad", "echo boom >&2; exit 3", vec![], vec![]),
+        ];
+        let graph = JobGraph::build(jobs).unwrap();
+        let staging = tempfile::tempdir().unwrap();
+        let ctx = ExecContext {
+            project_dir: staging.path().into(),
+            ..ctx()
+        };
+        let script = generate_driver(&graph, &ctx, staging.path(), &no_skip()).unwrap();
+        assert_eq!(run_with_stub(staging.path(), script, None), 1);
+
+        let tasks = staging.path().join(crate::task_record::TASKS_DIR);
+        let small = crate::task_record::read(&tasks, "small").expect("small record");
+        let big = crate::task_record::read(&tasks, "big/x%y").expect("big record");
+        let bad = crate::task_record::read(&tasks, "bad").expect("failed task record");
+        const MIB: u64 = 1 << 20;
+
+        for record in [&small, &big] {
+            assert_eq!(record.status, crate::task_record::TaskStatus::Completed);
+            assert_eq!(record.exit_code, Some(0));
+            assert_eq!(record.node_id.as_deref(), Some("stub-node"));
+            assert!(!record.hostname.as_deref().unwrap_or("").is_empty());
+            assert!(record.started_at <= record.ended_at);
+        }
+        let (small_rss, big_rss) = (small.peak_rss_bytes.unwrap(), big.peak_rss_bytes.unwrap());
+        assert!((20 * MIB..100 * MIB).contains(&small_rss), "{small:?}");
+        assert!(big_rss >= 200 * MIB, "{big:?}");
+        let (small_cpu, big_cpu) = (small.cpu_time_ms.unwrap(), big.cpu_time_ms.unwrap());
+        assert!(
+            small_cpu >= 50 && big_cpu >= 500 && big_cpu > small_cpu,
+            "{small:?} {big:?}"
+        );
+        assert!(big.wall_time_ms >= 500, "{big:?}");
+
+        assert_eq!(bad.status, crate::task_record::TaskStatus::Failed);
+        assert_eq!(bad.exit_code, Some(3));
+        assert!(bad.error.as_deref().unwrap().contains("boom"), "{bad:?}");
+
+        // Records are renamed into place: no temporary survives.
+        let names: Vec<String> = std::fs::read_dir(&tasks)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names.len(), 3, "{names:?}");
+        // The end-of-run summary is still written for compatibility.
+        assert!(staging.path().join("results.json").is_file());
+    }
+
+    #[test]
+    fn a_killed_driver_leaves_the_records_of_finished_tasks() {
+        let jobs = vec![
+            shell_job("first", "true", vec![], vec![]),
+            shell_job("second", "true", vec![], vec![]),
+        ];
+        let graph = JobGraph::build(jobs).unwrap();
+        let staging = tempfile::tempdir().unwrap();
+        let ctx = ExecContext {
+            project_dir: staging.path().into(),
+            ..ctx()
+        };
+        let script = generate_driver(&graph, &ctx, staging.path(), &no_skip()).unwrap();
+        assert_eq!(run_with_stub(staging.path(), script, Some(1)), -1);
+
+        let records =
+            crate::task_record::read_all(&staging.path().join(crate::task_record::TASKS_DIR));
+        assert_eq!(records.len(), 1, "{records:?}");
+        assert_eq!(records[0].status, crate::task_record::TaskStatus::Completed);
+        assert!(!staging.path().join("results.json").exists());
     }
 
     #[test]

@@ -47,6 +47,7 @@ pub mod placement_group;
 pub mod ray_client;
 pub mod resource_mapper;
 pub mod runtime_env;
+pub mod task_record;
 
 pub use autoscaler::{AutoscalerAdvisor, ClusterResources};
 pub use dashboard::{ClusterMetrics, JobListResponse, JobSummary, OxymakeClusterSummary};
