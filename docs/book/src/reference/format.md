@@ -139,7 +139,7 @@ history record the executor selected for each executed job.
 
 ### Output cleanup
 
-`clean_outputs` is an optional per-rule string (currently local-executor only):
+`clean_outputs` is an optional per-rule string:
 
 | Value | Before execution | After failure |
 |-------|------------------|---------------|
@@ -161,8 +161,13 @@ when every declared output is complete. Preserved files alone do not prove
 that a failed run succeeded. `"on-failure"` also requires the script to validate
 any existing outputs it reuses on a successful run.
 
-Slurm and Ray carry this field but keep their existing output behavior; this
-policy controls automatic cleanup by the local executor. Explicit `ox clean`
+The table describes the local executor. Ray shell, script and inline `run`
+tasks honor the after-failure policy and verify outputs after success, then
+stage/commit them unless the policy is `never`. Ray does not apply the table's
+before-execution cleanup; commands still write to their final paths. A hard kill
+can leave partial final files because no cleanup runs (see
+[Ray output finalization](../concepts/ray-integration.md#output-finalization)).
+Call-mode and Slurm retain their existing behavior. Explicit `ox clean`
 and output lifecycle policies such as `temp` are separate mechanisms.
 
 #### Incremental cache of an external source
