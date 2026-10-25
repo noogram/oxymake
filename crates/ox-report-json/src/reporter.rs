@@ -98,13 +98,26 @@ impl AtomicEventFile {
     }
 }
 
-impl Write for AtomicEventFile {
-    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
-        self.file.write_all(buffer)?;
-        if !self.published && buffer.contains(&b'\n') {
+impl AtomicEventFile {
+    /// Make the log visible now, with whatever complete lines it holds
+    /// (possibly none). Used when another process may append to the log
+    /// before this writer's first event, as `ox status` does for a Ray DAG
+    /// run. Publishing twice is a no-op.
+    pub fn publish(&mut self) -> io::Result<()> {
+        if !self.published {
             self.file.sync_data()?;
             fs::rename(&self.temporary_path, &self.final_path)?;
             self.published = true;
+        }
+        Ok(())
+    }
+}
+
+impl Write for AtomicEventFile {
+    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+        self.file.write_all(buffer)?;
+        if buffer.contains(&b'\n') {
+            self.publish()?;
         }
         Ok(buffer.len())
     }
@@ -439,6 +452,38 @@ mod tests {
             fs::read_to_string(&final_path).unwrap(),
             "{\"n\":1}\n{\"n\":2}\n{\"n\":3}\n"
         );
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    /// A Ray DAG run publishes its log before any event, so `ox status`
+    /// appends synchronised job events to an existing file and never races
+    /// the run's own publication.
+    #[test]
+    fn atomic_event_file_can_publish_an_empty_log() {
+        let directory = std::env::temp_dir().join(format!(
+            "ox-report-json-test-{}-{}",
+            std::process::id(),
+            TEMP_FILE_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir(&directory).unwrap();
+        let final_path = directory.join("run-123.ndjson");
+        {
+            let mut file = AtomicEventFile::create(&final_path).unwrap();
+            file.publish().unwrap();
+            assert_eq!(fs::read_to_string(&final_path).unwrap(), "");
+            OpenOptions::new()
+                .append(true)
+                .open(&final_path)
+                .unwrap()
+                .write_all(b"{\"n\":1}\n")
+                .unwrap();
+            file.write_all(b"{\"n\":2}\n").unwrap();
+        }
+        assert_eq!(
+            fs::read_to_string(&final_path).unwrap(),
+            "{\"n\":1}\n{\"n\":2}\n"
+        );
+        assert_eq!(fs::read_dir(&directory).unwrap().count(), 1);
         fs::remove_dir_all(directory).unwrap();
     }
 
