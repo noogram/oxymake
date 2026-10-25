@@ -2073,6 +2073,9 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
     // stay absent so history can distinguish them from a measured zero (#24).
     let job_peak_memory_bytes: Arc<Mutex<HashMap<String, u64>>> =
         Arc::new(Mutex::new(HashMap::new()));
+    // CPU time and node, likewise only where the executor measured them.
+    let job_cpu_times_ms: Arc<Mutex<HashMap<String, u64>>> = Arc::new(Mutex::new(HashMap::new()));
+    let job_nodes: Arc<Mutex<HashMap<String, String>>> = Arc::new(Mutex::new(HashMap::new()));
 
     // Set once the first shutdown signal is seen, so the post-scheduler
     // finalisation knows this run was interrupted rather than merely finished
@@ -2229,6 +2232,8 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
             let durations = Arc::clone(&job_durations);
             let executors = Arc::clone(&job_executors);
             let peak_memory = Arc::clone(&job_peak_memory_bytes);
+            let cpu_times = Arc::clone(&job_cpu_times_ms);
+            let nodes = Arc::clone(&job_nodes);
             bridge_handles.push(tokio::spawn(async move {
                 let db = match ox_state::db::StateDb::open(&db_path) {
                     Ok(db) => db,
@@ -2252,6 +2257,8 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
                                 ref job_id,
                                 duration_ms,
                                 peak_memory_bytes,
+                                cpu_time_ms,
+                                ref node,
                                 ..
                             } => {
                                 // Claim first in case JobStarted was never received.
@@ -2266,6 +2273,12 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
                                         .lock()
                                         .await
                                         .insert(job_id.as_str().to_string(), bytes);
+                                }
+                                if let Some(ms) = cpu_time_ms {
+                                    cpu_times.lock().await.insert(job_id.to_string(), ms);
+                                }
+                                if let Some(node) = node {
+                                    nodes.lock().await.insert(job_id.to_string(), node.clone());
                                 }
                             }
                             Event::JobFailed {
@@ -2855,6 +2868,8 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
             &peak_memory_bytes,
             &cache_provenance,
             &job_executors.blocking_lock(),
+            &job_cpu_times_ms.blocking_lock(),
+            &job_nodes.blocking_lock(),
         );
 
         // A stopped follow did not complete, even without a signal. Close it
