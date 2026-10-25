@@ -137,12 +137,57 @@ def _node_id():
         return None
 
 
-def _run_measured(job_id, args, shell, work_dir, env_vars):
+def _remove_output(path):
+    try:
+        os.remove(path)
+    except OSError:
+        pass  # Match local best-effort remove_file cleanup.
+
+
+def _cleanup_outputs(outputs, clean_outputs):
+    for path, temporary in outputs:
+        if clean_outputs != 'never':
+            _remove_output(path)
+        _remove_output(temporary)
+
+
+def _finalize_outputs(outputs, clean_outputs):
+    for path, _ in outputs:
+        if not os.path.exists(path):
+            _cleanup_outputs(outputs, clean_outputs)
+            raise RuntimeError(f'OutputMissing: {path}')
+    if clean_outputs == 'never':
+        for _, temporary in outputs:
+            _remove_output(temporary)
+        return
+    staged = []
+    for path, temporary in outputs:
+        try:
+            os.replace(path, temporary)
+        except OSError as e:
+            for original, scratch in staged:
+                try:
+                    os.replace(scratch, original)
+                except OSError:
+                    pass
+            raise RuntimeError(f'AtomicWriteFailed: {path}: stage rename failed: {e}') from e
+        staged.append((path, temporary))
+    for path, temporary in outputs:
+        try:
+            os.replace(temporary, path)
+        except OSError as e:
+            _cleanup_outputs(outputs, clean_outputs)
+            raise RuntimeError(f'AtomicWriteFailed: {path}: commit rename failed: {e}') from e
+
+
+def _run_measured(job_id, args, shell, work_dir, env_vars, outputs, clean_outputs):
     """Run one command and record its usage, wherever and however it ends.
 
     The child is reaped with os.wait4 rather than read from RUSAGE_CHILDREN:
     Ray reuses worker processes, and that counter accumulates across tasks.
     """
+    outputs = [(os.path.join(work_dir, path), os.path.join(work_dir, temporary))
+               for path, temporary in outputs]
     start = time.time()
     record = {'job_id': job_id, 'started_at': start, 'node_id': _node_id(),
               'hostname': socket.gethostname()}
@@ -165,6 +210,7 @@ def _run_measured(job_id, args, shell, work_dir, env_vars):
             err.seek(max(0, err.tell() - 8192))
             stderr = err.read().decode(errors='replace')
     except Exception as e:
+        _cleanup_outputs(outputs, clean_outputs)
         end = time.time()
         record.update(status='failed', exit_code=None, ended_at=end,
                       wall_time_ms=int((end - start) * 1000), cpu_time_ms=None,
@@ -183,10 +229,17 @@ def _run_measured(job_id, args, shell, work_dir, env_vars):
         peak_rss_bytes=None if usage is None else usage.ru_maxrss * (1 if sys.platform == 'darwin' else 1024),
     )
     if child.returncode != 0:
+        _cleanup_outputs(outputs, clean_outputs)
         msg = stderr[-2000:] if stderr else '(no stderr)'
         record['error'] = msg[-500:]
         _write_record(record)
         raise RuntimeError(f'Job {job_id} failed (exit {child.returncode}, {elapsed:.1f}s): {msg}')
+    try:
+        _finalize_outputs(outputs, clean_outputs)
+    except Exception as e:
+        record.update(status='failed', error=str(e)[-500:])
+        _write_record(record)
+        raise
     _write_record(record)
     print(f'Job {job_id} succeeded ({elapsed:.1f}s)')
     return child.returncode
@@ -210,7 +263,7 @@ fn write_remote_functions(script: &mut String, staging_dir: &std::path::Path) {
     writeln!(script, "@ray.remote").unwrap();
     writeln!(
         script,
-        "def run_shell(job_id, command, work_dir, env_vars, *deps):"
+        "def run_shell(job_id, command, work_dir, env_vars, outputs, clean_outputs, *deps):"
     )
     .unwrap();
     writeln!(
@@ -220,7 +273,7 @@ fn write_remote_functions(script: &mut String, staging_dir: &std::path::Path) {
     .unwrap();
     writeln!(
         script,
-        "    return _run_measured(job_id, command, True, work_dir, env_vars)"
+        "    return _run_measured(job_id, command, True, work_dir, env_vars, outputs, clean_outputs)"
     )
     .unwrap();
     writeln!(script).unwrap();
@@ -229,7 +282,7 @@ fn write_remote_functions(script: &mut String, staging_dir: &std::path::Path) {
     writeln!(script, "@ray.remote").unwrap();
     writeln!(
         script,
-        "def run_script(job_id, interpreter, script_path, work_dir, env_vars, *deps):"
+        "def run_script(job_id, interpreter, script_path, work_dir, env_vars, outputs, clean_outputs, *deps):"
     )
     .unwrap();
     writeln!(
@@ -239,7 +292,7 @@ fn write_remote_functions(script: &mut String, staging_dir: &std::path::Path) {
     .unwrap();
     writeln!(
         script,
-        "    return _run_measured(job_id, [interpreter, script_path], False, work_dir, env_vars)"
+        "    return _run_measured(job_id, [interpreter, script_path], False, work_dir, env_vars, outputs, clean_outputs)"
     )
     .unwrap();
     writeln!(script).unwrap();
@@ -341,12 +394,39 @@ fn write_task_submission(
     let env_json = serde_json::to_string(&job.env).expect("environment variables serialize");
     let env_arg = format!("json.loads(\"{}\")", python_string_escape(&env_json));
 
+    // Resolve staging pairs with the same path function as local. Call-mode
+    // files participate only when its wrapper actually materializes them.
+    let outputs: Vec<_> = job
+        .outputs
+        .iter()
+        .filter_map(|output| {
+            if matches!(job.execution, ExecutionBlock::Call { .. })
+                && !crate::object_store::strategy_for_policy(output.materialize, false)
+                    .write_to_shared_fs
+            {
+                return None;
+            }
+            match &output.reference {
+                ox_core::model::OutputRef::File(path) => {
+                    Some((path.clone(), ox_core::atomic_output::temp_path(path)))
+                }
+                _ => None,
+            }
+        })
+        .collect();
+    let output_json = serde_json::to_string(&outputs).expect("output paths serialize");
+    let output_args = format!(
+        ", json.loads(\"{}\"), \"{}\"",
+        python_string_escape(&output_json),
+        job.clean_outputs
+    );
+
     match &job.execution {
         ExecutionBlock::Shell { command } => {
             let escaped_cmd = python_string_escape(command);
             writeln!(
                 script,
-                "{var_name} = run_shell{options_suffix}.remote(\"{escaped_id}\", \"{escaped_cmd}\", \"{project_dir}\", {env_arg}{deps_str})"
+                "{var_name} = run_shell{options_suffix}.remote(\"{escaped_id}\", \"{escaped_cmd}\", \"{project_dir}\", {env_arg}{output_args}{deps_str})"
             )
             .unwrap();
         }
@@ -356,7 +436,7 @@ fn write_task_submission(
             let script_path = path.display();
             writeln!(
                 script,
-                "{var_name} = run_script{options_suffix}.remote(\"{escaped_id}\", \"{interpreter}\", \"{script_path}\", \"{project_dir}\", {env_arg}{deps_str})"
+                "{var_name} = run_script{options_suffix}.remote(\"{escaped_id}\", \"{interpreter}\", \"{script_path}\", \"{project_dir}\", {env_arg}{output_args}{deps_str})"
             )
             .unwrap();
         }
@@ -370,7 +450,7 @@ fn write_task_submission(
             // The driver just references the file.
             writeln!(
                 script,
-                "{var_name} = run_script{options_suffix}.remote(\"{escaped_id}\", \"{interpreter}\", \"{script_path_display}\", \"{project_dir}\", {env_arg}{deps_str})"
+                "{var_name} = run_script{options_suffix}.remote(\"{escaped_id}\", \"{interpreter}\", \"{script_path_display}\", \"{project_dir}\", {env_arg}{output_args}{deps_str})"
             )
             .unwrap();
 
@@ -391,7 +471,7 @@ fn write_task_submission(
             let escaped_cmd = python_string_escape(&wrapper_cmd);
             writeln!(
                 script,
-                "{var_name} = run_shell{options_suffix}.remote(\"{escaped_id}\", \"{escaped_cmd}\", \"{project_dir}\", {env_arg}{deps_str})"
+                "{var_name} = run_shell{options_suffix}.remote(\"{escaped_id}\", \"{escaped_cmd}\", \"{project_dir}\", {env_arg}{output_args}{deps_str})"
             )
             .unwrap();
         }
@@ -670,7 +750,7 @@ print(json.dumps(values))
         ]);
         let graph = JobGraph::build(vec![job]).unwrap();
         let staging = tempfile::tempdir().unwrap();
-        let expected = "ref_0 = run_shell.options(num_cpus=2, memory=4096, resources=json.loads(\"{\\\"alpha\\\":1.0,\\\"metal\\\":0.5,\\\"zeta\\\":3.0}\")).remote(\"a\", \"true\", \"/tmp/project\", json.loads(\"{}\"))";
+        let expected = "ref_0 = run_shell.options(num_cpus=2, memory=4096, resources=json.loads(\"{\\\"alpha\\\":1.0,\\\"metal\\\":0.5,\\\"zeta\\\":3.0}\")).remote(\"a\", \"true\", \"/tmp/project\", json.loads(\"{}\"), json.loads(\"[]\"), \"always\")";
 
         for _ in 0..32 {
             let script = generate_driver(&graph, &ctx(), staging.path(), &no_skip()).unwrap();
@@ -724,6 +804,9 @@ class _Context:
     def get_node_id(self): return 'stub-node'
 def get_runtime_context(): return _Context()
 def init(): pass
+class _Stored:
+    def hex(self): return '00'
+def put(value): return _Stored()
 class _Ref:
     def __init__(self, value=None, error=None): self.value, self.error = value, error
 class _Task:
@@ -765,6 +848,259 @@ def get(ref):
         }
         let output = command.output().unwrap();
         output.status.code().unwrap_or(-1)
+    }
+
+    #[test]
+    fn ray_call_finalizes_only_materialized_files() {
+        for materialize in [
+            MaterializePolicy::Always,
+            MaterializePolicy::Auto,
+            MaterializePolicy::Never,
+            MaterializePolicy::Final,
+        ] {
+            for fail in [false, true] {
+                let dir = tempfile::tempdir().unwrap();
+                let body = if fail {
+                    "def produce():\n    open('out.json', 'w').write('partial')\n    open('out.json.oxytmp', 'w').write('scratch')\n    raise RuntimeError('failed call')\n"
+                } else {
+                    "def produce():\n    return {'answer': 42}\n"
+                };
+                std::fs::write(dir.path().join("recipe.py"), body).unwrap();
+                let output = ResolvedOutput {
+                    reference: OutputRef::File("out.json".into()),
+                    name: None,
+                    lifecycle: OutputLifecycle::Permanent,
+                    materialize,
+                    format: None,
+                };
+                let mut job = shell_job("produce", "", vec![], vec![output]);
+                job.execution = ExecutionBlock::Call {
+                    function: "recipe:produce".into(),
+                    lang: "python".into(),
+                };
+                let graph = JobGraph::build(vec![job]).unwrap();
+                let ctx = ExecContext {
+                    project_dir: dir.path().into(),
+                    ..ctx()
+                };
+                let source = generate_driver(&graph, &ctx, dir.path(), &no_skip()).unwrap();
+                assert_eq!(
+                    run_with_stub(dir.path(), source, None),
+                    if fail { 1 } else { 0 }
+                );
+                let writes_file = materialize == MaterializePolicy::Always;
+                // Files outside the declared materialization contract remain
+                // owned by the user function; no object-store behavior changes.
+                assert_eq!(
+                    dir.path().join("out.json").exists(),
+                    if fail { !writes_file } else { writes_file }
+                );
+                assert_eq!(
+                    dir.path().join("out.json.oxytmp").exists(),
+                    fail && !writes_file
+                );
+                if !fail && writes_file {
+                    let value: serde_json::Value = serde_json::from_str(
+                        &std::fs::read_to_string(dir.path().join("out.json")).unwrap(),
+                    )
+                    .unwrap();
+                    assert_eq!(value["answer"], 42);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn ray_output_finalization_rename_failures() {
+        for phase in ["stage", "commit"] {
+            let dir = tempfile::tempdir().unwrap();
+            let outputs = ["a", "b"]
+                .map(|name| ResolvedOutput {
+                    reference: OutputRef::File(name.into()),
+                    name: None,
+                    lifecycle: OutputLifecycle::Permanent,
+                    materialize: MaterializePolicy::Always,
+                    format: None,
+                })
+                .to_vec();
+            let graph = JobGraph::build(vec![shell_job(
+                "produce",
+                "echo a > a; echo b > b",
+                vec![],
+                outputs,
+            )])
+            .unwrap();
+            let ctx = ExecContext {
+                project_dir: dir.path().into(),
+                ..ctx()
+            };
+            let source = generate_driver(&graph, &ctx, dir.path(), &no_skip()).unwrap();
+            let hook = format!(
+                r#"
+_real_replace = os.replace
+def _fail_replace(source, target):
+    if (source.endswith('/b') and target.endswith('/b.oxytmp') and '{phase}' == 'stage') or (source.endswith('/b.oxytmp') and target.endswith('/b') and '{phase}' == 'commit'):
+        raise OSError('injected rename failure')
+    return _real_replace(source, target)
+os.replace = _fail_replace
+"#
+            );
+            let source = source.replace(
+                "# --- DAG task submissions ---",
+                &format!("{hook}\n# --- DAG task submissions ---"),
+            );
+            assert_eq!(run_with_stub(dir.path(), source, None), 1);
+            let record = crate::task_record::read(
+                &dir.path().join(crate::task_record::TASKS_DIR),
+                "produce",
+            )
+            .unwrap();
+            assert_eq!(record.status, crate::task_record::TaskStatus::Failed);
+            assert!(
+                record
+                    .error
+                    .unwrap()
+                    .contains(&format!("{phase} rename failed"))
+            );
+            for name in ["a", "b"] {
+                // A stage failure rolls back previous renames like local;
+                // a commit failure removes all outputs and scratch.
+                assert_eq!(dir.path().join(name).exists(), phase == "stage");
+                assert!(!dir.path().join(format!("{name}.oxytmp")).exists());
+            }
+        }
+    }
+
+    #[test]
+    fn ray_output_finalization_contract() {
+        for execution_mode in ["shell", "script", "run"] {
+            for policy in [
+                CleanOutputs::Always,
+                CleanOutputs::OnFailure,
+                CleanOutputs::Never,
+            ] {
+                for case in ["failure", "missing", "success"] {
+                    let dir = tempfile::tempdir().unwrap();
+                    let output = PathBuf::from("résultat 'quoted'.txt");
+                    let absolute = dir.path().join("absolute.txt");
+                    let outputs = [output.clone(), absolute.clone()]
+                        .map(|path| ResolvedOutput {
+                            reference: OutputRef::File(path),
+                            name: None,
+                            lifecycle: OutputLifecycle::Permanent,
+                            materialize: MaterializePolicy::Always,
+                            format: None,
+                        })
+                        .to_vec();
+                    let command = format!(
+                        "echo attempt >> attempts; echo partial > \"{}\"; echo scratch > \"{}.oxytmp\"; {}",
+                        output.display(),
+                        output.display(),
+                        match case {
+                            "failure" => "exit 7".to_string(),
+                            "missing" => "true".to_string(),
+                            _ => format!("echo complete > '{}'", absolute.display()),
+                        }
+                    );
+                    let mut job = shell_job("produce", &command, vec![], outputs);
+                    job.clean_outputs = policy;
+                    if execution_mode == "script" {
+                        let path = dir.path().join("recipe.sh");
+                        std::fs::write(&path, &command).unwrap();
+                        job.execution = ExecutionBlock::Script {
+                            path,
+                            lang: Some("bash".into()),
+                        };
+                    } else if execution_mode == "run" {
+                        job.execution = ExecutionBlock::Run {
+                            code: command,
+                            lang: "bash".into(),
+                        };
+                    }
+                    let graph = JobGraph::build(vec![job]).unwrap();
+                    let ctx = ExecContext {
+                        project_dir: dir.path().into(),
+                        ..ctx()
+                    };
+                    let source = generate_driver(&graph, &ctx, dir.path(), &no_skip()).unwrap();
+                    let hook = r#"
+_real_replace = os.replace
+def _trace_replace(source, target):
+    if source.endswith('.oxytmp') or target.endswith('.oxytmp'):
+        with open(os.path.join(os.path.dirname(TASKS_DIR), 'renames'), 'a') as f:
+            f.write(json.dumps([source, target]) + '\n')
+    return _real_replace(source, target)
+os.replace = _trace_replace
+"#;
+                    let source = source.replace(
+                        "# --- DAG task submissions ---",
+                        &format!("{hook}\n# --- DAG task submissions ---"),
+                    );
+                    for attempt in 1..=2 {
+                        let code = run_with_stub(dir.path(), source.clone(), None);
+                        assert_eq!(
+                            code,
+                            if case == "success" { 0 } else { 1 },
+                            "{case}, {policy}, execution={execution_mode}"
+                        );
+                        let record = crate::task_record::read(
+                            &dir.path().join(crate::task_record::TASKS_DIR),
+                            "produce",
+                        )
+                        .unwrap();
+                        assert_eq!(
+                            record.status,
+                            if case == "success" {
+                                crate::task_record::TaskStatus::Completed
+                            } else {
+                                crate::task_record::TaskStatus::Failed
+                            }
+                        );
+                        if case == "missing" {
+                            assert!(record.error.unwrap().contains("OutputMissing"));
+                        }
+                        assert_eq!(
+                            dir.path().join(&output).exists(),
+                            case == "success" || policy == CleanOutputs::Never
+                        );
+                        assert_eq!(absolute.exists(), case == "success");
+                        if case == "success" && policy != CleanOutputs::Never {
+                            let lines =
+                                std::fs::read_to_string(dir.path().join("renames")).unwrap();
+                            let pairs: Vec<(PathBuf, PathBuf)> = lines
+                                .lines()
+                                .map(|line| serde_json::from_str(line).unwrap())
+                                .collect();
+                            let first = dir.path().join(&output);
+                            let paths = [&first, &absolute];
+                            let expected: Vec<_> =
+                                paths
+                                    .iter()
+                                    .map(|p| ((*p).clone(), ox_core::atomic_output::temp_path(p)))
+                                    .chain(paths.iter().map(|p| {
+                                        (ox_core::atomic_output::temp_path(p), (*p).clone())
+                                    }))
+                                    .collect();
+                            assert_eq!(&pairs[(attempt - 1) * 4..attempt * 4], expected.as_slice());
+                        }
+                        // Scratch belongs to the engine even for script-owned files.
+                        assert!(
+                            !dir.path()
+                                .join(format!("{}.oxytmp", output.display()))
+                                .exists()
+                        );
+                        assert!(!dir.path().join("absolute.txt.oxytmp").exists());
+                        assert_eq!(
+                            std::fs::read_to_string(dir.path().join("attempts"))
+                                .unwrap()
+                                .lines()
+                                .count(),
+                            attempt
+                        );
+                    }
+                }
+            }
+        }
     }
 
     #[test]

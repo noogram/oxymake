@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Ray shell, script, inline tasks and materialized call-mode files now verify
+  declared file outputs and
+  finalize them through `.oxytmp` renames, like local execution. Failed commands
+  and missing outputs clean up final files and scratch; `clean_outputs = "never"`
+  preserves final files and skips staging. Hard kills during writing can still
+  leave partial files because finalization cannot run (#60).
+
+### Added
+
+- The unstable Rust helper `ox_core::atomic_output::{temp_path,
+  ATOMIC_TEMP_SUFFIX}` shares output staging paths between local and Ray
+  executors.
+
 ### Added
 
 - `ox run --ray-python PATH` selects the Python executable for the Ray DAG

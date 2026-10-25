@@ -119,6 +119,7 @@
 //! [RETURNING]: https://github.com/noogram/oxymake/blob/main/docs/RETURNING.md
 //! [THESIS]: https://github.com/noogram/oxymake/blob/main/OXYMAKE-THESIS.md
 
+pub mod atomic_output;
 pub mod dag;
 pub mod disk_writer;
 pub mod error;

@@ -664,6 +664,26 @@ directory would change how workflow rules resolve their relative inputs and
 outputs. A remote head without that shared mount is not supported by this
 executor.
 
+### Output finalization
+
+Shell, script and inline `run` tasks write directly to their declared final
+paths. After a zero exit, Ray verifies every declared file exists, stages all
+files to sibling `.oxytmp` paths, then renames them back, as the local executor
+does. Each rename is atomic; the set of outputs is not a filesystem transaction.
+A missing output fails the task with `OutputMissing`. A nonzero exit or missing
+output removes declared files and engine scratch, unless `clean_outputs =
+"never"` preserves the final files. With `never`, successful files are verified
+and left in place without staging. Per-task records report finalization errors
+as failures even when the command exited zero. Call-mode files that the wrapper materializes also participate; outputs
+kept only in the object store have no file finalization.
+
+This is post-execution finalization: a hard kill, preempted worker node or
+stopped head during writing cannot run cleanup and can leave a partial final
+file, as with local execution. Neither executor substitutes temporary paths
+before running the command. File presence alone is not a successful cache entry:
+cache identity uses the computation key, and a failed task must not be recorded
+as a successful cached computation. Failed tasks remain eligible to run again.
+
 ### 4. Monitor execution
 
 ```bash

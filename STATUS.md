@@ -512,3 +512,9 @@ field, a new event, a new env var):
 4. Add an entry to `CHANGELOG.md` under `[Unreleased] / Added`.
 
 See `CONTRIBUTING.md` for the full checklist.
+
+Output staging helpers `ox_core::atomic_output::{temp_path, ATOMIC_TEMP_SUFFIX}`
+are an **unstable** Rust surface shared by local and Ray executors. They append
+`.oxytmp` to the complete output path. Ray's post-execution cleanup contract is
+documented in the [format reference](docs/book/src/reference/format.md#output-cleanup)
+and [Ray guide](docs/book/src/concepts/ray-integration.md#output-finalization).

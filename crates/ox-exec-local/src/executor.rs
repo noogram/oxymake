@@ -33,8 +33,7 @@ use crate::error::ExecLocalError;
 use crate::process::{self, ProcessResult};
 use tracing::{debug, warn};
 
-/// Suffix appended to output files during the atomic staging phase.
-const ATOMIC_TEMP_SUFFIX: &str = ".oxytmp";
+use ox_core::atomic_output::temp_path;
 
 /// State carried through the workspace for atomic output finalization.
 ///
@@ -337,13 +336,6 @@ threads = {threads}"#,
         resources = resources.join(", "),
         threads = threads,
     )
-}
-
-/// Compute the `.oxytmp` staging path for an output file.
-fn temp_path(path: &std::path::Path) -> PathBuf {
-    let mut s = path.as_os_str().to_owned();
-    s.push(ATOMIC_TEMP_SUFFIX);
-    PathBuf::from(s)
 }
 
 /// Returns `true` if the conda `env` value looks like a YAML file spec
