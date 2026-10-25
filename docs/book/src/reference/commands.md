@@ -228,6 +228,12 @@ ox status --json            # Structured status
 ox status --run run-550e8400-e29b-41d4-a716-446655440000
 ```
 
+Every success object from `--json` has top-level integer `"schema_version": 1`,
+including absent state, `--run ID`, `--group-by rule|stage`, and separate Ray
+objects. Ray status may emit multiple consecutive JSON objects. This status
+schema is independent of history and run-event schemas: non-additive changes
+increment it; additive fields do not. Readers should ignore unknown fields.
+
 `--run` is an exact, case-sensitive local lookup. Prefixes, implicit `run-`,
 case normalization, and remote-only discovery are not supported. A missing ID
 exits nonzero before synchronization or remote calls. With `--json`, stdout is
@@ -287,6 +293,12 @@ ox history                     # Recent runs
 ox history --json              # Structured history
 ox history --run-id run-550e8400-e29b-41d4-a716-446655440000
 ```
+
+Each NDJSON run record (`--json`) and job record (`--run-id ID --json`) has
+top-level integer `"schema_version": 1`. This history schema is independent
+of status and run-event schemas: non-additive changes increment it; additive
+fields do not. Readers should ignore unknown fields. With no state or no runs,
+`--json` emits an empty stream.
 
 `--run-id` uses the same exact, case-sensitive local-key contract as
 `ox status --run`. A registered run with no job-history rows succeeds and

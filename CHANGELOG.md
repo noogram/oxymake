@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `ox status --json` now versions every success object with `schema_version: 1`,
+  including absent state, selected/grouped runs, and Ray summaries.
+  `ox history --json` versions each run and job record likewise. The two
+  schemas evolve independently of each other and of run events; non-additive
+  changes increment the affected version. History JSON without state now
+  emits an empty stream instead of human-readable text (#54).
+
 - Executing `ox run` invocations now mint one opaque
   `run-<lowercase-hyphenated-UUIDv4>` identity and carry it unchanged through
   state, events, executor metadata, and run artifacts. Existing run IDs and

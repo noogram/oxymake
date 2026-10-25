@@ -27,6 +27,9 @@ pub struct HistoryArgs {
 // Command
 // ---------------------------------------------------------------------------
 
+// History schema, independent of status snapshots and run-event envelopes.
+const SCHEMA_VERSION: u32 = 1;
+
 pub fn cmd_history(args: HistoryArgs, theme: &ox_render::Theme) -> Result<()> {
     let db_path = Path::new(".oxymake/state.db");
     if !db_path.exists() {
@@ -37,7 +40,9 @@ pub fn cmd_history(args: HistoryArgs, theme: &ox_render::Theme) -> Result<()> {
                 anyhow::bail!("run '{selector}' not found")
             };
         }
-        println!("No OxyMake state found. Run 'ox run' first.");
+        if !args.json {
+            println!("No OxyMake state found. Run 'ox run' first.");
+        }
         return Ok(());
     }
 
@@ -79,6 +84,7 @@ fn list_runs(db: &ox_state::db::StateDb, json: bool, theme: &ox_render::Theme) -
                 })
                 .collect();
             let obj = serde_json::json!({
+                "schema_version": SCHEMA_VERSION,
                 "run_id": run.id,
                 "started_at": format_iso8601(run.started_at),
                 "completed_at": run.completed_at.map(format_iso8601),
@@ -177,6 +183,7 @@ fn show_run_detail(
     if json {
         for job in &jobs {
             let obj = serde_json::json!({
+                "schema_version": SCHEMA_VERSION,
                 "run_id": job.run_id,
                 "job_id": job.job_id,
                 "rule_name": job.rule_name,
