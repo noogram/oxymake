@@ -11,6 +11,15 @@ fn ox() -> Command {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn dash_f_file_submits_the_driver_written_beside_the_oxymakefile() {
+    assert_submitted_driver_python(None).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ray_python_reaches_submitted_driver_entrypoint() {
+    assert_submitted_driver_python(Some("/opt/ray env's/bin/python;false")).await;
+}
+
+async fn assert_submitted_driver_python(python: Option<&str>) {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/api/version"))
@@ -44,21 +53,23 @@ async fn dash_f_file_submits_the_driver_written_beside_the_oxymakefile() {
         link.join("Oxymakefile.toml")
     };
 
-    ox().current_dir(invocation_dir.path())
-        .args([
-            "run",
-            "a.out",
-            "-f",
-            oxymakefile.to_str().unwrap(),
-            "--executor",
-            "ray",
-            "--ray-address",
-            &server.uri(),
-            "--ray-allow-pending",
-            "--no-cache",
-        ])
-        .assert()
-        .success();
+    let mut command = ox();
+    command.current_dir(invocation_dir.path()).args([
+        "run",
+        "a.out",
+        "-f",
+        oxymakefile.to_str().unwrap(),
+        "--executor",
+        "ray",
+        "--ray-address",
+        &server.uri(),
+        "--ray-allow-pending",
+        "--no-cache",
+    ]);
+    if let Some(python) = python {
+        command.args(["--ray-python", python]);
+    }
+    command.assert().success();
 
     let request = server
         .received_requests()
@@ -105,7 +116,10 @@ async fn dash_f_file_submits_the_driver_written_beside_the_oxymakefile() {
     assert_eq!(
         payload["entrypoint"],
         format!(
-            "python3 '{}'",
+            "{} '{}'",
+            python
+                .map(|p| format!("'{}'", p.replace('\'', "'\\''")))
+                .unwrap_or_else(|| "python3".into()),
             driver_path.to_str().unwrap().replace('\'', "'\\''")
         )
     );

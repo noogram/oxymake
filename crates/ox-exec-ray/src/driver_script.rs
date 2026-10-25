@@ -40,6 +40,17 @@ pub fn generate_driver(
     staging_dir: &std::path::Path,
     skip_jobs: &HashSet<JobId>,
 ) -> Result<String, RayError> {
+    generate_driver_with_python(graph, ctx, staging_dir, skip_jobs, "python3")
+}
+
+/// Generate a DAG driver whose call wrappers use the selected Python executable.
+pub(crate) fn generate_driver_with_python(
+    graph: &JobGraph,
+    ctx: &ExecContext,
+    staging_dir: &std::path::Path,
+    skip_jobs: &HashSet<JobId>,
+    python: &str,
+) -> Result<String, RayError> {
     let topo_order = graph
         .topological_order()
         .map_err(|e| RayError::CallModeError(format!("topological sort failed: {e}")))?;
@@ -58,7 +69,7 @@ pub fn generate_driver(
 
     write_header(&mut script);
     write_remote_functions(&mut script, staging_dir);
-    write_dag_tasks(&mut script, graph, &active_order, ctx, staging_dir)?;
+    write_dag_tasks(&mut script, graph, &active_order, ctx, staging_dir, python)?;
     write_wait_and_report(&mut script, graph, &active_order, staging_dir);
 
     Ok(script)
@@ -241,6 +252,7 @@ fn write_dag_tasks(
     topo_order: &[&JobId],
     ctx: &ExecContext,
     staging_dir: &std::path::Path,
+    python: &str,
 ) -> Result<(), RayError> {
     writeln!(script, "# --- DAG task submissions ---").unwrap();
     writeln!(
@@ -280,7 +292,7 @@ fn write_dag_tasks(
         };
 
         // Emit the task submission based on execution block type.
-        write_task_submission(script, job_id, job, var_name, &deps_str, ctx, staging_dir)?;
+        write_task_submission(script, job, var_name, &deps_str, ctx, staging_dir, python)?;
     }
 
     Ok(())
@@ -289,15 +301,15 @@ fn write_dag_tasks(
 /// Write a single task submission line.
 fn write_task_submission(
     script: &mut String,
-    job_id: &JobId,
     job: &ConcreteJob,
     var_name: &str,
     deps_str: &str,
     ctx: &ExecContext,
     staging_dir: &std::path::Path,
+    python: &str,
 ) -> Result<(), RayError> {
     let project_dir = ctx.project_dir.display();
-    let job_id_str = job_id.as_str();
+    let job_id_str = job.id.as_str();
     let escaped_id = python_string_escape(job_id_str);
 
     // Build resource options string for .options() if resources are specified.
@@ -375,7 +387,7 @@ fn write_task_submission(
             std::fs::create_dir_all(staging_dir).map_err(RayError::Io)?;
             std::fs::write(&wrapper_file, wrapper).map_err(RayError::Io)?;
 
-            let wrapper_cmd = call_mode::wrapper_command(&wrapper_file);
+            let wrapper_cmd = call_mode::wrapper_command_with_python(&wrapper_file, python);
             let escaped_cmd = python_string_escape(&wrapper_cmd);
             writeln!(
                 script,
@@ -829,6 +841,30 @@ def get(ref):
         assert_eq!(records.len(), 1, "{records:?}");
         assert_eq!(records[0].status, crate::task_record::TaskStatus::Completed);
         assert!(!staging.path().join("results.json").exists());
+    }
+
+    #[test]
+    fn ray_python_reaches_call_wrappers_inside_dag_driver() {
+        let mut job = shell_job("call", "", vec![], vec![]);
+        job.execution = ExecutionBlock::Call {
+            function: "pipeline:compute".into(),
+            lang: "python".into(),
+        };
+        let graph = JobGraph::build(vec![job]).unwrap();
+        let staging = tempfile::Builder::new()
+            .prefix("ray project's ")
+            .tempdir()
+            .unwrap();
+        for python in ["python3", "/opt/ray env's/bin/python;false"] {
+            let source =
+                generate_driver_with_python(&graph, &ctx(), staging.path(), &no_skip(), python)
+                    .unwrap();
+            let command = call_mode::wrapper_command_with_python(
+                &staging.path().join("call.call_wrapper.py"),
+                python,
+            );
+            assert!(source.contains(&python_string_escape(&command)), "{source}");
+        }
     }
 
     #[test]

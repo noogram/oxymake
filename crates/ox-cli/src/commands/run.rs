@@ -194,6 +194,10 @@ pub struct RunArgs {
     #[arg(long)]
     pub ray_address: Option<String>,
 
+    /// Python executable on Ray hosts for the DAG driver and call wrappers
+    #[arg(long, value_name = "PATH", default_value = "python3")]
+    pub ray_python: String,
+
     /// Allow Ray tasks to wait for nodes with missing capacity (Ray only)
     #[arg(long)]
     pub ray_allow_pending: bool,
@@ -2620,6 +2624,7 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
             "ray" => {
                 let ray_config = RayConfig {
                     allow_pending: args.ray_allow_pending,
+                    python: args.ray_python.clone(),
                     dashboard_address: args
                         .ray_address
                         .clone()

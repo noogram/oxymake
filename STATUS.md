@@ -52,8 +52,9 @@ The `ox` binary exposes 27 subcommands today (see `crates/ox-cli/src/lib.rs`).
     default `mtime+hash`, content-verifying — ADR-006 amendment)
   - `--no-cache`
 
-  Three `ox run` flags are shipped but **unstable**: `--cache-remote <dir>`,
-  `--resource-budget KEY=VALUE`, and `--ray-allow-pending`. `--cache-remote`
+  Four `ox run` flags are shipped but **unstable**: `--cache-remote <dir>`,
+  `--resource-budget KEY=VALUE`, `--ray-python PATH`, and
+  `--ray-allow-pending`. `--cache-remote`
   stores output blobs in and restores missing outputs from a shared
   directory, forcing content-hash validation. It is a blob transport: the
   local SQLite index mapping computation keys to outputs does not travel,
@@ -91,6 +92,9 @@ selector.
   repeatable, comma-separated capacities. It validates the selected DAG even
   when all jobs are cached; in mixed SLURM runs only selected local jobs
   participate. It does not coordinate concurrent runs.
+- `ox run --ray-python PATH` selects the Python executable on Ray hosts for
+  the native DAG driver and call-mode wrappers (default `python3`). It is
+  CLI-only and does not change ordinary task interpreters.
 - `ox run --ray-allow-pending` opts out of Ray's live-node capacity check;
   it does not disable resource validation. Ray custom names reject surrounding
   whitespace and collisions with built-in names or reserved prefixes.
@@ -367,8 +371,8 @@ high-water mark includes the warm template footprint inherited at fork.
 Persistent dispatches and missing or malformed protocol fields leave usage
 absent.
 
-Ray's `RayConfig::allow_pending`, driver log API and `RayError::StagingIo`
-staging diagnostic, and the state queries
+Ray's `RayConfig::allow_pending`, `RayConfig::python`, driver log API and
+`RayError::StagingIo` staging diagnostic, and the state queries
 for remote submissions, cancellable jobs and current run membership are
 **unstable** Rust APIs.
 

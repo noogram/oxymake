@@ -4,7 +4,7 @@
 .SH NAME
 ox\-run \- Execute a workflow, ensuring requested outputs exist
 .SH SYNOPSIS
-\fBox\-run\fR [\fB\-j\fR|\fB\-\-jobs\fR] [\fB\-\-resource\-budget\fR] [\fB\-\-rule\fR] [\fB\-\-json\fR] [\fB\-\-report\-json\fR] [\fB\-n\fR|\fB\-\-dry\-run\fR] [\fB\-k\fR|\fB\-\-keep\-going\fR] [\fB\-\-note\fR] [\fB\-\-set\fR] [\fB\-\-executor\fR] [\fB\-\-partition\fR] [\fB\-\-account\fR] [\fB\-\-qos\fR] [\fB\-\-slurm\-api\fR] [\fB\-\-ray\-address\fR] [\fB\-\-ray\-allow\-pending\fR] [\fB\-\-follow\fR] [\fB\-f\fR|\fB\-\-file\fR] [\fB\-\-no\-cache\fR] [\fB\-\-cache\-validation\fR] [\fB\-\-cache\-remote\fR] [\fB\-v\fR|\fB\-\-verbose\fR]... [\fB\-\-until\fR] [\fB\-\-omit\-from\fR] [\fB\-\-touch\fR] [\fB\-\-forcerun\fR] [\fB\-\-profile\fR] [\fB\-\-timings\fR] [\fB\-\-open\-dashboard\fR] [\fB\-\-memory\-budget\fR] [\fB\-\-warm\-workers\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fITARGETS\fR] 
+\fBox\-run\fR [\fB\-j\fR|\fB\-\-jobs\fR] [\fB\-\-resource\-budget\fR] [\fB\-\-rule\fR] [\fB\-\-json\fR] [\fB\-\-report\-json\fR] [\fB\-n\fR|\fB\-\-dry\-run\fR] [\fB\-k\fR|\fB\-\-keep\-going\fR] [\fB\-\-note\fR] [\fB\-\-set\fR] [\fB\-\-executor\fR] [\fB\-\-partition\fR] [\fB\-\-account\fR] [\fB\-\-qos\fR] [\fB\-\-slurm\-api\fR] [\fB\-\-ray\-address\fR] [\fB\-\-ray\-python\fR] [\fB\-\-ray\-allow\-pending\fR] [\fB\-\-follow\fR] [\fB\-f\fR|\fB\-\-file\fR] [\fB\-\-no\-cache\fR] [\fB\-\-cache\-validation\fR] [\fB\-\-cache\-remote\fR] [\fB\-v\fR|\fB\-\-verbose\fR]... [\fB\-\-until\fR] [\fB\-\-omit\-from\fR] [\fB\-\-touch\fR] [\fB\-\-forcerun\fR] [\fB\-\-profile\fR] [\fB\-\-timings\fR] [\fB\-\-open\-dashboard\fR] [\fB\-\-memory\-budget\fR] [\fB\-\-warm\-workers\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fITARGETS\fR]
 .SH DESCRIPTION
 Execute a workflow, ensuring requested outputs exist
 .PP
@@ -63,6 +63,9 @@ When set, the SLURM executor uses the REST API instead of CLI commands (sbatch/s
 .TP
 \fB\-\-ray\-address\fR \fI<RAY_ADDRESS>\fR
 Ray dashboard address (only with \-\-executor ray, default: http://127.0.0.1:8265)
+.TP
+\fB\-\-ray\-python\fR \fI<PATH>\fR [default: python3]
+Python executable on Ray hosts for the DAG driver and call wrappers
 .TP
 \fB\-\-ray\-allow\-pending\fR
 Allow Ray tasks to wait for nodes with missing capacity (Ray only)
