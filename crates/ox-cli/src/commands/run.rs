@@ -2334,7 +2334,10 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
                 } else {
                     eprintln!("\nInterrupted — waiting for running jobs to exit…");
                 }
-                shutdown.notify_waiters();
+                // `notify_one` keeps a permit when the scheduler is dispatching
+                // or handling a completion rather than waiting on the signal;
+                // `notify_waiters` would be lost then.
+                shutdown.notify_one();
 
                 // Second signal: force-exit. Without this, tokio's signal
                 // hook swallows subsequent SIGINTs (ox-2sek).

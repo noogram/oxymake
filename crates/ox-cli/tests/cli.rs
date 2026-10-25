@@ -5057,7 +5057,7 @@ shell = "touch fail-started.txt; sleep 1; exit 1"
 
 [rule.deaf]
 output = ["deaf.txt"]
-shell = "echo $$ > job.pid; trap 'touch term-seen.txt' TERM; touch started.txt; while true; do sleep 0.2; done"
+shell = "echo $$ > job.pid; trap ': > term-seen.txt' TERM; touch started.txt; while true; do sleep 0.2; done"
 "#,
     )
     .unwrap();
@@ -5086,7 +5086,10 @@ shell = "echo $$ > job.pid; trap 'touch term-seen.txt' TERM; touch started.txt; 
         .parse()
         .expect("job pid");
 
-    // Wait until `fail` has failed and the run is in its post-failure wait.
+    // Wait for the failure verdict on `fail`. The ledger writes that row
+    // while the scheduler may still be handling the completion, before it is
+    // back waiting on the running sibling, so the interrupt below can land in
+    // either phase.
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         let conn = rusqlite::Connection::open(&db_path).expect("open state.db");

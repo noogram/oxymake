@@ -445,7 +445,11 @@ pub async fn run_scheduler<E: Executor + 'static>(
 /// When a `shutdown` signal is provided, the scheduler initiates graceful
 /// shutdown when notified: it sends cancel (SIGTERM) to all in-flight jobs,
 /// stops dispatching new work, and waits for running jobs to exit.  The
-/// executor's `finalize_workspace` then cleans up partial outputs.
+/// executor's `finalize_workspace` then cleans up partial outputs. Signal
+/// `shutdown` with [`Notify::notify_one`]: the scheduler is its single
+/// waiter, and the stored permit reaches it even when the signal arrives
+/// while it is dispatching or handling a completion. A
+/// [`Notify::notify_waiters`] sent in those phases is lost.
 ///
 /// This is strictly more powerful than the static `skip_jobs` set in
 /// `SchedulerConfig`, because it can check intermediate jobs whose inputs
@@ -492,6 +496,9 @@ pub async fn run_scheduler_with_cache<E: Executor + 'static>(
 /// mirrored. When the owner's lease expires the state layer reclaims the job
 /// and the poll reports it unclaimed, at which point this session claims and
 /// executes it itself.
+///
+/// `shutdown` follows the contract of [`run_scheduler_with_cache`]: signal it
+/// with [`Notify::notify_one`], the scheduler being its single waiter.
 #[allow(clippy::too_many_arguments)]
 #[tracing::instrument(
     name = "scheduler.run",
@@ -671,6 +678,9 @@ pub async fn run_scheduler_with_claims<E: Executor + 'static>(
     // made Ctrl+C a no-op in that phase, so a SIGTERM-deaf sibling could
     // only be ended by the force-exit. Guard on this flag instead.
     let mut shutdown_received = false;
+    // Set when the dispatch phase consumed the shutdown signal: the `select!`
+    // shutdown arm then fires at once to cancel the in-flight jobs.
+    let mut shutdown_signalled = false;
     // Armed when graceful shutdown starts: the instant after which any job
     // still in flight is hard-killed. `None` once the escalation has fired
     // (or while no shutdown is in progress).
@@ -773,6 +783,16 @@ pub async fn run_scheduler_with_claims<E: Executor + 'static>(
                             continue;
                         }
                     }
+                }
+
+                // A shutdown signalled while this job was being checked (cache
+                // hashing can take seconds) or while a completion was handled
+                // must stop dispatch before the job is launched; the `select!`
+                // below would only see it once the job is running.
+                if take_shutdown_signal(&shutdown) {
+                    shutdown_signalled = true;
+                    terminate_requested = true;
+                    break;
                 }
 
                 // Consolidated dispatch lock: force-rerun read, cache-skip
@@ -1094,6 +1114,7 @@ pub async fn run_scheduler_with_claims<E: Executor + 'static>(
             // If no shutdown signal was provided, this future never resolves.
             let shutdown_fut = async {
                 match &shutdown {
+                    _ if shutdown_signalled => {}
                     Some(notify) => notify.notified().await,
                     None => std::future::pending().await,
                 }
@@ -3149,6 +3170,19 @@ async fn cancel_downstream<E: Executor + ?Sized>(
     }
 }
 
+/// Consume a shutdown signal that was already sent, without waiting for one.
+///
+/// Sees the permit [`Notify::notify_one`] stores when the scheduler is not
+/// parked on the signal; a [`Notify::notify_waiters`] sent then is lost.
+fn take_shutdown_signal(shutdown: &Option<Arc<Notify>>) -> bool {
+    let Some(notify) = shutdown else {
+        return false;
+    };
+    let notified = notify.notified();
+    tokio::pin!(notified);
+    notified.enable()
+}
+
 /// Cancel all remaining pending/ready jobs (called during termination).
 async fn cancel_remaining(state: &Arc<Mutex<Frontier>>, _graph: &JobGraph, event_bus: &EventBus) {
     let mut s = state.lock().await;
@@ -4860,7 +4894,7 @@ mod tests {
         let signal = shutdown.clone();
         tokio::spawn(async move {
             tokio::time::sleep(Duration::from_secs(3)).await;
-            signal.notify_waiters();
+            signal.notify_one();
         });
 
         let result = tokio::time::timeout(
@@ -5047,7 +5081,7 @@ mod tests {
         let signal = shutdown.clone();
         tokio::spawn(async move {
             tokio::time::sleep(Duration::from_secs(3)).await;
-            signal.notify_waiters();
+            signal.notify_one();
         });
 
         let result = tokio::time::timeout(
@@ -5529,6 +5563,8 @@ mod tests {
         started: Arc<Notify>,
         /// Notified when cancel() is called — unblocks execute().
         cancel_signal: Arc<Notify>,
+        /// Jobs that exit 0 at once instead of blocking until cancelled.
+        instant: HashSet<String>,
     }
 
     impl ShutdownMockExecutor {
@@ -5537,6 +5573,14 @@ mod tests {
                 cancelled: Arc::new(Mutex::new(Vec::new())),
                 started: Arc::new(Notify::new()),
                 cancel_signal: Arc::new(Notify::new()),
+                instant: HashSet::new(),
+            }
+        }
+
+        fn with_instant(ids: &[&str]) -> Self {
+            Self {
+                instant: ids.iter().map(|id| id.to_string()).collect(),
+                ..Self::new()
             }
         }
     }
@@ -5572,6 +5616,17 @@ mod tests {
             _workspace: &Workspace,
             _ctx: &ExecContext,
         ) -> Result<JobResult, MockError> {
+            if self.instant.contains(job.id.as_str()) {
+                return Ok(JobResult {
+                    job_id: job.id.clone(),
+                    exit_code: 0,
+                    duration: Duration::from_millis(1),
+                    peak_memory_bytes: None,
+                    cpu_time: None,
+                    log_path: None,
+                    stderr_tail: None,
+                });
+            }
             self.started.notify_one();
             // Block until cancel() is called (simulates a long-running child
             // that exits on SIGTERM).
@@ -5628,9 +5683,7 @@ mod tests {
         let shutdown_clone = shutdown.clone();
         tokio::spawn(async move {
             started.notified().await;
-            // Small delay to ensure the scheduler is in the select! loop.
-            tokio::time::sleep(Duration::from_millis(50)).await;
-            shutdown_clone.notify_waiters();
+            shutdown_clone.notify_one();
         });
 
         let result = run_scheduler_with_cache(
@@ -5687,8 +5740,7 @@ mod tests {
         let shutdown_clone = shutdown.clone();
         tokio::spawn(async move {
             started.notified().await;
-            tokio::time::sleep(Duration::from_millis(50)).await;
-            shutdown_clone.notify_waiters();
+            shutdown_clone.notify_one();
         });
 
         let result = run_scheduler_with_cache(
@@ -5723,6 +5775,108 @@ mod tests {
                 r.cancelled,
             );
         }
+    }
+
+    /// A cache that misses every job and holds the check of `blocked` open
+    /// until the test releases it, keeping the scheduler in its dispatch
+    /// phase (as hashing large inputs does) instead of its `select!`.
+    struct BlockingCacheCheck {
+        blocked: JobId,
+        entered: Arc<Notify>,
+        release: Arc<Notify>,
+    }
+
+    impl CacheCheck for BlockingCacheCheck {
+        fn is_cached<'a>(
+            &'a self,
+            job: &'a ConcreteJob,
+        ) -> Pin<Box<dyn Future<Output = bool> + Send + 'a>> {
+            Box::pin(async move {
+                if job.id == self.blocked {
+                    self.entered.notify_one();
+                    self.release.notified().await;
+                }
+                false
+            })
+        }
+
+        fn record<'a>(
+            &'a self,
+            _job: &'a ConcreteJob,
+        ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
+            Box::pin(async {})
+        }
+    }
+
+    /// An interrupt sent while the scheduler is dispatching, not parked in
+    /// its `select!`, is not lost: the in-flight sibling is cancelled, the
+    /// job being checked is never launched, and the scheduler returns. The
+    /// signal is sent the way `ox run` sends it.
+    #[tokio::test]
+    async fn shutdown_during_dispatch_is_not_lost() {
+        // A succeeds and makes C ready; B runs until it is cancelled.
+        let jobs = vec![
+            make_job("A", "rA", vec![], vec!["a.txt"]),
+            make_job("B", "rB", vec![], vec!["b.txt"]),
+            make_job("C", "rC", vec!["a.txt"], vec!["c.txt"]),
+        ];
+        let graph = JobGraph::build(jobs).unwrap();
+        let executor = Arc::new(ShutdownMockExecutor::with_instant(&["A", "C"]));
+        let config = SchedulerConfig {
+            max_jobs: 3,
+            ..SchedulerConfig::default()
+        };
+        let bus = EventBus::new();
+        let mut rx = bus.subscribe();
+        let entered = Arc::new(Notify::new());
+        let release = Arc::new(Notify::new());
+        let cache: Arc<dyn CacheCheck> = Arc::new(BlockingCacheCheck {
+            blocked: JobId::from("C"),
+            entered: entered.clone(),
+            release: release.clone(),
+        });
+        let shutdown = Arc::new(Notify::new());
+
+        // Interrupt while the cache check of C is in progress, then let it
+        // finish.
+        let signal = shutdown.clone();
+        tokio::spawn(async move {
+            entered.notified().await;
+            signal.notify_one();
+            release.notify_one();
+        });
+
+        let result = tokio::time::timeout(
+            Duration::from_secs(30),
+            run_scheduler_with_cache(
+                &graph,
+                executor.clone(),
+                &config,
+                &bus,
+                &default_ctx(),
+                Some(cache),
+                None,
+                None,
+                Some(shutdown),
+                None,
+            ),
+        )
+        .await
+        .expect("scheduler must return after the shutdown signal")
+        .unwrap();
+
+        assert_eq!(
+            *executor.cancelled.lock().await,
+            vec!["B".to_string()],
+            "only the in-flight sibling B is cancelled through the executor"
+        );
+        assert!(
+            !drain_events(&mut rx)
+                .iter()
+                .any(|e| matches!(e, Event::JobStarted { job_id, .. } if job_id.as_str() == "C")),
+            "C was dispatched after the interrupt"
+        );
+        assert_eq!((result.succeeded, result.cancelled), (1, 2));
     }
 
     #[tokio::test]
@@ -8587,7 +8741,7 @@ mod tests {
         let signal = shutdown.clone();
         tokio::spawn(async move {
             tokio::time::sleep(Duration::from_secs(2)).await;
-            signal.notify_waiters();
+            signal.notify_one();
         });
 
         let result = run_with_claimer(

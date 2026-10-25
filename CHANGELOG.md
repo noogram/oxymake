@@ -88,6 +88,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Inline `cpus` now also expands `{threads}` (#43, #47).
 - The format reference now documents `materialize` on an output descriptor,
   matching the schema-2 form accepted by `ox lint` (#42).
+- A first Ctrl+C or SIGTERM received while `ox run` was dispatching a job
+  (including hashing its inputs for the cache check) or handling a completion
+  was lost: the run kept dispatching and a job that ignores SIGTERM was never
+  cancelled, so only a second signal, which force-exits, ended the run. The
+  signal now takes effect: no new job is launched and the running jobs go
+  through the graceful shutdown.
 
 ## [0.6.1] - 2026-09-29
 
