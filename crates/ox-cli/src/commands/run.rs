@@ -37,6 +37,26 @@ use ox_plan::critical_path::CriticalPathPass;
 use super::common;
 use super::remote_follow::{self, FollowPolicy, FollowRequest, FollowStop};
 
+/// Parse one CLI label without interpreting its value or reading the environment.
+fn parse_metadata(value: &str) -> std::result::Result<(String, String), String> {
+    let (key, value) = value.split_once('=').ok_or("metadata must be KEY=VALUE")?;
+    if key.is_empty()
+        || key.len() > 64
+        || !key
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b"_.-".contains(&b))
+    {
+        return Err("metadata key must match [a-z0-9_.-]{1,64}".into());
+    }
+    if key.starts_with("oxymake_") {
+        return Err("metadata prefix 'oxymake_' is reserved".into());
+    }
+    if value.len() > 1024 {
+        return Err("metadata value must be at most 1024 UTF-8 bytes".into());
+    }
+    Ok((key.into(), value.into()))
+}
+
 /// Human-readable label and resolved text for a dry-run execution block.
 ///
 /// Shell and inline-run blocks retain their exact resolved text. Script and
@@ -159,6 +179,14 @@ pub struct RunArgs {
     /// Annotate this run
     #[arg(long)]
     pub note: Option<String>,
+
+    /// Attach a run label (repeatable; excluded from cache identity).
+    ///
+    /// Keys match [a-z0-9_.-]{1,64}; oxymake_ is reserved. Values are at
+    /// most 1024 UTF-8 bytes. Duplicate keys are rejected. Ray submissions
+    /// receive these labels; SLURM comments are not supported.
+    #[arg(long, value_name = "KEY=VALUE", value_parser = parse_metadata)]
+    pub metadata: Vec<(String, String)>,
 
     /// Override config or resource values
     #[arg(long = "set", value_name = "KEY=VALUE")]
@@ -662,8 +690,9 @@ fn register_run(
     run_id: &str,
     job_count: usize,
     note: Option<&str>,
+    metadata: &BTreeMap<String, String>,
 ) -> Result<()> {
-    match db.begin_run(run_id, None, job_count, note) {
+    match db.begin_run_with_metadata(run_id, None, job_count, note, metadata) {
         Ok(()) => Ok(()),
         Err(e) if e.is_constraint_violation() => {
             Err(e).with_context(|| format!("failed to register new run identity '{run_id}'"))
@@ -693,8 +722,8 @@ fn record_fully_cached_run(
     state_db_path: &Path,
     run_id: &str,
     job_graph: &JobGraph,
-    executor: &str,
-    note: Option<&str>,
+    args: &RunArgs,
+    metadata: &BTreeMap<String, String>,
     provenance: &HashMap<String, ox_state::db::JobProvenance>,
     cached: &HashSet<JobId>,
 ) -> Result<()> {
@@ -718,7 +747,7 @@ fn record_fully_cached_run(
         .collect();
 
     // The run record comes first: jobs.run_id references runs(id).
-    register_run(&db, run_id, records.len(), note)?;
+    register_run(&db, run_id, records.len(), args.note.as_deref(), metadata)?;
     let _ = db.register_jobs(&records);
     // Rows a dead session left `running` / `failed` / `cancelled` are not
     // this run's verdict; a live peer's rows are left alone (ADR-012).
@@ -734,7 +763,7 @@ fn record_fully_cached_run(
     let _ = db.record_job_cache_keys(run_id, provenance);
     let _ = db.finalize_job_history(
         run_id,
-        executor,
+        &args.executor,
         ox_state::host::hostname(),
         &HashMap::new(),
         &HashMap::new(),
@@ -1253,6 +1282,7 @@ fn local_executor(args: &RunArgs, event_bus: &EventBus) -> LocalExecutor {
 }
 
 pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
+    let metadata: BTreeMap<String, String> = args.metadata.iter().cloned().collect();
     if args.profile.is_none() {
         validate_ray_flags(&args)?;
     }
@@ -1758,7 +1788,8 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
                 )
                 .context("failed to create event log file")?,
             )
-            .with_run_context(run_id.clone(), args.file.clone()),
+            .with_run_context(run_id.clone(), args.file.clone())
+            .with_metadata(metadata.clone()),
         )];
         if let Some(path) = &args.report_json {
             reporters.push(Box::new(
@@ -1766,21 +1797,23 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
                     std::fs::File::create(path)
                         .with_context(|| format!("failed to create report file: {path}"))?,
                 )
-                .with_run_context(run_id.clone(), args.file.clone()),
+                .with_run_context(run_id.clone(), args.file.clone())
+                .with_metadata(metadata.clone()),
             ));
         }
         if args.json {
             reporters.push(Box::new(
                 ox_report_json::reporter::JsonReporter::stdout()
-                    .with_run_context(run_id.clone(), args.file.clone()),
+                    .with_run_context(run_id.clone(), args.file.clone())
+                    .with_metadata(metadata.clone()),
             ));
         }
         record_fully_cached_run(
             &oxymake_dir.join("state.db"),
             &run_id,
             &job_graph,
-            &args.executor,
-            args.note.as_deref(),
+            &args,
+            &metadata,
             &prescan_provenance,
             &cache_hits,
         )?;
@@ -1931,9 +1964,8 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
     let event_log_path = events_dir.join(format!("{}.ndjson", ctx.run_id));
     let mut event_log_file = ox_report_json::reporter::AtomicEventFile::create(&event_log_path)
         .context("failed to create event log file")?;
-    // A Ray DAG run emits no event before a task record is synchronised,
-    // possibly by `ox status` in another process: publish the log now, so
-    // that process appends to it rather than racing this one's first line.
+    // Publish Ray's log before submission: task records can be synchronised
+    // by `ox status` in another process while this invocation is following.
     if args.executor == "ray" {
         event_log_file
             .publish()
@@ -1982,7 +2014,7 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
     if let Some(ref db) = state_db {
         // Begin audit-trail run record BEFORE registering jobs, because
         // jobs.run_id references runs(id) via foreign key.
-        register_run(db, &run_id, job_count, args.note.as_deref())?;
+        register_run(db, &run_id, job_count, args.note.as_deref(), &metadata)?;
 
         let records: Vec<ox_state::db::JobRecord> = job_graph
             .topological_order()
@@ -2139,7 +2171,8 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
         {
             let mut rx = event_bus.subscribe();
             let reporter = ox_report_json::reporter::JsonReporter::new(event_log_file)
-                .with_run_context(ctx.run_id.clone(), args.file.clone());
+                .with_run_context(ctx.run_id.clone(), args.file.clone())
+                .with_metadata(metadata.clone());
             bridge_handles.push(tokio::spawn(async move {
                 use ox_core::traits::reporter::Reporter;
                 loop {
@@ -2158,7 +2191,8 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
         if let Some(report_file) = report_json_file {
             let mut rx = event_bus.subscribe();
             let reporter = ox_report_json::reporter::JsonReporter::new(report_file)
-                .with_run_context(ctx.run_id.clone(), args.file.clone());
+                .with_run_context(ctx.run_id.clone(), args.file.clone())
+                .with_metadata(metadata.clone());
             bridge_handles.push(tokio::spawn(async move {
                 use ox_core::traits::reporter::Reporter;
                 loop {
@@ -2177,7 +2211,8 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
         if args.json {
             let mut rx = event_bus.subscribe();
             let reporter = ox_report_json::reporter::JsonReporter::stdout()
-                .with_run_context(ctx.run_id.clone(), args.file.clone());
+                .with_run_context(ctx.run_id.clone(), args.file.clone())
+                .with_metadata(metadata.clone());
             bridge_handles.push(tokio::spawn(async move {
                 use ox_core::traits::reporter::Reporter;
                 loop {
@@ -2400,6 +2435,15 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
         };
         let disk_writer_handle = disk_writer_state.as_ref().map(|(h, _)| h.clone());
 
+        // Native remote DAG submission bypasses the scheduler's RunStarted.
+        // Emit it once here, after every reporter has subscribed.
+        if args.executor == "ray" || (args.executor == "slurm" && !mixed_slurm) {
+            event_bus.emit(Event::RunStarted {
+                total_jobs: job_count,
+                to_run,
+                cached: cached_count,
+            });
+        }
         let sched_result = match args.executor.as_str() {
             "local" => {
                 let executor = local_executor(&args, &event_bus);
@@ -2623,6 +2667,7 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
             }
             "ray" => {
                 let ray_config = RayConfig {
+                    metadata: metadata.clone().into_iter().collect(),
                     allow_pending: args.ray_allow_pending,
                     python: args.ray_python.clone(),
                     dashboard_address: args
@@ -3416,6 +3461,7 @@ mod resource_budget_tests {
 #[cfg(test)]
 mod run_identity_tests {
     use super::{mint_run_id, register_run};
+    use std::collections::BTreeMap;
 
     #[test]
     fn minted_run_ids_are_distinct_canonical_uuid_v4_values() {
@@ -3437,8 +3483,10 @@ mod run_identity_tests {
         let db = ox_state::db::StateDb::open(&dir.path().join("state.db")).unwrap();
         let run_id = "run-00000000-0000-4000-8000-000000000000";
 
-        register_run(&db, run_id, 1, Some("original")).unwrap();
-        let error = register_run(&db, run_id, 99, Some("replacement")).unwrap_err();
+        let labels = BTreeMap::from([("external.id".into(), "original".into())]);
+        register_run(&db, run_id, 1, Some("original"), &labels).unwrap();
+        let error =
+            register_run(&db, run_id, 99, Some("replacement"), &BTreeMap::new()).unwrap_err();
 
         assert!(error.to_string().contains(run_id));
         let stored = db
@@ -3449,6 +3497,7 @@ mod run_identity_tests {
             .unwrap();
         assert_eq!(stored.job_count, Some(1));
         assert_eq!(stored.note.as_deref(), Some("original"));
+        assert_eq!(stored.metadata, labels);
     }
 }
 

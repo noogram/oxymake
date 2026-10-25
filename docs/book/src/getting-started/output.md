@@ -103,6 +103,13 @@ ox run --json
 {"event":"run_completed","schema_version":1,"ts":"2026-10-08T12:00:00Z","total":3,"succeeded":3,"failed":0,"skipped":0,"cancelled":0,"duration_ms":607,"status":"success"}
 ```
 
+Use `ox run --metadata external.id=123 --metadata team=research` to link a
+run to an external object. `run_started.metadata` is an object of string
+labels, empty when none were supplied; labels appear once per run, including
+fully cached runs, and never affect cache identity. The same object appears
+in run records from `ox history --json`, retained independently of event logs.
+See [CLI Commands](../reference/commands.md#ox-run) for validation limits.
+
 Each event carries an `event` discriminant (`run_started`, `job_planned`,
 `job_started`, `job_completed`, `run_completed`), a `schema_version` (`1`) and
 a UTC RFC 3339 `ts` timestamp. `job_completed` reports the executor's
@@ -118,7 +125,7 @@ designed for AI agents and scripts: each line parses independently. Use
 [Agent-Driven Workflows](../cookbook/agent-workflows.md) for details.
 
 Every executing run, fully cached runs included, also writes this stream to
-`.oxymake/events/<run-id>.ndjson`. A Ray DAG run creates its log, empty, at
+`.oxymake/events/<run-id>.ndjson`. A Ray DAG run writes `run_started` at
 submission: its `job_completed` and `job_failed` lines are appended when a
 task's record is synchronised, by `ox run --follow` or by a later `ox status`,
 so their `ts` is the synchronisation time. The file is created before the run is

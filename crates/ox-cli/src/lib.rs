@@ -144,6 +144,18 @@ fn enter_workflow_directory(file: &mut String) -> std::io::Result<()> {
 /// (clap itself exits 2 on a command-line usage error).
 pub fn run() -> i32 {
     let cli = Cli::parse();
+    if let Commands::Run(args) = &cli.command {
+        let mut keys = std::collections::HashSet::new();
+        for (key, _) in &args.metadata {
+            if !keys.insert(key) {
+                clap::Error::raw(
+                    clap::error::ErrorKind::ArgumentConflict,
+                    format!("duplicate metadata key '{key}'\n"),
+                )
+                .exit();
+            }
+        }
+    }
     let theme = Theme::from_env(Some(cli.color), &std::io::stderr());
 
     let result = match cli.command {

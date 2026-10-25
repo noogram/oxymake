@@ -25,6 +25,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `ox run --metadata KEY=VALUE` attaches repeatable labels to Ray submission
+  metadata, the `run_started` journal event, and `ox history --json` run
+  records, including fully cached runs. Labels are excluded from cache
+  identity. Keys use `[a-z0-9_.-]{1,64}`; duplicate keys, the reserved
+  `oxymake_` prefix and values over 1024 UTF-8 bytes are rejected. Empty
+  values are allowed. SLURM comment propagation is not supported (#53).
+- Unstable Rust run-label APIs: `StateDb::begin_run_with_metadata`,
+  `RunRecord::metadata`, and `JsonReporter::with_metadata`. Legacy run rows
+  migrate to empty labels; existing `begin_run` callers remain supported.
+
 - The unstable Rust helper `ox_core::atomic_output::{temp_path,
   ATOMIC_TEMP_SUFFIX}` shares output staging paths between local and Ray
   executors.

@@ -257,6 +257,7 @@ pub struct JsonReporter<W: Write + Send> {
     /// The output sink, protected by a mutex for thread-safe writes.
     writer: Mutex<W>,
     run_context: Option<RunContext>,
+    metadata: std::collections::BTreeMap<String, String>,
     /// `job_skipped` events seen with reason `cached`. `all_cached` requires
     /// every skip counted by `run_completed` to be one of these.
     cache_hit_skips: AtomicUsize,
@@ -278,8 +279,15 @@ impl<W: Write + Send> JsonReporter<W> {
         Self {
             writer: Mutex::new(writer),
             run_context: None,
+            metadata: Default::default(),
             cache_hit_skips: AtomicUsize::new(0),
         }
+    }
+
+    /// Attach user labels to `run_started` only, independently of job events.
+    pub fn with_metadata(mut self, metadata: std::collections::BTreeMap<String, String>) -> Self {
+        self.metadata = metadata;
+        self
     }
 
     /// Attach fields that are known by the command boundary rather than the
@@ -323,6 +331,9 @@ impl<W: Write + Send + 'static> Reporter for JsonReporter<W> {
                 }
             }
             if matches!(event, Event::RunStarted { .. }) {
+                if let Value::Object(object) = &mut payload {
+                    object.insert("metadata".into(), serde_json::json!(self.metadata));
+                }
                 if let (Some(context), Value::Object(object)) = (&self.run_context, &mut payload) {
                     object.insert("run_id".into(), Value::String(context.run_id.clone()));
                     object.insert(

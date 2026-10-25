@@ -602,6 +602,11 @@ async fn test_metadata_includes_oxymake_fields() {
         .metadata
         .insert("team".to_string(), "quant".to_string());
 
+    for key in ["oxymake_job_id", "oxymake_rule", "oxymake_run_id"] {
+        config
+            .metadata
+            .insert(key.into(), "must-not-override".into());
+    }
     let executor = RayExecutor::new(config).unwrap();
     executor.init().await.unwrap();
 
@@ -611,7 +616,16 @@ async fn test_metadata_includes_oxymake_fields() {
     let result = executor.execute(&job, &workspace, &ctx).await.unwrap();
 
     assert_eq!(result.exit_code, 0);
-    // The submit mock was hit exactly once — metadata was included
+    let requests = server.received_requests().await.unwrap();
+    let submission = requests
+        .iter()
+        .find(|r| r.method == "POST" && r.url.path() == "/api/jobs/")
+        .unwrap();
+    let payload: serde_json::Value = serde_json::from_slice(&submission.body).unwrap();
+    assert_eq!(payload["metadata"]["team"], "quant");
+    assert_eq!(payload["metadata"]["oxymake_job_id"], job.id.to_string());
+    assert_eq!(payload["metadata"]["oxymake_rule"], job.rule.to_string());
+    assert_eq!(payload["metadata"]["oxymake_run_id"], ctx.run_id);
 }
 
 // ─────────────── 10. Finalize workspace cleans up ────────────

@@ -251,6 +251,7 @@ pub struct RuleDurationStat {
 ///     started_at: 1700000000,
 ///     completed_at: Some(1700000060),
 ///     note: Some("nightly build".into()),
+///     metadata: Default::default(),
 ///     workflow_hash: None,
 ///     job_count: Some(10),
 ///     succeeded: Some(8),
@@ -268,6 +269,8 @@ pub struct RunRecord {
     pub completed_at: Option<u64>,
     /// Optional annotation for the run.
     pub note: Option<String>,
+    /// User labels, excluded from computation identity. Empty for legacy runs.
+    pub metadata: std::collections::BTreeMap<String, String>,
     /// Hash of the workflow file at run time.
     pub workflow_hash: Option<ContentHash>,
     /// Total number of jobs in the run.
@@ -476,7 +479,7 @@ pub struct GateRecord {
 /// let db = StateDb::open(tmp.path()).unwrap();
 ///
 /// // Database is at schema version 1 after open.
-/// assert_eq!(db.schema_version().unwrap(), 11);
+/// assert_eq!(db.schema_version().unwrap(), 12);
 ///
 /// db.close().unwrap();
 /// ```
@@ -1368,16 +1371,31 @@ impl StateDb {
         job_count: usize,
         note: Option<&str>,
     ) -> Result<(), StateError> {
+        self.begin_run_with_metadata(run_id, workflow_hash, job_count, note, &Default::default())
+    }
+
+    /// Begin a run with user labels stored atomically with its identity.
+    /// Labels describe the invocation and never participate in cache keys.
+    pub fn begin_run_with_metadata(
+        &self,
+        run_id: &str,
+        workflow_hash: Option<&ContentHash>,
+        job_count: usize,
+        note: Option<&str>,
+        metadata: &std::collections::BTreeMap<String, String>,
+    ) -> Result<(), StateError> {
         let now = unix_now();
+        let metadata = serde_json::to_string(metadata).expect("string map is JSON serializable");
         self.conn.execute(
-            "INSERT INTO runs (id, started_at, workflow_hash, job_count, note)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
+            "INSERT INTO runs (id, started_at, workflow_hash, job_count, note, metadata)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             rusqlite::params![
                 run_id,
                 now,
                 workflow_hash.map(ContentHash::as_str),
                 job_count as i64,
-                note
+                note,
+                metadata
             ],
         )?;
         Ok(())
@@ -1740,7 +1758,7 @@ impl StateDb {
     pub fn list_runs(&self) -> Result<Vec<RunRecord>, StateError> {
         let mut stmt = self.conn.prepare(
             "SELECT id, started_at, completed_at, note, workflow_hash,
-                    job_count, succeeded, failed, skipped
+                    job_count, succeeded, failed, skipped, metadata
              FROM runs ORDER BY started_at DESC",
         )?;
         let rows = stmt.query_map([], |row| {
@@ -1756,6 +1774,13 @@ impl StateDb {
                 succeeded: row.get(6)?,
                 failed: row.get(7)?,
                 skipped: row.get(8)?,
+                metadata: serde_json::from_str(&row.get::<_, String>(9)?).map_err(|e| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        9,
+                        rusqlite::types::Type::Text,
+                        Box::new(e),
+                    )
+                })?,
             })
         })?;
         let mut records = Vec::new();
@@ -2550,7 +2575,7 @@ mod tests {
     #[test]
     fn open_creates_schema() {
         let (_tmp, db) = temp_db();
-        assert_eq!(db.schema_version().unwrap(), 11);
+        assert_eq!(db.schema_version().unwrap(), 12);
     }
 
     /// Two sessions opening a fresh `state.db` at the same time must both
@@ -2573,7 +2598,7 @@ mod tests {
                 .collect();
             for w in workers {
                 let version = w.join().unwrap().expect("concurrent open must succeed");
-                assert_eq!(version, 11);
+                assert_eq!(version, 12);
             }
         }
     }
@@ -3392,7 +3417,7 @@ mod tests {
         let (_tmp, db) = temp_db();
         let backend: &dyn StateBackend = &db;
 
-        assert_eq!(backend.schema_version().unwrap(), 11);
+        assert_eq!(backend.schema_version().unwrap(), 12);
 
         let sid = backend.create_session(1, "localhost", None).unwrap();
 

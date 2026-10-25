@@ -710,3 +710,17 @@ ox status                 # OxyMake's view (aggregated)
 - [The Three Graphs](./three-graphs.md) -- RuleGraph, JobGraph, ExecGraph
 - [Materialization Policy](./materialization.md) -- controlling disk I/O
 - [Content-Addressable Cache](./cache.md) -- how cache keys work
+
+## Run labels
+
+Attach external identifiers with `ox run --executor ray --metadata external.id=123`.
+Repeat `--metadata KEY=VALUE` for more labels. Labels are merged into the
+submitted driver's metadata alongside `oxymake_run_id`, `oxymake_dag_driver`
+and `oxymake_dag_total_jobs`. A multi-rule driver does not receive a fabricated
+`oxymake_job_id` or `oxymake_rule`; standalone executor submissions retain
+those internal fields. Internal fields always win during merging.
+
+Labels also appear once in `run_started.metadata` and in `ox history --json`
+run records, including fully cached runs that submit nothing to Ray. They do
+not change computation cache keys. See the [flag reference](../reference/commands.md#ox-run)
+for key/value limits and the reserved prefix.
