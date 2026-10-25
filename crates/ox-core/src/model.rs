@@ -1929,6 +1929,8 @@ impl fmt::Display for RunReason {
 ///     peak_memory_bytes: Some(64 * 1024 * 1024),
 ///     cpu_time_ms: Some(950),
 ///     node: None,
+///     endpoint: None,
+///     submission_id: None,
 /// };
 /// if let Event::JobCompleted { duration_ms, .. } = &event {
 ///     assert_eq!(*duration_ms, 1234);
