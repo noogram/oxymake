@@ -369,6 +369,15 @@ because it does not load the workflow. A job without a record (its task never
 ran) still takes its state from `results.json` or the driver. The record format
 is internal and may change; read usage through `ox history` or the event log.
 
+Under `ox run --follow`, a completed task also enters the cache when its record
+is read: its outputs are hashed and recorded under the same computation key a
+local run would use, and their blobs are stored in `--cache-remote` when it is
+set. A resubmission, including one after a killed driver, then skips the units
+that completed. `ox status` does not record cache entries: it does not load the
+workflow, and recomputing a key from the current Oxymakefile could attach the
+outputs to a rule edited since submission. A run submitted without `--follow`
+therefore re-executes its completed units on the next `ox run`.
+
 ## Call Mode and the Ray Object Store
 
 This is where OxyMake and Ray truly complement each other. In `call` mode,

@@ -124,7 +124,10 @@ cache: the local SQLite index under `.oxymake/cache/` that maps computation
 keys to output paths and hashes does not travel with the blobs, so a fresh
 checkout pointing at the same directory re-executes unless that local index
 is transferred too. A remote computation-key manifest that removes this
-requirement is future work. See [Caching](../concepts/cache.md).
+requirement is future work. With `--executor ray`, completed tasks are
+recorded and their blobs stored only under `--follow`, as each task's record
+is read (see [Ray integration](../concepts/ray-integration.md#per-task-records)).
+See [Caching](../concepts/cache.md).
 
 **Local interruption.** The first Ctrl+C (or `SIGTERM`, which is what
 [`ox cancel`](#ox-cancel) sends) starts a graceful shutdown: the session is

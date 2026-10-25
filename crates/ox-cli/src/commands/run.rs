@@ -2705,8 +2705,10 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
 
                 if args.follow {
                     eprintln!("Following execution progress…\n");
-                    // A task's record settles its job as soon as it ends;
-                    // jobs without one follow the driver's state.
+                    // A task's record settles its job as soon as it ends,
+                    // and a completed task enters the cache (and
+                    // --cache-remote); jobs without one follow the driver's
+                    // state.
                     let records = super::ray_records::Follower::new(
                         super::ray_records::tasks_dir(
                             &ctx.project_dir.join(".oxymake/runs"),
@@ -2717,7 +2719,8 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
                         session_id.as_deref(),
                         &job_graph,
                         &event_bus,
-                    );
+                    )
+                    .with_cache(scheduler_cache.clone());
                     // Preserve the existing follow block formatting.
                     #[rustfmt::skip]
                     let (result, stop) = remote_follow::follow(FollowRequest {
@@ -2730,7 +2733,7 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
                         let executor = &executor;
                         let records = &records;
                         async move {
-                            if let Some(status) = records.poll(&job) {
+                            if let Some(status) = records.poll(&job).await {
                                 return Ok(status);
                             }
                             executor.poll_status(&JobId::from(job.as_str())).await

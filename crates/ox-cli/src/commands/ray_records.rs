@@ -4,10 +4,12 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use ox_core::event::EventBus;
 use ox_core::job_graph::JobGraph;
 use ox_core::model::{Event, JobId, OutputRef};
+use ox_core::traits::cache::CacheCheck;
 use ox_core::traits::executor::JobStatus;
 use ox_exec_ray::task_record::{self, TaskRecord, TaskStatus};
 use ox_state::db::StateDb;
@@ -200,7 +202,9 @@ pub(super) fn append_to_event_log(events_dir: &Path, run_id: &str, events: &[Eve
 
 /// Per-job polling for `ox run --follow`: a job whose record exists is
 /// finished, whatever the driver's state; its record is applied once and its
-/// event emitted on the run's bus (event log, reporters, history).
+/// event emitted on the run's bus (event log, reporters, history). A
+/// completed task's outputs are then recorded in the run's cache, as the
+/// scheduler records a completed local job.
 pub(super) struct Follower<'a> {
     tasks_dir: PathBuf,
     run_id: &'a str,
@@ -208,6 +212,7 @@ pub(super) struct Follower<'a> {
     session: Option<&'a str>,
     graph: &'a JobGraph,
     bus: &'a EventBus,
+    cache: Option<Arc<dyn CacheCheck>>,
     finished: RefCell<HashMap<String, JobStatus>>,
 }
 
@@ -227,12 +232,21 @@ impl<'a> Follower<'a> {
             session,
             graph,
             bus,
+            cache: None,
             finished: RefCell::new(HashMap::new()),
         }
     }
 
+    /// Record completed tasks in `cache`: the local index entry under the
+    /// same computation key as a local run, and the output blobs in its
+    /// remote store when one is configured.
+    pub(super) fn with_cache(mut self, cache: Option<Arc<dyn CacheCheck>>) -> Self {
+        self.cache = cache;
+        self
+    }
+
     /// The job's status from its record, or `None` while it has none.
-    pub(super) fn poll(&self, job: &str) -> Option<JobStatus> {
+    pub(super) async fn poll(&self, job: &str) -> Option<JobStatus> {
         if let Some(status) = self.finished.borrow().get(job) {
             return Some(status.clone());
         }
@@ -251,6 +265,14 @@ impl<'a> Follower<'a> {
         };
         for event in events {
             self.bus.emit(event);
+        }
+        // The driver finalised the outputs before writing a completed
+        // record; `record` also skips a job whose outputs are not all present.
+        if record.status == TaskStatus::Completed
+            && let Some(cache) = &self.cache
+            && let Some(concrete) = self.graph.get_job(&JobId::from(job))
+        {
+            cache.record(concrete).await;
         }
         let status = job_status(&record);
         self.finished

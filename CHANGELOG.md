@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `ox run --executor ray --follow` now records each completed Ray task in the
+  local cache under the same computation key as a local run, and stores its
+  output blobs in `--cache-remote` when set. A resubmission after a killed
+  driver skips the units that had completed. A run that is not followed does
+  not enter the cache: `ox status` synchronises its task records into state,
+  history and events, but it does not have the submitted job graph the key is
+  computed from (#59).
 - Ray shell, script, inline tasks and materialized call-mode files now verify
   declared file outputs and
   finalize them through `.oxytmp` renames, like local execution. Failed commands
