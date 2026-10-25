@@ -630,6 +630,9 @@ mod tests {
             job_id: JobId("align_S001".into()),
             executor: "local".into(),
             reason: None,
+            endpoint: Some("build-host".into()),
+            submission_id: None,
+            node: None,
         };
         r.on_event(&event).await;
 
@@ -637,6 +640,11 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(out.trim()).unwrap();
         assert_eq!(v["event"], "job_started");
         assert_eq!(v["executor"], "local");
+        assert_eq!(v["endpoint"], "build-host");
+        // Present and null, not absent.
+        for key in ["submission_id", "node"] {
+            assert_eq!(v.get(key), Some(&serde_json::Value::Null), "{key} in {v}");
+        }
     }
 
     #[tokio::test]
@@ -649,6 +657,8 @@ mod tests {
             peak_memory_bytes: Some(128 * 1024 * 1024),
             cpu_time_ms: Some(90_500),
             node: Some("worker-3".into()),
+            endpoint: Some("http://head:8265".into()),
+            submission_id: Some("driver-1".into()),
         };
         r.on_event(&event).await;
 
@@ -660,6 +670,8 @@ mod tests {
         assert_eq!(v["peak_memory_bytes"], 128 * 1024 * 1024);
         assert_eq!(v["cpu_time_ms"], 90_500);
         assert_eq!(v["node"], "worker-3");
+        assert_eq!(v["endpoint"], "http://head:8265");
+        assert_eq!(v["submission_id"], "driver-1");
     }
 
     #[tokio::test]
@@ -672,11 +684,19 @@ mod tests {
             peak_memory_bytes: None,
             cpu_time_ms: None,
             node: None,
+            endpoint: None,
+            submission_id: None,
         })
         .await;
 
         let v: serde_json::Value = serde_json::from_str(output_string(r).trim()).unwrap();
-        for key in ["peak_memory_bytes", "cpu_time_ms", "node"] {
+        for key in [
+            "peak_memory_bytes",
+            "cpu_time_ms",
+            "node",
+            "endpoint",
+            "submission_id",
+        ] {
             assert_eq!(v.get(key), Some(&serde_json::Value::Null), "{key} in {v}");
         }
     }
@@ -795,6 +815,9 @@ mod tests {
             job_id: JobId("j1".into()),
             executor: "local".into(),
             reason: None,
+            endpoint: None,
+            submission_id: None,
+            node: None,
         })
         .await;
 
@@ -805,6 +828,8 @@ mod tests {
             peak_memory_bytes: None,
             cpu_time_ms: None,
             node: None,
+            endpoint: None,
+            submission_id: None,
         })
         .await;
 

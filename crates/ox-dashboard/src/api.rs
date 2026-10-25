@@ -1513,6 +1513,9 @@ mod tests {
                 job_id: JobId::from("compile-X"),
                 executor: "local".into(),
                 reason: None,
+                endpoint: None,
+                submission_id: None,
+                node: None,
             });
             // Give the subscriber task a moment to process.
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
@@ -1539,6 +1542,8 @@ mod tests {
                 peak_memory_bytes: None,
                 cpu_time_ms: None,
                 node: None,
+                endpoint: None,
+                submission_id: None,
             });
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 

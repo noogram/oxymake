@@ -360,7 +360,9 @@ it appears; without `--follow`, `ox status` reads all records of the run. The
 first process to read a record moves the job to its terminal state, keeps the
 task's own start and end, writes its history row (`ox history --run-id ID
 --json`: `wall_time_ms`, `peak_mem_mb`, `cpu_time_ms`, `node`) and emits one
-`job_completed` or `job_failed` event to the run's event log. `node` is the
+`job_completed` or `job_failed` event to the run's event log. The event's
+`endpoint` and `submission_id` are the dashboard address and the driver's
+submission ID recorded when the DAG was submitted. `node` is the
 task's host name; the Ray node ID stays in the record. Usage reaches history
 for completed jobs only. Events appended by `ox status` list no `outputs`,
 because it does not load the workflow. A job without a record (its task never

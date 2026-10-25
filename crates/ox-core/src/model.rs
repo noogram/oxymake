@@ -1979,6 +1979,19 @@ pub enum Event {
         /// `None` means the reason is unknown (backward compatibility).
         #[serde(skip_serializing_if = "Option::is_none")]
         reason: Option<RunReason>,
+        /// Where the executor runs the job: the local host name, a Ray
+        /// dashboard address; `null` when the executor reports none.
+        #[serde(default)]
+        endpoint: Option<String>,
+        /// The executor's own identifier for the submission (Ray submission
+        /// ID, SLURM job ID); `null` for local jobs and until a remote
+        /// submission exists.
+        #[serde(default)]
+        submission_id: Option<String>,
+        /// Host the job runs on; `null` at dispatch, since no executor
+        /// knows it before the job is placed.
+        #[serde(default)]
+        node: Option<String>,
     },
     /// Emitted when the scheduler accepts a finishing attempt as completed,
     /// including a failed attempt under `ErrorStrategy::Ignore`.
@@ -1999,6 +2012,14 @@ pub enum Event {
         /// Host the finishing attempt ran on, when the executor reports one
         /// (Ray tasks); `null` otherwise.
         node: Option<String>,
+        /// Where the executor ran the job: the local host name, a Ray
+        /// dashboard address; `null` when the executor reports none.
+        #[serde(default)]
+        endpoint: Option<String>,
+        /// The executor's identifier for the submission (Ray submission ID,
+        /// SLURM job ID); `null` for local jobs.
+        #[serde(default)]
+        submission_id: Option<String>,
     },
     /// Emitted when a job fails.
     JobFailed {
@@ -2132,6 +2153,7 @@ impl fmt::Display for Event {
                 job_id,
                 executor,
                 reason,
+                ..
             } => {
                 if let Some(r) = reason {
                     write!(f, "started {job_id} on {executor} ({r})")
@@ -3035,6 +3057,9 @@ mod tests {
             job_id: JobId::from("j1"),
             executor: "local".into(),
             reason: None,
+            endpoint: None,
+            submission_id: None,
+            node: None,
         };
         assert_eq!(started.to_string(), "started j1 on local");
 
@@ -3044,6 +3069,9 @@ mod tests {
             reason: Some(RunReason::OutputMissing {
                 path: "out.bam".into(),
             }),
+            endpoint: None,
+            submission_id: None,
+            node: None,
         };
         assert_eq!(
             started_with_reason.to_string(),
@@ -3057,6 +3085,8 @@ mod tests {
             peak_memory_bytes: None,
             cpu_time_ms: None,
             node: None,
+            endpoint: None,
+            submission_id: None,
         };
         assert_eq!(completed.to_string(), "completed j1 in 500ms");
 
@@ -3140,6 +3170,9 @@ mod tests {
                 job_id: JobId::from("j1"),
                 executor: "local".into(),
                 reason: None,
+                endpoint: None,
+                submission_id: None,
+                node: None,
             },
             Event::JobCompleted {
                 job_id: JobId::from("j1"),
@@ -3148,6 +3181,8 @@ mod tests {
                 peak_memory_bytes: Some(1024),
                 cpu_time_ms: None,
                 node: None,
+                endpoint: None,
+                submission_id: None,
             },
             Event::JobFailed {
                 job_id: JobId::from("j1"),

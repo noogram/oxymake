@@ -407,6 +407,7 @@ impl Reporter for TermReporter {
                     job_id,
                     executor,
                     reason,
+                    ..
                 } => {
                     if self.is_tty {
                         self.add_active_job(&job_id.to_string());
@@ -745,6 +746,8 @@ mod tests {
             peak_memory_bytes: None,
             cpu_time_ms: None,
             node: None,
+            endpoint: None,
+            submission_id: None,
         };
         reporter.on_event(&event).await;
         assert_eq!(reporter.completed.load(Ordering::Relaxed), 1);
@@ -935,6 +938,8 @@ mod tests {
                 peak_memory_bytes: None,
                 cpu_time_ms: None,
                 node: None,
+                endpoint: None,
+                submission_id: None,
             };
             reporter.on_event(&ev).await;
         }
@@ -977,6 +982,8 @@ mod tests {
             peak_memory_bytes: None,
             cpu_time_ms: None,
             node: None,
+            endpoint: None,
+            submission_id: None,
         };
         reporter.on_event(&done).await;
         assert_eq!(reporter.completed.load(Ordering::Relaxed), 2);

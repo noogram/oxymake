@@ -249,6 +249,28 @@ pub struct JobView {
     pub session_id: Option<String>,
 }
 
+/// A [`JobView`] with where the unit ran: the data behind
+/// `ox status --json --units`.
+#[derive(Debug, Clone)]
+pub struct UnitView {
+    /// The job row, resolved through [`effective_status`].
+    pub view: JobView,
+    /// Executor backend: the run's DAG submission, else the job's history
+    /// row; `None` while neither exists.
+    pub executor: Option<String>,
+    /// Ray dashboard address of the DAG submission, or the host name of a
+    /// local job; `None` otherwise (a SLURM submission records none).
+    pub endpoint: Option<String>,
+    /// Executor submission ID (Ray submission ID, SLURM job ID).
+    pub submission_id: Option<String>,
+    /// Host the executor ran the job on, from the history row.
+    pub node: Option<String>,
+    /// Names of the outputs whose hash the history row records. State does
+    /// not store declared output paths, so this is empty for a job the
+    /// cache layer never keyed.
+    pub outputs: Vec<String>,
+}
+
 /// Aggregate counts over [`EffectiveStatus`], with `orphaned` split out of
 /// `running`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -375,6 +397,43 @@ fn row_to_view(row: &rusqlite::Row<'_>, now: u64, lease_secs: u64) -> rusqlite::
     })
 }
 
+/// Where a unit ran, as joined from `dag_submissions` and `job_history`.
+#[derive(Default)]
+struct UnitPlace {
+    executor: Option<String>,
+    endpoint: Option<String>,
+    submission_id: Option<String>,
+    node: Option<String>,
+    outputs: Vec<String>,
+}
+
+impl UnitPlace {
+    /// Columns 1.. of the `unit_views` query.
+    fn from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Self> {
+        let dag_executor: Option<String> = row.get(1)?;
+        let dag_address: Option<String> = row.get(2)?;
+        let history_executor: Option<String> = row.get(4)?;
+        let history_host: Option<String> = row.get(5)?;
+        let output_hashes: Option<String> = row.get(7)?;
+        let executor = dag_executor.or(history_executor);
+        let endpoint = dag_address
+            .or_else(|| history_host.filter(|_| executor.as_deref().is_none_or(|e| e == "local")));
+        let outputs = output_hashes
+            .and_then(|json| {
+                serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&json).ok()
+            })
+            .map(|map| map.keys().cloned().collect())
+            .unwrap_or_default();
+        Ok(Self {
+            executor,
+            endpoint,
+            submission_id: row.get(3)?,
+            node: row.get(6)?,
+            outputs,
+        })
+    }
+}
+
 impl StateDb {
     /// Every job row, resolved through [`effective_status`].
     ///
@@ -432,6 +491,47 @@ impl StateDb {
             out.push(row?);
         }
         Ok(out)
+    }
+
+    /// One [`UnitView`] per job of `run_id`: [`StateDb::job_views`] joined
+    /// with the run's DAG submission and the job's history row. Read-only.
+    pub fn unit_views(
+        &self,
+        run_id: &str,
+        now: u64,
+        lease_secs: u64,
+    ) -> Result<Vec<UnitView>, StateError> {
+        let mut stmt = self.conn().prepare(
+            "SELECT j.id, d.executor, d.dashboard_address, j.executor_submission_id,
+                    h.executor, h.hostname, h.node, h.output_hashes
+             FROM jobs j
+             LEFT JOIN dag_submissions d ON d.run_id = j.run_id
+             LEFT JOIN job_history h ON h.run_id = j.run_id AND h.job_id = j.id
+             WHERE j.run_id = ?1",
+        )?;
+        let mut places = std::collections::HashMap::new();
+        let rows = stmt.query_map(rusqlite::params![run_id], |row| {
+            Ok((row.get::<_, String>(0)?, UnitPlace::from_row(row)?))
+        })?;
+        for row in rows {
+            let (id, place) = row?;
+            places.insert(id, place);
+        }
+        Ok(self
+            .job_views(Some(run_id), now, lease_secs)?
+            .into_iter()
+            .map(|view| {
+                let place = places.remove(&view.id).unwrap_or_default();
+                UnitView {
+                    view,
+                    executor: place.executor,
+                    endpoint: place.endpoint,
+                    submission_id: place.submission_id,
+                    node: place.node,
+                    outputs: place.outputs,
+                }
+            })
+            .collect())
     }
 
     /// Aggregate [`EffectiveCounts`] over [`StateDb::job_views`].

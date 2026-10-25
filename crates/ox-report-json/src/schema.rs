@@ -53,13 +53,20 @@
 //! Emitted when a job begins execution.
 //!
 //! ```json
-//! {"event":"job_started","schema_version":1,"ts":"2026-10-08T12:00:00Z","job_id":"align_S001","executor":"local"}
+//! {"event":"job_started","schema_version":1,"ts":"2026-10-08T12:00:00Z","job_id":"align_S001","executor":"local","endpoint":"build-host","submission_id":null,"node":null}
 //! ```
 //!
 //! | Field      | Type     | Description                           |
 //! |-----------|----------|---------------------------------------|
 //! | `job_id`   | `string` | Unique job identifier                 |
 //! | `executor` | `string` | Executor backend (e.g. "local", "slurm") |
+//! | `endpoint` | `string?` | Where the executor runs the job: the local host name, a Ray dashboard address; `null` if the executor reports none |
+//! | `submission_id` | `string?` | The executor's submission ID (Ray submission ID, SLURM job ID); `null` for local jobs |
+//! | `node`     | `string?` | Host the job runs on; always `null` here, since no executor knows it at dispatch (see `job_completed`) |
+//!
+//! A Ray DAG run emits no `job_started` (its tasks start inside one driver
+//! job), and a SLURM DAG run emits no job events; both carry the same fields
+//! in `ox status --json --units`.
 //!
 //! ## `job_completed`
 //!
@@ -71,7 +78,7 @@
 //! not load the workflow, so the events it appends list no `outputs`.
 //!
 //! ```json
-//! {"event":"job_completed","schema_version":1,"ts":"2026-10-08T12:00:00Z","job_id":"align_S001","duration_ms":272000,"outputs":["results/S001.bam"],"peak_memory_bytes":1536000,"cpu_time_ms":270400,"node":null}
+//! {"event":"job_completed","schema_version":1,"ts":"2026-10-08T12:00:00Z","job_id":"align_S001","duration_ms":272000,"outputs":["results/S001.bam"],"peak_memory_bytes":1536000,"cpu_time_ms":270400,"node":null,"endpoint":"build-host","submission_id":null}
 //! ```
 //!
 //! | Field         | Type       | Description                       |
@@ -82,6 +89,8 @@
 //! | `peak_memory_bytes` | `u64?` | Executor observation of the finishing attempt's peak RSS, in bytes; `null` if unmeasured |
 //! | `cpu_time_ms` | `u64?`     | User + system CPU time of the finishing attempt, in ms; `null` if unmeasured |
 //! | `node`        | `string?`  | Host the attempt ran on, reported by the Ray executor; `null` otherwise |
+//! | `endpoint`    | `string?`  | Where the executor ran the job: the local host name, a Ray dashboard address; `null` if the executor reports none |
+//! | `submission_id` | `string?` | The executor's submission ID (Ray submission ID); `null` for local jobs |
 //!
 //! ## `job_failed`
 //!

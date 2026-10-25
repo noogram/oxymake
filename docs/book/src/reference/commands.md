@@ -230,6 +230,7 @@ Show current execution status.
 ```bash
 ox status                   # Summary of current state
 ox status --json            # Structured status
+ox status --json --units    # Add one record per unit of the run
 ox status --run run-550e8400-e29b-41d4-a716-446655440000
 ```
 
@@ -246,6 +247,22 @@ empty and stderr contains exactly
 `{"error":{"code":"run_not_found","selector":"<supplied>"}}`. If a known
 run's bound remote driver cannot be resolved, the code is
 `run_remote_unavailable` and the diagnostic also includes `reason`.
+
+`--units` (with `--json`) adds a `units` array to the run object, one record
+per unit: `job_id`, `rule`, `wildcards` (object), `outputs`, `state`
+(`pending`, `running`, `orphaned`, `completed`, `failed`, `skipped` or
+`cancelled`), `executor`, `endpoint`, `submission_id`, `node`, `started_at` and
+`ended_at` (Unix seconds), `exit_code`, and `cache_hit`. This is how a
+dashboard that reads OxyMake only through its commands learns which cluster and
+node ran each unit of a DAG split across several `ox run` invocations.
+`endpoint` is the Ray dashboard address or, for a local job, the host name;
+a SLURM submission records no endpoint, so it is `null`. `submission_id` is the
+Ray submission ID or SLURM job ID, `null` for local jobs. `node` is the host a
+Ray task ran on, `null` where the executor does not report one. `outputs`
+lists the outputs whose hash the run recorded; state keeps no declared output
+paths, so it is empty for a unit the cache layer never keyed. Fields that do
+not apply are `null`, never absent. To list the runs of a workflow folder,
+including runs still in progress, use `ox history --json`.
 
 #### Running vs. orphaned
 

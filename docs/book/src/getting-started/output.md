@@ -108,7 +108,10 @@ Each event carries an `event` discriminant (`run_started`, `job_planned`,
 a UTC RFC 3339 `ts` timestamp. `job_completed` reports the executor's
 observation of the job: peak RSS in bytes (`peak_memory_bytes`), user +
 system CPU time (`cpu_time_ms`) and, for Ray tasks, the host it ran on
-(`node`); each is `null` when the executor did not measure it. Every planned job gets its `job_planned` line
+(`node`); each is `null` when the executor did not measure it. `job_started`
+and `job_completed` also name where the job ran: `endpoint` (the local host
+name, or the Ray dashboard address) and `submission_id` (the Ray submission
+ID; `null` for local jobs). Every planned job gets its `job_planned` line
 right after `run_started`, before any job starts or is skipped. The format is
 designed for AI agents and scripts: each line parses independently. Use
 `--report-json <path>` to write the same stream to a file. See

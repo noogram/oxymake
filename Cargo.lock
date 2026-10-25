@@ -2109,6 +2109,7 @@ dependencies = [
  "libc",
  "ox-codec-core",
  "ox-core",
+ "ox-state",
  "parking_lot",
  "serde_json",
  "serial_test",

@@ -199,6 +199,7 @@ fn assert_usage(project: &Path, run_id: &str) {
         let event = completed.iter().find(|e| e["job_id"] == job).unwrap();
         assert_eq!(event["cpu_time_ms"], row["cpu_time_ms"], "{event}");
         assert_eq!(event["node"], host.as_str(), "{event}");
+        assert_eq!(event["submission_id"], "driver", "{event}");
         let bytes = event["peak_memory_bytes"].as_u64().unwrap();
         assert_eq!(bytes.div_ceil(MIB), mib(row), "{event}");
     }
@@ -355,4 +356,57 @@ async fn follow_records_each_ray_task_usage_and_node_once() {
         .success();
     assert_eq!(history(project.path(), &run_id).len(), 2);
     assert_eq!(events(project.path(), &run_id, "job_completed").len(), 2);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn status_names_the_endpoint_submission_and_node_of_each_ray_unit() {
+    let server = ray_api("SUCCEEDED").await;
+    let project = tempfile::tempdir().unwrap();
+    std::fs::write(project.path().join("Oxymakefile.toml"), WORKFLOW).unwrap();
+    ox().current_dir(project.path())
+        .args(run_args(&server))
+        .assert()
+        .success();
+    let run_dir = run_dir(project.path());
+    let run_id = run_dir.file_name().unwrap().to_str().unwrap().to_string();
+    run_driver(project.path(), &run_dir, None);
+
+    // `ox status` prints the snapshot, then the Ray driver's own document.
+    let output = ox()
+        .current_dir(project.path())
+        .args([
+            "status",
+            "--json",
+            "--units",
+            "--ray-address",
+            &server.uri(),
+        ])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let status: Value = serde_json::Deserializer::from_slice(&output.stdout)
+        .into_iter::<Value>()
+        .next()
+        .unwrap()
+        .unwrap();
+
+    let host = hostname();
+    let units = status["units"].as_array().unwrap();
+    assert_eq!(units.len(), 2, "{units:?}");
+    for unit in units {
+        assert_eq!(unit["executor"], "ray", "{unit}");
+        assert_eq!(unit["endpoint"], server.uri().as_str(), "{unit}");
+        assert_eq!(unit["submission_id"], "driver", "{unit}");
+        assert_eq!(unit["node"], host.as_str(), "{unit}");
+        assert_eq!(unit["state"], "completed", "{unit}");
+        assert_eq!(unit["exit_code"], 0, "{unit}");
+    }
+
+    let completed = events(project.path(), &run_id, "job_completed");
+    assert_eq!(completed.len(), 2, "{completed:?}");
+    for event in &completed {
+        assert_eq!(event["endpoint"], server.uri().as_str(), "{event}");
+        assert_eq!(event["submission_id"], "driver", "{event}");
+        assert_eq!(event["node"], host.as_str(), "{event}");
+    }
 }

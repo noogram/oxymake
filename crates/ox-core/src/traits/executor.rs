@@ -222,6 +222,13 @@ pub trait Executor: Send + Sync + Debug {
         "unknown"
     }
 
+    /// Where this executor runs jobs (host name, cluster or dashboard
+    /// address), reported in `job_started` and `job_completed`. `None` when
+    /// the executor does not identify one.
+    fn endpoint(&self, _job: &ConcreteJob) -> Option<String> {
+        None
+    }
+
     /// Whether this job consumes the scheduler's per-run resource budget.
     /// Routing adapters can exclude jobs whose resources are admitted remotely.
     fn uses_resource_budget(&self, _job: &ConcreteJob) -> bool {
