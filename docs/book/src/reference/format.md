@@ -149,7 +149,7 @@ history record the executor selected for each executed job.
 
 Three values express three distinct lifecycles; a boolean cannot represent
 all of them. The default preserves the existing guarantee that stale outputs
-from a failed run cannot masquerade as valid results. OxyMake always clears
+from a failed run cannot masquerade as valid results. The local executor always clears
 its own `.oxytmp` staging files before execution. Output verification and
 hashing after execution are unchanged. A failed job is still recorded as a
 failure and never writes a successful cache entry. Changing the policy
@@ -167,7 +167,8 @@ stage/commit them unless the policy is `never`. Ray does not apply the table's
 before-execution cleanup; commands still write to their final paths. A hard kill
 can leave partial final files because no cleanup runs (see
 [Ray output finalization](../concepts/ray-integration.md#output-finalization)).
-Call-mode and Slurm retain their existing behavior. Explicit `ox clean`
+Ray call-mode applies finalization only to files its wrapper materializes;
+object-store-only outputs and Slurm retain their existing behavior. Explicit `ox clean`
 and output lifecycle policies such as `temp` are separate mechanisms.
 
 #### Incremental cache of an external source

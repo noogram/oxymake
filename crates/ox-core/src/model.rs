@@ -356,7 +356,10 @@ impl fmt::Display for MaterializePolicy {
 // Reproducibility and provenance (Stage 2: artifact metadata)
 // ---------------------------------------------------------------------------
 
-/// Automatic cleanup policy for declared outputs in the local executor.
+/// Automatic cleanup policy for declared file outputs.
+///
+/// Executors define when cleanup runs; local also applies it before execution,
+/// while the Ray DAG driver applies it during post-execution finalization.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum CleanOutputs {

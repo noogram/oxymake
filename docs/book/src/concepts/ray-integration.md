@@ -656,8 +656,8 @@ A missing output fails the task with `OutputMissing`. A nonzero exit or missing
 output removes declared files and engine scratch, unless `clean_outputs =
 "never"` preserves the final files. With `never`, successful files are verified
 and left in place without staging. Per-task records report finalization errors
-as failures even when the command exited zero. Call-mode materialization is
-unchanged.
+as failures even when the command exited zero. Call-mode files that the wrapper materializes also participate; outputs
+kept only in the object store have no file finalization.
 
 This is post-execution finalization: a hard kill, preempted worker node or
 stopped head during writing cannot run cleanup and can leave a partial final

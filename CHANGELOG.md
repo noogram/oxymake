@@ -9,7 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Ray shell, script and inline tasks now verify declared file outputs and
+- Ray shell, script, inline tasks and materialized call-mode files now verify
+  declared file outputs and
   finalize them through `.oxytmp` renames, like local execution. Failed commands
   and missing outputs clean up final files and scratch; `clean_outputs = "never"`
   preserves final files and skips staging. Hard kills during writing can still

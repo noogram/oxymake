@@ -382,21 +382,26 @@ fn write_task_submission(
     let env_json = serde_json::to_string(&job.env).expect("environment variables serialize");
     let env_arg = format!("json.loads(\"{}\")", python_string_escape(&env_json));
 
-    // Resolve the staging pair in Rust using the same path function as local.
-    // Call-mode owns object-store materialization and is outside this contract.
-    let outputs: Vec<_> = if matches!(job.execution, ExecutionBlock::Call { .. }) {
-        vec![]
-    } else {
-        job.outputs
-            .iter()
-            .filter_map(|output| match &output.reference {
+    // Resolve staging pairs with the same path function as local. Call-mode
+    // files participate only when its wrapper actually materializes them.
+    let outputs: Vec<_> = job
+        .outputs
+        .iter()
+        .filter_map(|output| {
+            if matches!(job.execution, ExecutionBlock::Call { .. })
+                && !crate::object_store::strategy_for_policy(output.materialize, false)
+                    .write_to_shared_fs
+            {
+                return None;
+            }
+            match &output.reference {
                 ox_core::model::OutputRef::File(path) => {
                     Some((path.clone(), ox_core::atomic_output::temp_path(path)))
                 }
                 _ => None,
-            })
-            .collect()
-    };
+            }
+        })
+        .collect();
     let output_json = serde_json::to_string(&outputs).expect("output paths serialize");
     let output_args = format!(
         ", json.loads(\"{}\"), \"{}\"",
@@ -787,6 +792,9 @@ class _Context:
     def get_node_id(self): return 'stub-node'
 def get_runtime_context(): return _Context()
 def init(): pass
+class _Stored:
+    def hex(self): return '00'
+def put(value): return _Stored()
 class _Ref:
     def __init__(self, value=None, error=None): self.value, self.error = value, error
 class _Task:
@@ -828,6 +836,66 @@ def get(ref):
         }
         let output = command.output().unwrap();
         output.status.code().unwrap_or(-1)
+    }
+
+    #[test]
+    fn ray_call_finalizes_only_materialized_files() {
+        for materialize in [
+            MaterializePolicy::Always,
+            MaterializePolicy::Auto,
+            MaterializePolicy::Never,
+            MaterializePolicy::Final,
+        ] {
+            for fail in [false, true] {
+                let dir = tempfile::tempdir().unwrap();
+                let body = if fail {
+                    "def produce():\n    open('out.json', 'w').write('partial')\n    open('out.json.oxytmp', 'w').write('scratch')\n    raise RuntimeError('failed call')\n"
+                } else {
+                    "def produce():\n    return {'answer': 42}\n"
+                };
+                std::fs::write(dir.path().join("recipe.py"), body).unwrap();
+                let output = ResolvedOutput {
+                    reference: OutputRef::File("out.json".into()),
+                    name: None,
+                    lifecycle: OutputLifecycle::Permanent,
+                    materialize,
+                    format: None,
+                };
+                let mut job = shell_job("produce", "", vec![], vec![output]);
+                job.execution = ExecutionBlock::Call {
+                    function: "recipe:produce".into(),
+                    lang: "python".into(),
+                };
+                let graph = JobGraph::build(vec![job]).unwrap();
+                let ctx = ExecContext {
+                    project_dir: dir.path().into(),
+                    ..ctx()
+                };
+                let source = generate_driver(&graph, &ctx, dir.path(), &no_skip()).unwrap();
+                assert_eq!(
+                    run_with_stub(dir.path(), source, None),
+                    if fail { 1 } else { 0 }
+                );
+                let writes_file = materialize == MaterializePolicy::Always;
+                // Files outside the declared materialization contract remain
+                // owned by the user function; no object-store behavior changes.
+                assert_eq!(
+                    dir.path().join("out.json").exists(),
+                    if fail { !writes_file } else { writes_file }
+                );
+                assert_eq!(
+                    dir.path().join("out.json.oxytmp").exists(),
+                    fail && !writes_file
+                );
+                if !fail && writes_file {
+                    let value: serde_json::Value = serde_json::from_str(
+                        &std::fs::read_to_string(dir.path().join("out.json")).unwrap(),
+                    )
+                    .unwrap();
+                    assert_eq!(value["answer"], 42);
+                }
+            }
+        }
     }
 
     #[test]
@@ -893,7 +961,7 @@ os.replace = _fail_replace
 
     #[test]
     fn ray_output_finalization_contract() {
-        for script_mode in [false, true] {
+        for execution_mode in ["shell", "script", "run"] {
             for policy in [
                 CleanOutputs::Always,
                 CleanOutputs::OnFailure,
@@ -924,12 +992,17 @@ os.replace = _fail_replace
                     );
                     let mut job = shell_job("produce", &command, vec![], outputs);
                     job.clean_outputs = policy;
-                    if script_mode {
+                    if execution_mode == "script" {
                         let path = dir.path().join("recipe.sh");
                         std::fs::write(&path, &command).unwrap();
                         job.execution = ExecutionBlock::Script {
                             path,
                             lang: Some("bash".into()),
+                        };
+                    } else if execution_mode == "run" {
+                        job.execution = ExecutionBlock::Run {
+                            code: command,
+                            lang: "bash".into(),
                         };
                     }
                     let graph = JobGraph::build(vec![job]).unwrap();
@@ -956,7 +1029,7 @@ os.replace = _trace_replace
                         assert_eq!(
                             code,
                             if case == "success" { 0 } else { 1 },
-                            "{case}, {policy}, script={script_mode}"
+                            "{case}, {policy}, execution={execution_mode}"
                         );
                         let record = crate::task_record::read(
                             &dir.path().join(crate::task_record::TASKS_DIR),
