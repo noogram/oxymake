@@ -479,7 +479,14 @@ async fn interrupt_follow_stops_queued_driver() {
         .iter()
         .any(|r| r.url.path() == "/api/jobs/driver")
     {
-        if start.elapsed() > Duration::from_secs(12) {
+        if let Some(status) = child.try_wait().unwrap() {
+            let output = child.wait_with_output().unwrap();
+            panic!(
+                "driver exited before being polled ({status}): {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        if start.elapsed() > Duration::from_secs(120) {
             child.kill().unwrap();
             child.wait().unwrap();
             panic!("driver never polled");
@@ -493,7 +500,36 @@ async fn interrupt_follow_stops_queued_driver() {
             .unwrap()
             .success()
     );
+    // Observe the stop request before checking exit, with one hang guard
+    // covering both cancellation and teardown rather than a latency budget.
     let start = Instant::now();
+    loop {
+        // Read exit first so a stop received between the two observations
+        // cannot be mistaken for an exit without cancellation.
+        let status = child.try_wait().unwrap();
+        if server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .any(|r| r.method == "POST" && r.url.path() == "/api/jobs/driver/stop")
+        {
+            break;
+        }
+        if let Some(status) = status {
+            let output = child.wait_with_output().unwrap();
+            panic!(
+                "stop never received: driver exited ({status}): {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        if start.elapsed() > Duration::from_secs(120) {
+            child.kill().unwrap();
+            child.wait().unwrap();
+            panic!("stop never received");
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
     loop {
         if let Some(status) = child.try_wait().unwrap() {
             assert_eq!(status.code(), Some(130));
@@ -508,7 +544,7 @@ async fn interrupt_follow_stops_queued_driver() {
             assert!(!text.contains("Completed:"), "{text}");
             break;
         }
-        if start.elapsed() > Duration::from_secs(8) {
+        if start.elapsed() > Duration::from_secs(120) {
             child.kill().unwrap();
             child.wait().unwrap();
             panic!("follow ignored interruption");
