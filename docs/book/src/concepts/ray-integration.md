@@ -76,6 +76,24 @@ Plan: 12 rules, 847 jobs, 1203 source files
 Only the **uncached subgraph** is sent to Ray.
 
 
+## Driver Python interpreter
+
+If the head node's default `python3` cannot import Ray, select the Python
+executable from the environment where Ray is installed:
+
+```bash
+ox run results/output.parquet --executor ray --ray-python /opt/ray/bin/python
+```
+
+`--ray-python` defaults to `python3`. It selects the native DAG driver
+interpreter and the call-mode wrapper interpreter, including wrappers launched
+inside the DAG. The path is resolved on the Ray hosts, so call wrappers need it
+on every node that runs them. Quote paths containing spaces when invoking `ox`;
+OxyMake also quotes the executable and script paths in the submitted command.
+This flag accepts one executable, without arguments. It configures the host,
+with no workflow-level setting or environment-variable override. Ordinary
+shell, script and inline `run` tasks keep their declared interpreters.
+
 ## Resource admission
 
 Each shell, script, inline `run`, and `call` task receives its checked CPU,

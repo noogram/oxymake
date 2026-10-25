@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `ox run --ray-python PATH` selects the Python executable for the Ray DAG
+  driver and call-mode wrappers, including wrappers inside a DAG. Use the
+  environment where Ray is installed when the head node's default Python
+  cannot import it; the default remains `python3`. Executable and wrapper
+  paths are shell-quoted, including spaces and apostrophes (#61).
+
 - `ox status --json` now versions every success object with `schema_version: 1`,
   including absent state, selected/grouped runs, and Ray summaries.
   `ox history --json` versions each run and job record likewise. The two

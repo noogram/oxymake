@@ -374,7 +374,21 @@ fn build_call_args(inputs: &[InputArg<'_>], params: &BTreeMap<String, String>) -
 
 /// Build the shell command to execute the call-mode wrapper script.
 pub fn wrapper_command(script_path: &Path) -> String {
-    format!("python3 {}", script_path.display())
+    wrapper_command_with_python(script_path, "python3")
+}
+
+/// Build a wrapper command using one Python executable, with shell-quoted paths.
+/// The interpreter is a path or executable name, not a shell command.
+pub(crate) fn wrapper_command_with_python(script_path: &Path, python: &str) -> String {
+    let interpreter = if python == "python3" {
+        "python3".to_string()
+    } else {
+        format!("'{}'", python.replace('\'', "'\\''"))
+    };
+    format!(
+        "{interpreter} '{}'",
+        script_path.to_string_lossy().replace('\'', "'\\''")
+    )
 }
 
 #[cfg(test)]

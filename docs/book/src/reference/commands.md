@@ -52,6 +52,11 @@ ox run --no-cache               # Ignore the cache, re-run everything
   `--jobs` bounds cluster submissions too (default: 1); `ox` must stay alive.
   Ray DAG runs reject active local overrides. Pruned or cached local jobs do
   not change dispatch. See [Executor override](format.md#executor-override).
+- `--ray-python PATH` -- Python executable on Ray hosts for the native DAG
+  driver and call-mode wrappers (default: `python3`). The executable must have
+  Ray installed. Supply one path or executable name, not a command with
+  arguments. This host setting is CLI-only; it has no workflow key or
+  environment-variable override.
 - `--ray-allow-pending` -- Ray only; skip the default live-node feasibility
   check and allow waiting for a future node. Resource values and names are
   still validated. Using this flag with another executor is a usage error. It

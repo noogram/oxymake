@@ -26,6 +26,8 @@ pub struct RayConfig {
     pub allow_pending: bool,
     /// Ray dashboard address (default: `http://127.0.0.1:8265`).
     pub dashboard_address: String,
+    /// Python executable on Ray hosts for the DAG driver and call wrappers.
+    pub python: String,
     /// Maximum concurrent submissions (rate limiting).
     pub max_submit: Option<usize>,
     /// Working directory on shared filesystem.
@@ -49,6 +51,7 @@ impl Default for RayConfig {
         Self {
             allow_pending: false,
             dashboard_address: "http://127.0.0.1:8265".to_string(),
+            python: "python3".to_string(),
             max_submit: None,
             working_dir: PathBuf::from("/tmp/oxymake-ray"),
             poll_interval_min: Duration::from_secs(2),
@@ -370,7 +373,7 @@ impl Executor for RayExecutor {
             ExecutionBlock::Call { .. } => {
                 // Call-mode: run the generated Python wrapper script.
                 let script_path = workspace.work_dir.join("call_wrapper.py");
-                call_mode::wrapper_command(&script_path)
+                call_mode::wrapper_command_with_python(&script_path, &self.config.python)
             }
             ExecutionBlock::Run { lang, .. } => {
                 let interpreter = match lang.as_str() {
@@ -724,16 +727,20 @@ impl Executor for RayExecutor {
         // uncached subgraph using @ray.remote tasks with ObjectRef
         // dependency chaining. Cached jobs are omitted — their outputs
         // already exist on disk.
-        let driver_source =
-            crate::driver_script::generate_driver(graph, ctx, &run_staging, &skip_jobs).map_err(
-                |error| match error {
-                    RayError::Io(source) => RayError::StagingIo {
-                        path: run_staging.clone(),
-                        source,
-                    },
-                    other => other,
-                },
-            )?;
+        let driver_source = crate::driver_script::generate_driver_with_python(
+            graph,
+            ctx,
+            &run_staging,
+            &skip_jobs,
+            &self.config.python,
+        )
+        .map_err(|error| match error {
+            RayError::Io(source) => RayError::StagingIo {
+                path: run_staging.clone(),
+                source,
+            },
+            other => other,
+        })?;
 
         let driver_path = run_staging.join("oxymake_dag_driver.py");
         tokio::fs::write(&driver_path, &driver_source)
@@ -788,7 +795,7 @@ impl Executor for RayExecutor {
         );
 
         // Submit the driver as a single Ray job.
-        let entrypoint = format!("python3 {}", shell_quote(&driver_path.to_string_lossy()));
+        let entrypoint = call_mode::wrapper_command_with_python(&driver_path, &self.config.python);
         let request = JobSubmitRequest {
             entrypoint,
             submission_id: None,
@@ -1039,9 +1046,24 @@ mod tests {
     #[tokio::test]
     async fn test_ray_config_default() {
         let config = RayConfig::default();
+        assert_eq!(config.python, "python3");
         assert_eq!(config.dashboard_address, "http://127.0.0.1:8265");
         assert_eq!(config.poll_interval_min, Duration::from_secs(2));
         assert_eq!(config.poll_interval_max, Duration::from_secs(30));
+    }
+
+    #[test]
+    fn ray_python_entrypoint_quotes_executable_and_script_as_single_arguments() {
+        let python = "/opt/ray env's/bin/python;false";
+        let script = PathBuf::from("/shared/work dir's/driver.py");
+        assert_eq!(
+            call_mode::wrapper_command_with_python(&script, python),
+            r"'/opt/ray env'\''s/bin/python;false' '/shared/work dir'\''s/driver.py'"
+        );
+        assert_eq!(
+            call_mode::wrapper_command_with_python(&script, &RayConfig::default().python),
+            call_mode::wrapper_command(&script)
+        );
     }
 
     #[test]
@@ -1056,6 +1078,15 @@ mod tests {
 
     #[tokio::test]
     async fn token_mode_driver_payload_and_artifacts_never_contain_the_token() {
+        assert_dag_python_submission("python3").await;
+    }
+
+    #[tokio::test]
+    async fn ray_python_reaches_dag_submission() {
+        assert_dag_python_submission("/opt/ray env's/bin/python;false").await;
+    }
+
+    async fn assert_dag_python_submission(python: &str) {
         const TOKEN: &str = "distinctive-driver-token-a91e";
         let server = MockServer::start().await;
         Mock::given(method("GET"))
@@ -1088,6 +1119,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let config = RayConfig {
             dashboard_address: server.uri(),
+            python: python.into(),
             working_dir: root.path().join("staging"),
             ..RayConfig::default()
         };
@@ -1113,6 +1145,11 @@ mod tests {
             .find(|request| request.url.path() == "/api/jobs/")
             .unwrap();
         let payload: serde_json::Value = serde_json::from_slice(&submission.body).unwrap();
+        let expected_script = root.path().join("staging/token-run/oxymake_dag_driver.py");
+        assert_eq!(
+            payload["entrypoint"],
+            call_mode::wrapper_command_with_python(&expected_script, python)
+        );
         assert_eq!(
             payload.pointer("/runtime_env/env_vars/RAY_AUTH_MODE"),
             Some(&serde_json::Value::String("token".into()))
@@ -1136,6 +1173,15 @@ mod tests {
 
     #[tokio::test]
     async fn token_mode_reaches_per_job_call_wrapper_without_leaking_token() {
+        assert_call_python_submission("python3").await;
+    }
+
+    #[tokio::test]
+    async fn ray_python_reaches_call_submission() {
+        assert_call_python_submission("/opt/ray env's/bin/python;false").await;
+    }
+
+    async fn assert_call_python_submission(python: &str) {
         const TOKEN: &str = "distinctive-call-token-b28f";
         let server = MockServer::start().await;
         Mock::given(method("POST"))
@@ -1157,6 +1203,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let config = RayConfig {
             dashboard_address: server.uri(),
+            python: python.into(),
             working_dir: root.path().join("staging"),
             poll_interval_min: Duration::from_millis(1),
             poll_interval_max: Duration::from_millis(2),
@@ -1188,6 +1235,11 @@ mod tests {
             .find(|request| request.url.path() == "/api/jobs/")
             .unwrap();
         let payload: serde_json::Value = serde_json::from_slice(&submission.body).unwrap();
+        let expected_script = workspace.work_dir.join("call_wrapper.py");
+        assert_eq!(
+            payload["entrypoint"],
+            call_mode::wrapper_command_with_python(&expected_script, python)
+        );
         assert_eq!(
             payload.pointer("/runtime_env/env_vars/RAY_AUTH_MODE"),
             Some(&serde_json::Value::String("token".into()))
