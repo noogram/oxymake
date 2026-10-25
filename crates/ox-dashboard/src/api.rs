@@ -1535,6 +1535,8 @@ mod tests {
                 duration_ms: 100,
                 outputs: vec![],
                 peak_memory_bytes: None,
+                cpu_time_ms: None,
+                node: None,
             });
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 

@@ -542,6 +542,8 @@ mod tests {
             duration_ms: 272000,
             outputs: vec!["results/S001.bam".into()],
             peak_memory_bytes: Some(128 * 1024 * 1024),
+            cpu_time_ms: Some(90_500),
+            node: Some("worker-3".into()),
         };
         r.on_event(&event).await;
 
@@ -551,6 +553,27 @@ mod tests {
         assert_eq!(v["duration_ms"], 272000);
         assert_eq!(v["outputs"][0], "results/S001.bam");
         assert_eq!(v["peak_memory_bytes"], 128 * 1024 * 1024);
+        assert_eq!(v["cpu_time_ms"], 90_500);
+        assert_eq!(v["node"], "worker-3");
+    }
+
+    #[tokio::test]
+    async fn unmeasured_job_usage_is_explicit_null() {
+        let r = JsonReporter::new(Vec::new());
+        r.on_event(&Event::JobCompleted {
+            job_id: JobId("j".into()),
+            duration_ms: 1,
+            outputs: vec![],
+            peak_memory_bytes: None,
+            cpu_time_ms: None,
+            node: None,
+        })
+        .await;
+
+        let v: serde_json::Value = serde_json::from_str(output_string(r).trim()).unwrap();
+        for key in ["peak_memory_bytes", "cpu_time_ms", "node"] {
+            assert_eq!(v.get(key), Some(&serde_json::Value::Null), "{key} in {v}");
+        }
     }
 
     #[tokio::test]
@@ -675,6 +698,8 @@ mod tests {
             duration_ms: 500,
             outputs: vec!["out.txt".into()],
             peak_memory_bytes: None,
+            cpu_time_ms: None,
+            node: None,
         })
         .await;
 

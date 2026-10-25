@@ -1924,6 +1924,8 @@ impl fmt::Display for RunReason {
 ///     duration_ms: 1234,
 ///     outputs: vec!["results/A.bam".into()],
 ///     peak_memory_bytes: Some(64 * 1024 * 1024),
+///     cpu_time_ms: Some(950),
+///     node: None,
 /// };
 /// if let Event::JobCompleted { duration_ms, .. } = &event {
 ///     assert_eq!(*duration_ms, 1234);
@@ -1984,10 +1986,16 @@ pub enum Event {
         duration_ms: u64,
         /// Paths or IDs of outputs produced.
         outputs: Vec<String>,
-        /// Peak memory of the finishing attempt, measured by the executor in
-        /// bytes when available. Earlier failed attempts are not accumulated.
-        #[serde(skip_serializing_if = "Option::is_none")]
+        /// Peak memory (RSS) of the finishing attempt, measured by the
+        /// executor in bytes; `null` when unmeasured. Earlier failed attempts
+        /// are not accumulated.
         peak_memory_bytes: Option<u64>,
+        /// User + system CPU time of the finishing attempt in milliseconds,
+        /// measured by the executor; `null` when unmeasured.
+        cpu_time_ms: Option<u64>,
+        /// Host the finishing attempt ran on, when the executor reports one
+        /// (Ray tasks); `null` otherwise.
+        node: Option<String>,
     },
     /// Emitted when a job fails.
     JobFailed {
@@ -3044,6 +3052,8 @@ mod tests {
             duration_ms: 500,
             outputs: vec!["out.txt".into()],
             peak_memory_bytes: None,
+            cpu_time_ms: None,
+            node: None,
         };
         assert_eq!(completed.to_string(), "completed j1 in 500ms");
 
@@ -3133,6 +3143,8 @@ mod tests {
                 duration_ms: 500,
                 outputs: vec!["out.txt".into()],
                 peak_memory_bytes: Some(1024),
+                cpu_time_ms: None,
+                node: None,
             },
             Event::JobFailed {
                 job_id: JobId::from("j1"),

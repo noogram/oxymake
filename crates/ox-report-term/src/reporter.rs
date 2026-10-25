@@ -743,6 +743,8 @@ mod tests {
             duration_ms: 1234,
             outputs: vec![],
             peak_memory_bytes: None,
+            cpu_time_ms: None,
+            node: None,
         };
         reporter.on_event(&event).await;
         assert_eq!(reporter.completed.load(Ordering::Relaxed), 1);
@@ -931,6 +933,8 @@ mod tests {
                 duration_ms: 500,
                 outputs: vec![],
                 peak_memory_bytes: None,
+                cpu_time_ms: None,
+                node: None,
             };
             reporter.on_event(&ev).await;
         }
@@ -971,6 +975,8 @@ mod tests {
             duration_ms: 500,
             outputs: vec![],
             peak_memory_bytes: None,
+            cpu_time_ms: None,
+            node: None,
         };
         reporter.on_event(&done).await;
         assert_eq!(reporter.completed.load(Ordering::Relaxed), 2);
