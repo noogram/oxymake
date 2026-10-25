@@ -11,6 +11,7 @@ description = "Local process executor — runs jobs as child processes on the ho
 [dependencies]
 ox-core = { path = "../ox-core" }
 ox-codec-core = { path = "../ox-codec-core" }
+ox-state = { path = "../ox-state" }
 tokio = { workspace = true, features = ["fs", "process", "io-util", "rt", "macros", "time", "signal"] }
 thiserror.workspace = true
 libc.workspace = true

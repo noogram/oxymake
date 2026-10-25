@@ -711,6 +711,10 @@ impl Executor for LocalExecutor {
         "local"
     }
 
+    fn endpoint(&self, _job: &ConcreteJob) -> Option<String> {
+        Some(ox_state::host::hostname().to_string())
+    }
+
     type Error = ExecLocalError;
 
     /// Initialize the executor.  No-op for local execution.

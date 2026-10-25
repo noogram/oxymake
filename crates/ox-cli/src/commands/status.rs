@@ -30,6 +30,11 @@ pub struct StatusArgs {
     #[arg(long)]
     pub json: bool,
 
+    /// With --json, add one record per unit (rule, wildcards, outputs, state,
+    /// endpoint, submission ID, node, start/end, exit code, cache hit)
+    #[arg(long, requires = "json")]
+    pub units: bool,
+
     /// Oxymakefile path
     #[arg(short = 'f', long, default_value = "Oxymakefile.toml")]
     pub file: String,
@@ -355,6 +360,36 @@ pub fn cmd_status(args: StatusArgs, theme: &ox_render::Theme) -> Result<()> {
             "orphaned_jobs": orphaned_json,
             "pending_jobs": pending_json,
         });
+
+        if args.units {
+            let run = run_id.as_deref().unwrap_or_default();
+            let units: Vec<serde_json::Value> = db
+                .unit_views(run, now_secs, lease_secs)?
+                .iter()
+                .map(|u| {
+                    let wildcards = serde_json::from_str::<serde_json::Value>(&u.view.wildcards)
+                        .unwrap_or_else(|_| serde_json::json!({}));
+                    serde_json::json!({
+                        "job_id": u.view.id,
+                        "rule": u.view.rule_name,
+                        "wildcards": wildcards,
+                        "outputs": u.outputs,
+                        "state": u.view.effective.as_str(),
+                        "executor": u.executor,
+                        "endpoint": u.endpoint,
+                        "submission_id": u.submission_id,
+                        "node": u.node,
+                        "started_at": u.view.started_at,
+                        "ended_at": u.view.completed_at,
+                        "exit_code": u.view.exit_code,
+                        "cache_hit": u.view.cached,
+                    })
+                })
+                .collect();
+            json.as_object_mut()
+                .unwrap()
+                .insert("units".to_string(), serde_json::Value::Array(units));
+        }
 
         if args.group_by.is_some() {
             let stats = rollup_by_rule(&views);

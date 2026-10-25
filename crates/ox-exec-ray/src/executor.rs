@@ -255,6 +255,10 @@ impl Executor for RayExecutor {
         "ray"
     }
 
+    fn endpoint(&self, _job: &ConcreteJob) -> Option<String> {
+        Some(self.config.dashboard_address.clone())
+    }
+
     type Error = RayError;
 
     async fn init(&self) -> Result<(), Self::Error> {

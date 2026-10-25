@@ -44,9 +44,37 @@ fn failure_message(record: &TaskRecord) -> String {
     }
 }
 
+/// Where a job was submitted: the Ray dashboard address and the driver's
+/// submission ID, as recorded in state.db when the DAG was submitted.
+#[derive(Default)]
+struct Location {
+    endpoint: Option<String>,
+    submission_id: Option<String>,
+}
+
+/// Submission locations of `run_id`'s jobs, by job ID. Empty when state.db
+/// has none (no database, or a run submitted before they were recorded).
+fn locations(db: Option<&StateDb>, run_id: &str) -> HashMap<String, Location> {
+    let Some(db) = db else {
+        return HashMap::new();
+    };
+    db.remote_job_submissions()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|job| job.run_id == run_id)
+        .map(|job| {
+            let location = Location {
+                endpoint: job.address,
+                submission_id: Some(job.submission_id),
+            };
+            (job.job_id, location)
+        })
+        .collect()
+}
+
 /// The event a record stands for. `node` is the task's host name (the Ray
 /// node ID stays in the record).
-fn event_for(record: &TaskRecord, outputs: Vec<String>) -> Event {
+fn event_for(record: &TaskRecord, outputs: Vec<String>, location: Location) -> Event {
     let job_id = JobId::from(record.job_id.as_str());
     match record.status {
         TaskStatus::Completed => Event::JobCompleted {
@@ -56,6 +84,8 @@ fn event_for(record: &TaskRecord, outputs: Vec<String>) -> Event {
             peak_memory_bytes: record.peak_rss_bytes,
             cpu_time_ms: record.cpu_time_ms,
             node: record.hostname.clone().or_else(|| record.node_id.clone()),
+            endpoint: location.endpoint,
+            submission_id: location.submission_id,
         },
         TaskStatus::Failed => Event::JobFailed {
             job_id,
@@ -89,6 +119,7 @@ pub(super) fn apply(
     let mut peak_memory = HashMap::new();
     let mut cpu_times = HashMap::new();
     let mut nodes = HashMap::new();
+    let mut locations = locations(Some(db), run_id);
     for record in records {
         let job = record.job_id.as_str();
         let exit_code = record.exit_code_or_default();
@@ -105,7 +136,11 @@ pub(super) fn apply(
             continue;
         }
         let _ = db.set_job_times(job, record.started_at as u64, record.ended_at as u64);
-        let event = event_for(record, outputs(job));
+        let event = event_for(
+            record,
+            outputs(job),
+            locations.remove(job).unwrap_or_default(),
+        );
         if let Event::JobCompleted {
             duration_ms,
             peak_memory_bytes,
@@ -212,7 +247,7 @@ impl<'a> Follower<'a> {
                 std::slice::from_ref(&record),
                 &outputs,
             ),
-            _ => vec![event_for(&record, outputs(job))],
+            _ => vec![event_for(&record, outputs(job), Location::default())],
         };
         for event in events {
             self.bus.emit(event);

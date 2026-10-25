@@ -63,6 +63,13 @@ impl<R: Executor, L: Executor> Executor for LocalOverrideExecutor<R, L> {
             self.remote.executor_name(job)
         }
     }
+    fn endpoint(&self, job: &ConcreteJob) -> Option<String> {
+        if self.is_local(&job.id) {
+            self.local.endpoint(job)
+        } else {
+            self.remote.endpoint(job)
+        }
+    }
     fn uses_resource_budget(&self, job: &ConcreteJob) -> bool {
         self.is_local(&job.id) && self.local.uses_resource_budget(job)
     }
@@ -195,6 +202,9 @@ mod tests {
         type Error = ExecError;
         fn executor_name(&self, _: &ConcreteJob) -> &str {
             self.name
+        }
+        fn endpoint(&self, _: &ConcreteJob) -> Option<String> {
+            Some(format!("{}-endpoint", self.name))
         }
         async fn init(&self) -> Result<(), ExecError> {
             Ok(())
@@ -386,12 +396,28 @@ mod tests {
             assert_eq!(calls.len(), attempts * 3 + 3, "{calls:?}");
         }
         let mut names = Vec::new();
+        let mut completed = Vec::new();
         while let Ok(event) = rx.try_recv() {
-            if let Event::JobStarted { executor, .. } = event {
-                names.push(executor);
+            match event {
+                // The endpoint is the routed backend's, as the executor is.
+                Event::JobStarted {
+                    executor, endpoint, ..
+                } => {
+                    assert_eq!(
+                        endpoint.as_deref(),
+                        Some(format!("{executor}-endpoint").as_str())
+                    );
+                    names.push(executor);
+                }
+                Event::JobCompleted { endpoint, .. } => completed.push(endpoint),
+                _ => {}
             }
         }
         assert_eq!(names, ["local", "local", "slurm"]);
+        assert_eq!(
+            completed,
+            [Some("local-endpoint".into()), Some("slurm-endpoint".into())]
+        );
     }
 
     #[tokio::test]

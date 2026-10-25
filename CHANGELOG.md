@@ -99,6 +99,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   job, `null` when unmeasured. Local cold and warm-fork jobs now record in
   history the CPU time that was previously only in benchmark TSV (#58).
 - `job_completed` events carry `cpu_time_ms` and `node` (#58).
+- `job_started` and `job_completed` events carry `endpoint` (local host name,
+  Ray dashboard address) and `submission_id` (Ray submission ID); `job_started`
+  also carries `node`, always `null` because no executor knows it at dispatch.
+  Each is `null` when the executor reports none (additive; the event
+  `schema_version` stays 1). Ray DAG runs emit no `job_started` and SLURM DAG
+  runs emit no job events, so those carry the fields only in
+  `ox status --json --units` (#62).
+- `ox status --json --units` adds a `units` array with one record per unit of
+  the run: `job_id`, `rule`, `wildcards`, `outputs`, `state`, `executor`,
+  `endpoint`, `submission_id`, `node`, `started_at`, `ended_at`, `exit_code`
+  and `cache_hit` (#62).
 
 ### Changed
 - `ox status --run ID` and `ox history --run-id ID` now require an exact,

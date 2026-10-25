@@ -908,6 +908,9 @@ pub async fn run_scheduler_with_claims<E: Executor + 'static>(
                     job_id: job_id.clone(),
                     executor: executor.executor_name(&job).to_string(),
                     reason,
+                    endpoint: executor.endpoint(&job),
+                    submission_id: None,
+                    node: None,
                 });
                 debug!(
                     target: "ox.scheduler",
@@ -2803,6 +2806,8 @@ async fn handle_completion<E: Executor + ?Sized>(
             peak_memory_bytes: msg.result.peak_memory_bytes,
             cpu_time_ms: cpu_time_ms(&msg.result),
             node: None,
+            endpoint: executor.endpoint(&msg.job),
+            submission_id: None,
         });
 
         let on_critical_path =
@@ -2863,6 +2868,8 @@ async fn handle_completion<E: Executor + ?Sized>(
                     peak_memory_bytes: msg.result.peak_memory_bytes,
                     cpu_time_ms: cpu_time_ms(&msg.result),
                     node: None,
+                    endpoint: executor.endpoint(&msg.job),
+                    submission_id: None,
                 });
                 let on_critical_path = config.critical_path_jobs.is_empty()
                     || config.critical_path_jobs.contains(&msg.job_id);
