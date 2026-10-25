@@ -171,6 +171,8 @@ pub struct JobProvenance {
 ///     completed_at: Some(1700000042),
 ///     wall_time_ms: Some(42000),
 ///     peak_mem_mb: Some(128),
+///     cpu_time_ms: Some(40_100),
+///     node: None,
 ///     exit_code: Some(0),
 ///     reproducibility_class: Some("deterministic".into()),
 ///     artifact_provenance_json: None,
@@ -206,6 +208,10 @@ pub struct JobHistoryEntry {
     pub wall_time_ms: Option<u64>,
     /// Peak memory usage in MiB, rounded up from an executor's byte count.
     pub peak_mem_mb: Option<u64>,
+    /// User + system CPU time in milliseconds, as measured by the executor.
+    pub cpu_time_ms: Option<u64>,
+    /// Host a remote executor ran the job on (a Ray task's node).
+    pub node: Option<String>,
     /// Process exit code.
     pub exit_code: Option<i32>,
     /// Reproducibility classification from the rule (e.g., "deterministic").
@@ -470,7 +476,7 @@ pub struct GateRecord {
 /// let db = StateDb::open(tmp.path()).unwrap();
 ///
 /// // Database is at schema version 1 after open.
-/// assert_eq!(db.schema_version().unwrap(), 10);
+/// assert_eq!(db.schema_version().unwrap(), 11);
 ///
 /// db.close().unwrap();
 /// ```
@@ -720,6 +726,24 @@ impl StateDb {
             "UPDATE jobs SET status = 'failed', exit_code = ?1, completed_at = ?2
              WHERE id = ?3 AND status = 'running'",
             rusqlite::params![exit_code, now, job_id],
+        )?;
+        Ok(rows > 0)
+    }
+
+    /// Replace a terminal job's start and end times with the executor's own
+    /// observation (a Ray task record), so history and status report when
+    /// the job ran rather than when its result was synchronised. Returns
+    /// `true` if a terminal row was updated.
+    pub fn set_job_times(
+        &self,
+        job_id: &str,
+        started_at: u64,
+        completed_at: u64,
+    ) -> Result<bool, StateError> {
+        let rows = self.conn.execute(
+            "UPDATE jobs SET started_at = ?1, completed_at = ?2
+             WHERE id = ?3 AND status IN ('completed', 'failed')",
+            rusqlite::params![started_at, completed_at, job_id],
         )?;
         Ok(rows > 0)
     }
@@ -1383,8 +1407,9 @@ impl StateDb {
                 (run_id, job_id, rule_name, wildcards, input_hashes, output_hashes,
                  params_hash, env_hash, executor, hostname,
                  started_at, completed_at, wall_time_ms, peak_mem_mb, exit_code,
-                 reproducibility_class, artifact_provenance_json)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
+                 reproducibility_class, artifact_provenance_json, cpu_time_ms, node)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17,
+                     ?18, ?19)",
             rusqlite::params![
                 entry.run_id,
                 entry.job_id,
@@ -1403,6 +1428,8 @@ impl StateDb {
                 entry.exit_code,
                 entry.reproducibility_class,
                 entry.artifact_provenance_json,
+                entry.cpu_time_ms,
+                entry.node,
             ],
         )?;
         Ok(())
@@ -1479,11 +1506,20 @@ impl StateDb {
             peak_memory_bytes,
             provenance,
             &std::collections::HashMap::new(),
+            &std::collections::HashMap::new(),
+            &std::collections::HashMap::new(),
         )
     }
 
     /// Finalize history using actual job-start executor observations.
     /// Jobs with no observation retain the run executor (e.g. DAG submissions).
+    /// `cpu_times_ms` and `nodes` add the executor's CPU time and node for
+    /// the jobs that report them.
+    ///
+    /// A job that already has a history row for `run_id` is left alone, so
+    /// finalising again is idempotent: a Ray run's history is written
+    /// incrementally by every `ox status` synchronisation and once more by
+    /// a following `ox run`, and each job gets exactly one row.
     #[allow(clippy::too_many_arguments)]
     pub fn finalize_job_history_with_executors(
         &self,
@@ -1494,11 +1530,75 @@ impl StateDb {
         peak_memory_bytes: &std::collections::HashMap<String, u64>,
         provenance: &std::collections::HashMap<String, JobProvenance>,
         executors: &std::collections::HashMap<String, String>,
+        cpu_times_ms: &std::collections::HashMap<String, u64>,
+        nodes: &std::collections::HashMap<String, String>,
+    ) -> Result<usize, StateError> {
+        self.record_unrecorded_history(
+            run_id,
+            None,
+            executor,
+            hostname,
+            wall_times,
+            peak_memory_bytes,
+            provenance,
+            executors,
+            cpu_times_ms,
+            nodes,
+        )
+    }
+
+    /// Record history for the listed jobs of `run_id` that are terminal and
+    /// have no row yet: the jobs a remote-executor synchronisation (Ray task
+    /// records) has just terminalised. Unlisted jobs are left to the run's
+    /// own finalisation, which holds their cache provenance. Idempotent.
+    #[allow(clippy::too_many_arguments)]
+    pub fn record_synced_job_history(
+        &self,
+        run_id: &str,
+        job_ids: &[String],
+        executor: &str,
+        hostname: &str,
+        wall_times: &std::collections::HashMap<String, u64>,
+        peak_memory_bytes: &std::collections::HashMap<String, u64>,
+        cpu_times_ms: &std::collections::HashMap<String, u64>,
+        nodes: &std::collections::HashMap<String, String>,
+    ) -> Result<usize, StateError> {
+        self.record_unrecorded_history(
+            run_id,
+            Some(job_ids),
+            executor,
+            hostname,
+            wall_times,
+            peak_memory_bytes,
+            &std::collections::HashMap::new(),
+            &std::collections::HashMap::new(),
+            cpu_times_ms,
+            nodes,
+        )
+    }
+
+    /// Insert a history row for every terminal job of `run_id` (restricted
+    /// to `only` when given) that has none yet.
+    #[allow(clippy::too_many_arguments)]
+    fn record_unrecorded_history(
+        &self,
+        run_id: &str,
+        only: Option<&[String]>,
+        executor: &str,
+        hostname: &str,
+        wall_times: &std::collections::HashMap<String, u64>,
+        peak_memory_bytes: &std::collections::HashMap<String, u64>,
+        provenance: &std::collections::HashMap<String, JobProvenance>,
+        executors: &std::collections::HashMap<String, String>,
+        cpu_times_ms: &std::collections::HashMap<String, u64>,
+        nodes: &std::collections::HashMap<String, String>,
     ) -> Result<usize, StateError> {
         let mut stmt = self.conn.prepare(
             "SELECT id, rule_name, wildcards, status, started_at, completed_at, exit_code
              FROM jobs
-             WHERE run_id = ?1 AND status IN ('completed', 'failed', 'skipped', 'cancelled')",
+             WHERE run_id = ?1 AND status IN ('completed', 'failed', 'skipped', 'cancelled')
+               AND NOT EXISTS (SELECT 1 FROM job_history h
+                               WHERE h.run_id = ?1 AND h.job_id = jobs.id)",
         )?;
         let entries: Vec<JobHistoryEntry> = stmt
             .query_map(rusqlite::params![run_id], |row| {
@@ -1517,6 +1617,8 @@ impl StateDb {
                     .map(bytes_to_mib_rounded_up);
                 let prov = provenance.get(job_id.as_str()).cloned().unwrap_or_default();
                 let actual_executor = executors.get(&job_id).map_or(executor, String::as_str);
+                let cpu_time_ms = cpu_times_ms.get(&job_id).copied();
+                let node = nodes.get(&job_id).cloned();
                 Ok(JobHistoryEntry {
                     run_id: run_id.to_string(),
                     job_id,
@@ -1532,16 +1634,25 @@ impl StateDb {
                     completed_at: row.get(5)?,
                     wall_time_ms,
                     // Store the executor's per-job observation: local cold
-                    // children via wait4, or SLURM CLI steps. Warm workers and
-                    // SLURM REST remain unmeasured; work that escapes the local
-                    // child is outside its observation.
+                    // children and Ray tasks via wait4, or SLURM CLI steps.
+                    // Warm workers and SLURM REST remain unmeasured; work that
+                    // escapes the child is outside its observation.
                     peak_mem_mb,
+                    cpu_time_ms,
+                    node,
                     exit_code,
                     reproducibility_class: prov.reproducibility_class,
                     artifact_provenance_json: prov.artifact_provenance_json,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
+        let entries: Vec<JobHistoryEntry> = match only {
+            Some(ids) => entries
+                .into_iter()
+                .filter(|entry| ids.contains(&entry.job_id))
+                .collect(),
+            None => entries,
+        };
 
         let count = entries.len();
         for entry in &entries {
@@ -1556,7 +1667,7 @@ impl StateDb {
             "SELECT run_id, job_id, rule_name, wildcards, input_hashes, output_hashes,
                     params_hash, env_hash, executor, hostname,
                     started_at, completed_at, wall_time_ms, peak_mem_mb, exit_code,
-                    reproducibility_class, artifact_provenance_json
+                    reproducibility_class, artifact_provenance_json, cpu_time_ms, node
              FROM job_history WHERE run_id = ?1
              ORDER BY id",
         )?;
@@ -1579,6 +1690,8 @@ impl StateDb {
                 exit_code: row.get(14)?,
                 reproducibility_class: row.get(15)?,
                 artifact_provenance_json: row.get(16)?,
+                cpu_time_ms: row.get(17)?,
+                node: row.get(18)?,
             })
         })?;
         let mut entries = Vec::new();
@@ -2437,7 +2550,7 @@ mod tests {
     #[test]
     fn open_creates_schema() {
         let (_tmp, db) = temp_db();
-        assert_eq!(db.schema_version().unwrap(), 10);
+        assert_eq!(db.schema_version().unwrap(), 11);
     }
 
     /// Two sessions opening a fresh `state.db` at the same time must both
@@ -2460,7 +2573,7 @@ mod tests {
                 .collect();
             for w in workers {
                 let version = w.join().unwrap().expect("concurrent open must succeed");
-                assert_eq!(version, 10);
+                assert_eq!(version, 11);
             }
         }
     }
@@ -2747,6 +2860,8 @@ mod tests {
             completed_at: Some(1042),
             wall_time_ms: Some(42000),
             peak_mem_mb: Some(128),
+            cpu_time_ms: None,
+            node: None,
             exit_code: Some(0),
             reproducibility_class: Some("deterministic".into()),
             artifact_provenance_json: None,
@@ -2766,6 +2881,8 @@ mod tests {
             completed_at: Some(1050),
             wall_time_ms: Some(8000),
             peak_mem_mb: Some(64),
+            cpu_time_ms: None,
+            node: None,
             exit_code: Some(1),
             reproducibility_class: None,
             artifact_provenance_json: None,
@@ -2814,6 +2931,8 @@ mod tests {
             completed_at: None,
             wall_time_ms: None,
             peak_mem_mb: None,
+            cpu_time_ms: None,
+            node: None,
             exit_code: Some(0),
             reproducibility_class: Some("seed_deterministic".into()),
             artifact_provenance_json: Some(prov_json.into()),
@@ -2986,6 +3105,104 @@ mod tests {
     }
 
     #[test]
+    fn finalize_records_usage_node_and_task_times_once_per_job() {
+        use std::collections::HashMap;
+        let (_tmp, db) = temp_db();
+        let sid = db.create_session(1, "head", None).unwrap();
+        let run_id = "run-usage";
+        db.begin_run(run_id, None, 2, None).unwrap();
+        let record = |id: &str| JobRecord {
+            id: id.into(),
+            rule_name: "r".into(),
+            wildcards: "{}".into(),
+            cache_key: None,
+            run_id: Some(run_id.into()),
+        };
+        db.register_jobs(&[record("a"), record("b")]).unwrap();
+        for id in ["a", "b"] {
+            db.claim_job(id, &sid).unwrap();
+            db.complete_job(id, &sid, 0, "").unwrap();
+        }
+        // The task's own start and end replace the claim and sync times.
+        assert!(db.set_job_times("a", 100, 160).unwrap());
+        assert!(!db.set_job_times("missing", 1, 2).unwrap());
+
+        let cpu = HashMap::from([("a".to_string(), 1_500_u64)]);
+        let nodes = HashMap::from([("a".to_string(), "worker-1".to_string())]);
+        let finalize = || {
+            db.finalize_job_history_with_executors(
+                run_id,
+                "ray",
+                "head",
+                &HashMap::new(),
+                &HashMap::new(),
+                &HashMap::new(),
+                &HashMap::new(),
+                &cpu,
+                &nodes,
+            )
+            .unwrap()
+        };
+        assert_eq!(finalize(), 2);
+        // A later synchronisation, or the end of a follow, adds nothing.
+        assert_eq!(finalize(), 0);
+
+        let history = db.job_history_for_run(run_id).unwrap();
+        assert_eq!(history.len(), 2);
+        let a = history.iter().find(|h| h.job_id == "a").unwrap();
+        assert_eq!(a.cpu_time_ms, Some(1_500));
+        assert_eq!(a.node.as_deref(), Some("worker-1"));
+        assert_eq!((a.started_at, a.completed_at), (Some(100), Some(160)));
+        let b = history.iter().find(|h| h.job_id == "b").unwrap();
+        assert_eq!((b.cpu_time_ms, b.node.as_deref()), (None, None));
+    }
+
+    #[test]
+    fn synced_history_covers_only_the_listed_terminal_jobs() {
+        use std::collections::HashMap;
+        let (_tmp, db) = temp_db();
+        let sid = db.create_session(1, "head", None).unwrap();
+        let run_id = "run-sync";
+        db.begin_run(run_id, None, 3, None).unwrap();
+        let record = |id: &str| JobRecord {
+            id: id.into(),
+            rule_name: "r".into(),
+            wildcards: "{}".into(),
+            cache_key: None,
+            run_id: Some(run_id.into()),
+        };
+        db.register_jobs(&[record("synced"), record("cached"), record("pending")])
+            .unwrap();
+        db.claim_job("synced", &sid).unwrap();
+        db.reconcile_complete_job("synced", 0, "").unwrap();
+        db.skip_job("cached").unwrap();
+
+        let wall = HashMap::from([("synced".to_string(), 2_000_u64)]);
+        let memory = HashMap::from([("synced".to_string(), 3 * 1024 * 1024 + 1)]);
+        let cpu = HashMap::from([("synced".to_string(), 1_900_u64)]);
+        let nodes = HashMap::from([("synced".to_string(), "worker-2".to_string())]);
+        let ids = ["synced".to_string(), "pending".to_string()];
+        let sync = || {
+            db.record_synced_job_history(run_id, &ids, "ray", "head", &wall, &memory, &cpu, &nodes)
+                .unwrap()
+        };
+        // `pending` is not terminal and `cached` is not listed: the run's
+        // own finalisation records it, with its cache provenance.
+        assert_eq!(sync(), 1);
+        assert_eq!(sync(), 0);
+
+        let history = db.job_history_for_run(run_id).unwrap();
+        assert_eq!(history.len(), 1);
+        let row = &history[0];
+        assert_eq!(row.job_id, "synced");
+        assert_eq!(row.executor.as_deref(), Some("ray"));
+        assert_eq!(row.wall_time_ms, Some(2_000));
+        assert_eq!(row.peak_mem_mb, Some(4));
+        assert_eq!(row.cpu_time_ms, Some(1_900));
+        assert_eq!(row.node.as_deref(), Some("worker-2"));
+    }
+
+    #[test]
     fn finalize_job_history_includes_skipped() {
         let (_tmp, db) = temp_db();
         let run_id = "run-skip";
@@ -3072,6 +3289,8 @@ mod tests {
                 completed_at: None,
                 wall_time_ms: Some(wall_ms),
                 peak_mem_mb: None,
+                cpu_time_ms: None,
+                node: None,
                 exit_code: Some(0),
                 reproducibility_class: None,
                 artifact_provenance_json: None,
@@ -3173,7 +3392,7 @@ mod tests {
         let (_tmp, db) = temp_db();
         let backend: &dyn StateBackend = &db;
 
-        assert_eq!(backend.schema_version().unwrap(), 10);
+        assert_eq!(backend.schema_version().unwrap(), 11);
 
         let sid = backend.create_session(1, "localhost", None).unwrap();
 

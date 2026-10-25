@@ -2299,6 +2299,13 @@ fn outputs_changed(
 // Helpers
 // ---------------------------------------------------------------------------
 
+/// The executor's CPU-time observation in whole milliseconds, if any.
+fn cpu_time_ms(result: &JobResult) -> Option<u64> {
+    result
+        .cpu_time
+        .map(|cpu| u64::try_from(cpu.as_millis()).unwrap_or(u64::MAX))
+}
+
 /// Extract the last non-empty, non-whitespace line from a stderr tail.
 fn extract_last_nonempty_line(stderr_tail: Option<&str>) -> Option<String> {
     stderr_tail.and_then(|tail| {
@@ -2794,6 +2801,8 @@ async fn handle_completion<E: Executor + ?Sized>(
             duration_ms,
             outputs,
             peak_memory_bytes: msg.result.peak_memory_bytes,
+            cpu_time_ms: cpu_time_ms(&msg.result),
+            node: None,
         });
 
         let on_critical_path =
@@ -2852,6 +2861,8 @@ async fn handle_completion<E: Executor + ?Sized>(
                     duration_ms,
                     outputs: vec![],
                     peak_memory_bytes: msg.result.peak_memory_bytes,
+                    cpu_time_ms: cpu_time_ms(&msg.result),
+                    node: None,
                 });
                 let on_critical_path = config.critical_path_jobs.is_empty()
                     || config.critical_path_jobs.contains(&msg.job_id);
@@ -7810,7 +7821,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn completion_event_carries_executor_peak_memory() {
+    async fn completion_event_carries_executor_peak_memory_and_cpu_time() {
         let graph = JobGraph::build(vec![make_job("A", "rA", vec![], vec![])]).unwrap();
         let job_ids = graph.job_ids();
         let state = Arc::new(Mutex::new(Frontier::new(
@@ -7829,6 +7840,7 @@ mod tests {
         let mut events = bus.subscribe();
         let mut msg = completion_msg_for(&graph, "A", 0);
         msg.result.peak_memory_bytes = Some(512 * 1024);
+        msg.result.cpu_time = Some(Duration::from_micros(1_234_567));
 
         assert!(
             handle_completion(
@@ -7848,6 +7860,8 @@ mod tests {
             events.try_recv().unwrap(),
             Event::JobCompleted {
                 peak_memory_bytes: Some(524_288),
+                cpu_time_ms: Some(1_234),
+                node: None,
                 ..
             }
         ));

@@ -194,6 +194,8 @@ fn show_run_detail(
                 "completed_at": job.completed_at.map(format_iso8601),
                 "wall_time_ms": job.wall_time_ms,
                 "peak_mem_mb": job.peak_mem_mb,
+                "cpu_time_ms": job.cpu_time_ms,
+                "node": job.node,
                 "exit_code": job.exit_code,
                 // Provenance of the cache decision (#12): what the job was
                 // keyed on. `null` for a job the cache layer never keyed

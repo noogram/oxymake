@@ -25,7 +25,7 @@ use rusqlite::Connection;
 use crate::error::StateError;
 
 /// The latest schema version.  Bump this when adding a migration.
-const LATEST_VERSION: u32 = 10;
+const LATEST_VERSION: u32 = 11;
 
 /// Run all pending migrations, bringing the database up to
 /// `LATEST_VERSION`.
@@ -86,6 +86,7 @@ fn migrate_locked(conn: &Connection) -> Result<(), StateError> {
             7 => migrate_v7_to_v8(conn)?,
             8 => migrate_v8_to_v9(conn)?,
             9 => migrate_v9_to_v10(conn)?,
+            10 => migrate_v10_to_v11(conn)?,
             _ => {
                 return Err(StateError::Migration {
                     from: v,
@@ -539,6 +540,35 @@ fn migrate_v9_to_v10(conn: &Connection) -> Result<(), StateError> {
     Ok(())
 }
 
+/// Migration from version 10 to version 11.
+///
+/// Adds per-job usage observations to `job_history`: `cpu_time_ms` (user +
+/// system CPU time reported by the executor) and `node` (the host a remote
+/// executor ran the job on, e.g. a Ray task's node). Existing rows keep
+/// `NULL`: they were never measured.
+fn migrate_v10_to_v11(conn: &Connection) -> Result<(), StateError> {
+    conn.execute_batch(
+        "
+        SAVEPOINT migration_step;
+
+        ALTER TABLE job_history ADD COLUMN cpu_time_ms INTEGER;
+        ALTER TABLE job_history ADD COLUMN node TEXT;
+
+        DELETE FROM schema_version;
+        INSERT INTO schema_version (version) VALUES (11);
+
+        RELEASE migration_step;
+        ",
+    )
+    .map_err(|e| StateError::Migration {
+        from: 10,
+        to: 11,
+        reason: e.to_string(),
+    })?;
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -552,7 +582,7 @@ mod tests {
         let version: u32 = conn
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 10);
+        assert_eq!(version, 11);
     }
 
     #[test]
@@ -565,7 +595,7 @@ mod tests {
         let version: u32 = conn
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 10);
+        assert_eq!(version, 11);
     }
 
     /// Verification finding 3: two connections migrating the same fresh
@@ -710,6 +740,33 @@ mod tests {
         assert_eq!(prov.as_deref(), Some("{}"));
     }
 
+    #[test]
+    fn v11_adds_usage_columns_to_job_history_and_keeps_rows() {
+        let conn = v9_database();
+        migrate_v9_to_v10(&conn).unwrap();
+        conn.execute_batch(
+            "INSERT INTO runs (id, started_at) VALUES ('old-run', 1000);
+             INSERT INTO job_history (run_id, job_id, rule_name, peak_mem_mb)
+             VALUES ('old-run', 'j1', 'build', 3);",
+        )
+        .unwrap();
+
+        migrate(&conn).unwrap();
+
+        let row: (Option<u64>, Option<u64>, Option<String>) = conn
+            .query_row(
+                "SELECT peak_mem_mb, cpu_time_ms, node FROM job_history WHERE job_id = 'j1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(row, (Some(3), None, None));
+        let version: u32 = conn
+            .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, 11);
+    }
+
     /// Bring an in-memory database to schema v9 exactly as a pre-v10
     /// binary would have left it (all migrations except the last one).
     fn v9_database() -> Connection {
@@ -751,7 +808,7 @@ mod tests {
         let version: u32 = conn
             .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 10);
+        assert_eq!(version, 11);
 
         let (id, name, run_id, rule, job, status, decided_by): (
             i64,

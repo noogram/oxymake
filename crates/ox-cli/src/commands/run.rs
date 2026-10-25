@@ -1925,8 +1925,16 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
     let events_dir = oxymake_dir.join("events");
     std::fs::create_dir_all(&events_dir).ok();
     let event_log_path = events_dir.join(format!("{}.ndjson", ctx.run_id));
-    let event_log_file = ox_report_json::reporter::AtomicEventFile::create(&event_log_path)
+    let mut event_log_file = ox_report_json::reporter::AtomicEventFile::create(&event_log_path)
         .context("failed to create event log file")?;
+    // A Ray DAG run emits no event before a task record is synchronised,
+    // possibly by `ox status` in another process: publish the log now, so
+    // that process appends to it rather than racing this one's first line.
+    if args.executor == "ray" {
+        event_log_file
+            .publish()
+            .context("failed to create event log file")?;
+    }
 
     // Create the --report-json file up front so an unwritable path fails
     // the run immediately, not after the work is done (H28).
@@ -2073,6 +2081,9 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
     // stay absent so history can distinguish them from a measured zero (#24).
     let job_peak_memory_bytes: Arc<Mutex<HashMap<String, u64>>> =
         Arc::new(Mutex::new(HashMap::new()));
+    // CPU time and node, likewise only where the executor measured them.
+    let job_cpu_times_ms: Arc<Mutex<HashMap<String, u64>>> = Arc::new(Mutex::new(HashMap::new()));
+    let job_nodes: Arc<Mutex<HashMap<String, String>>> = Arc::new(Mutex::new(HashMap::new()));
 
     // Set once the first shutdown signal is seen, so the post-scheduler
     // finalisation knows this run was interrupted rather than merely finished
@@ -2229,6 +2240,8 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
             let durations = Arc::clone(&job_durations);
             let executors = Arc::clone(&job_executors);
             let peak_memory = Arc::clone(&job_peak_memory_bytes);
+            let cpu_times = Arc::clone(&job_cpu_times_ms);
+            let nodes = Arc::clone(&job_nodes);
             bridge_handles.push(tokio::spawn(async move {
                 let db = match ox_state::db::StateDb::open(&db_path) {
                     Ok(db) => db,
@@ -2252,6 +2265,8 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
                                 ref job_id,
                                 duration_ms,
                                 peak_memory_bytes,
+                                cpu_time_ms,
+                                ref node,
                                 ..
                             } => {
                                 // Claim first in case JobStarted was never received.
@@ -2266,6 +2281,12 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
                                         .lock()
                                         .await
                                         .insert(job_id.as_str().to_string(), bytes);
+                                }
+                                if let Some(ms) = cpu_time_ms {
+                                    cpu_times.lock().await.insert(job_id.to_string(), ms);
+                                }
+                                if let Some(node) = node {
+                                    nodes.lock().await.insert(job_id.to_string(), node.clone());
                                 }
                             }
                             Event::JobFailed {
@@ -2679,6 +2700,19 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
 
                 if args.follow {
                     eprintln!("Following execution progress…\n");
+                    // A task's record settles its job as soon as it ends;
+                    // jobs without one follow the driver's state.
+                    let records = super::ray_records::Follower::new(
+                        super::ray_records::tasks_dir(
+                            &ctx.project_dir.join(".oxymake/runs"),
+                            &dag_result.run_id,
+                        ),
+                        &dag_result.run_id,
+                        state_db.as_ref(),
+                        session_id.as_deref(),
+                        &job_graph,
+                        &event_bus,
+                    );
                     // Preserve the existing follow block formatting.
                     #[rustfmt::skip]
                     let (result, stop) = remote_follow::follow(FollowRequest {
@@ -2689,7 +2723,13 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
                         interrupted: &interrupted, shutdown: &shutdown,
                     }, |job| {
                         let executor = &executor;
-                        async move { executor.poll_status(&JobId::from(job.as_str())).await }
+                        let records = &records;
+                        async move {
+                            if let Some(status) = records.poll(&job) {
+                                return Ok(status);
+                            }
+                            executor.poll_status(&JobId::from(job.as_str())).await
+                        }
                     }, |line| eprintln!("{line}")).await;
                     // The controller drops an in-flight poll on the first signal.
                     // Restore Ray's driver cancellation before leaving follow;
@@ -2855,6 +2895,8 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
             &peak_memory_bytes,
             &cache_provenance,
             &job_executors.blocking_lock(),
+            &job_cpu_times_ms.blocking_lock(),
+            &job_nodes.blocking_lock(),
         );
 
         // A stopped follow did not complete, even without a signal. Close it

@@ -64,11 +64,14 @@
 //! ## `job_completed`
 //!
 //! Emitted when the scheduler accepts a finishing attempt as completed,
-//! including a failed attempt under `ErrorStrategy::Ignore`. Memory belongs
-//! to that attempt; earlier failed attempts and cancellations supply none.
+//! including a failed attempt under `ErrorStrategy::Ignore`. Memory and CPU
+//! time belong to that attempt; earlier failed attempts and cancellations
+//! supply none. A Ray DAG run emits it when a task's record is synchronised
+//! (`ox run --follow`, `ox status`), not when the task ends; `ox status` does
+//! not load the workflow, so the events it appends list no `outputs`.
 //!
 //! ```json
-//! {"event":"job_completed","schema_version":1,"ts":"2026-10-08T12:00:00Z","job_id":"align_S001","duration_ms":272000,"outputs":["results/S001.bam"],"peak_memory_bytes":1536000}
+//! {"event":"job_completed","schema_version":1,"ts":"2026-10-08T12:00:00Z","job_id":"align_S001","duration_ms":272000,"outputs":["results/S001.bam"],"peak_memory_bytes":1536000,"cpu_time_ms":270400,"node":null}
 //! ```
 //!
 //! | Field         | Type       | Description                       |
@@ -76,7 +79,9 @@
 //! | `job_id`      | `string`   | Unique job identifier             |
 //! | `duration_ms` | `u64`      | Wall-clock duration in ms         |
 //! | `outputs`     | `[string]` | Paths or IDs of produced outputs  |
-//! | `peak_memory_bytes` | `u64` (optional) | Executor observation for the finishing attempt, in bytes; omitted if unavailable |
+//! | `peak_memory_bytes` | `u64?` | Executor observation of the finishing attempt's peak RSS, in bytes; `null` if unmeasured |
+//! | `cpu_time_ms` | `u64?`     | User + system CPU time of the finishing attempt, in ms; `null` if unmeasured |
+//! | `node`        | `string?`  | Host the attempt ran on, reported by the Ray executor; `null` otherwise |
 //!
 //! ## `job_failed`
 //!

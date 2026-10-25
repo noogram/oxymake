@@ -833,27 +833,56 @@ fn sync_and_print_ray_status(
 
 /// Reconcile only this run's results and current rows. Older result files must
 /// never mask a newly submitted driver's failure or modify a newer run's jobs.
+///
+/// Per-task records come first: each task writes one as soon as it ends, so
+/// they survive a killed driver and carry the task's usage and node, which
+/// reach job history and the run's event log. The driver's end-of-run
+/// `results.json` still covers jobs without a record (a task that never ran
+/// because an upstream failed).
 fn sync_results_from_driver(db: &ox_state::db::StateDb, run_id: &str) {
-    let path = std::path::Path::new(".oxymake/runs")
-        .join(run_id)
-        .join("results.json");
-    let Ok(content) = std::fs::read_to_string(path) else {
-        return;
-    };
-    let Ok(results) =
-        serde_json::from_str::<std::collections::HashMap<String, serde_json::Value>>(&content)
-    else {
-        return;
-    };
+    let runs = std::path::Path::new(".oxymake/runs");
     let Ok(current) = db.job_ids_for_run(run_id) else {
         return;
     };
     let current: std::collections::HashSet<_> = current.into_iter().collect();
+    let records: Vec<_> =
+        ox_exec_ray::task_record::read_all(&super::ray_records::tasks_dir(runs, run_id))
+            .into_iter()
+            .filter(|record| current.contains(&record.job_id))
+            .collect();
+    let results = std::fs::read_to_string(runs.join(run_id).join("results.json"))
+        .ok()
+        .and_then(|content| {
+            serde_json::from_str::<std::collections::HashMap<String, serde_json::Value>>(&content)
+                .ok()
+        })
+        .unwrap_or_default();
+    if records.is_empty() && results.is_empty() {
+        return;
+    }
     let Ok(session) = db.create_session(std::process::id(), "ray-results-sync", None) else {
         return;
     };
+    let events = super::ray_records::apply(
+        db,
+        run_id,
+        &session,
+        super::ray_records::Owner::Reconcile,
+        &records,
+        // The workflow is not loaded here, so declared outputs are unknown.
+        &|_| Vec::new(),
+    );
+    super::ray_records::append_to_event_log(
+        std::path::Path::new(".oxymake/events"),
+        run_id,
+        &events,
+    );
+    let recorded: std::collections::HashSet<_> = records
+        .iter()
+        .map(|record| record.job_id.as_str())
+        .collect();
     for (job_id, info) in results {
-        if !current.contains(&job_id) {
+        if !current.contains(&job_id) || recorded.contains(job_id.as_str()) {
             continue;
         }
         let status = info.get("status").and_then(|v| v.as_str());

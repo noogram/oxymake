@@ -313,7 +313,9 @@ report can be reconstructed from recorded state instead of being caught
 live. A job the cache layer never keyed (`--no-cache`, or
 `cache_validation = "mtime"`) reports `null` for these. `peak_mem_mb` is
 the executor's per-job peak-memory observation, stored as whole MiB rounded
-up (the text column is `MEM MiB`; the JSON key remains `peak_mem_mb`). Unlike
+up (the text column is `MEM MiB`; the JSON key remains `peak_mem_mb`).
+`cpu_time_ms` is the job's user + system CPU time and `node` the host a Ray
+task ran on; both are JSON-only and `null` when unmeasured. Unlike
 history's whole-MiB round-up, benchmark TSV `max_rss` uses two decimal places:
 1500 KiB appears as 2 in history and 1.46 in the TSV; a positive sub-MiB value
 rounds up to 1 in history.
@@ -331,8 +333,14 @@ escape it. Fork-mode warm workers also record the child each dispatch forks
 and reaps, so the same retained template can publish distinct peaks for
 successive jobs. Persistent-mode warm workers remain `null`: one process serves
 every dispatch, so a per-dispatch RSS peak does not exist. CPU time is measured
-for cold and warm-fork children too, but appears only in benchmark TSV, not
-history.
+for the same cold and warm-fork children and recorded as `cpu_time_ms`.
+
+`ox run --executor ray` measures each task the same way: the task reaps its
+command's process with `wait4` and writes a record under
+`.oxymake/runs/<run-id>/tasks/` when the command exits. `ox run --follow`
+records it as soon as it appears; without `--follow`, `ox status` does, so
+history fills in as `ox status` is run. Records written before the driver was
+killed are still read.
 
 The figure belongs to the attempt that finished the job; earlier failed
 attempts are not accumulated. Failures and cancellations leave memory `null`.

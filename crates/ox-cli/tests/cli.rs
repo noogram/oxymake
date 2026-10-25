@@ -2497,7 +2497,7 @@ fn clean_state_removes_corrupt_state_db() {
 
     // The next open regenerates a fully usable DB at the latest schema.
     let db = ox_state::db::StateDb::open(&oxdir.join("state.db")).unwrap();
-    assert_eq!(db.schema_version().unwrap(), 10);
+    assert_eq!(db.schema_version().unwrap(), 11);
 }
 
 /// A corrupt state.db hit by the normal clean path (which opens the DB)
@@ -3623,8 +3623,8 @@ shell = "touch trivial.started; while [ ! -f allocated.ready ]; do sleep 0.01; d
         .success()
         .stdout(predicates::str::contains("2 succeeded"));
 
-    let (allocated, _) = local_benchmark_usage(&base.join("allocate.tsv"));
-    let (trivial, _) = local_benchmark_usage(&base.join("trivial.tsv"));
+    let (allocated, allocated_cpu) = local_benchmark_usage(&base.join("allocate.tsv"));
+    let (trivial, trivial_cpu) = local_benchmark_usage(&base.join("trivial.tsv"));
     // 64 MiB touched allocation plus interpreter: accept 64..192 MiB on
     // macOS and Linux, while the shell-only neighbour must stay below 32 MiB.
     assert!(
@@ -3648,10 +3648,20 @@ shell = "touch trivial.started; while [ ! -f allocated.ready ]; do sleep 0.01; d
         .lines()
         .map(|line| serde_json::from_str(line).unwrap())
         .collect();
-    for (rule, rss) in [("allocate", allocated), ("trivial", trivial)] {
+    for (rule, rss, cpu) in [
+        ("allocate", allocated, allocated_cpu),
+        ("trivial", trivial, trivial_cpu),
+    ] {
         let row = rows.iter().find(|r| r["rule_name"] == rule).unwrap();
         let mib = row["peak_mem_mb"].as_u64().expect("history RSS");
         assert!((mib as f64 - rss).abs() <= 1.01, "{row}");
+        // The same child's CPU time reaches history, in milliseconds.
+        let cpu_ms = row["cpu_time_ms"].as_u64().expect("history CPU time");
+        assert!(
+            (cpu_ms as f64 / 1000.0 - cpu).abs() <= 0.002,
+            "{row} vs {cpu}"
+        );
+        assert!(row["node"].is_null(), "{row}");
     }
     let text = ox()
         .args(["history", "--run-id", &run_id])

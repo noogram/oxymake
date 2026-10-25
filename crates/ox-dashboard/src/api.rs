@@ -760,6 +760,8 @@ mod tests {
             completed_at: Some(2000),
             wall_time_ms: Some(1000),
             peak_mem_mb: Some(128),
+            cpu_time_ms: None,
+            node: None,
             exit_code: Some(0),
             reproducibility_class: None,
             artifact_provenance_json: None,
@@ -1535,6 +1537,8 @@ mod tests {
                 duration_ms: 100,
                 outputs: vec![],
                 peak_memory_bytes: None,
+                cpu_time_ms: None,
+                node: None,
             });
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
