@@ -40,12 +40,18 @@ fn version_string() -> &'static str {
 enum Commands {
     /// Execute a workflow, ensuring requested outputs exist
     ///
-    /// OxyMake writes all outputs atomically (temp-then-rename) so a crash never
-    /// leaves partial files. Cache keys include content hashes of inputs.
+    /// Commands write directly to the declared output paths. After a successful
+    /// exit OxyMake verifies the outputs, then stages and commits them with
+    /// renames; after a failure it removes them according to `clean_outputs`.
+    /// A hard kill (SIGKILL, power loss) skips this cleanup and can leave a
+    /// partial file at an output path. The default cache validation modes
+    /// never accept such a file as a valid output; `--cache-validation=mtime`
+    /// can. Cache keys include content hashes of inputs.
     ///
     /// Scripts are responsible for domain validation: if a script exits 0,
     /// OxyMake trusts the outputs are valid and caches them.
-    /// See docs/design/output-integrity.md for the full contract.
+    /// See docs/design/output-integrity.md for the full contract and
+    /// docs/book/src/reference/format.md (Output cleanup) for the policies.
     Run(Box<commands::RunArgs>),
     /// Show the execution plan without running
     Plan(commands::PlanArgs),

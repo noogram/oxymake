@@ -74,7 +74,7 @@ speed/correctness tradeoff for your workflow:
 | Strategy | Flag | Behavior |
 |----------|------|----------|
 | `mtime+hash` (default) | `--cache-validation=mtime+hash` | If mtime/size differ, compute BLAKE3 hash. Fast on steady-state, correct on change. |
-| `mtime` (opt-in) | `--cache-validation=mtime` | Pure filesystem metadata (stat calls only). Fastest, but **never verifies content** — unsuitable for shared/multi-user caches. |
+| `mtime` (opt-in) | `--cache-validation=mtime` | Pure filesystem metadata (stat calls only). Fastest, but **never verifies content** — unsuitable for shared/multi-user caches. A partial output left by a hard kill (SIGKILL, power loss) counts as fresh if it is newer than the inputs. |
 | `hash` | `--cache-validation=hash` | Always compute BLAKE3 hash. Bit-exact. Required for shared/remote caches. |
 
 ```bash

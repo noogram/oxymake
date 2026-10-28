@@ -48,6 +48,18 @@ fn help_shows_usage() {
 }
 
 #[test]
+fn run_help_does_not_promise_atomic_writes() {
+    // Commands write to their final output paths; only post-success
+    // finalization uses temp-then-rename. A hard kill can leave a partial file.
+    ox().args(["run", "--help"]).assert().success().stdout(
+        predicates::str::contains("atomically")
+            .not()
+            .and(predicates::str::contains("never leaves partial files").not())
+            .and(predicates::str::contains("hard kill")),
+    );
+}
+
+#[test]
 fn version_shows_version() {
     ox().arg("--version")
         .assert()
