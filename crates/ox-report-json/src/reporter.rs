@@ -37,6 +37,29 @@ use ox_core::traits::reporter::{Reporter, RunSummary};
 
 static TEMP_FILE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
+/// Whether a path has the temporary event-log name owned by [`AtomicEventFile`].
+///
+/// Matches `.<name>.ndjson.tmp-<pid>-<sequence>`; this identifies the name,
+/// not the age or liveness of its writer.
+pub fn is_event_log_temporary(path: &Path) -> bool {
+    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+    let Some((name, suffix)) = name
+        .strip_prefix('.')
+        .and_then(|name| name.rsplit_once(".ndjson.tmp-"))
+    else {
+        return false;
+    };
+    let Some((pid, sequence)) = suffix.split_once('-') else {
+        return false;
+    };
+    !name.is_empty()
+        && [pid, sequence]
+            .iter()
+            .all(|part| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit()))
+}
+
 /// A file sink that publishes its final path only after a complete first line.
 ///
 /// Event logs are NDJSON streams whose first line is always `run_started`.
@@ -425,6 +448,25 @@ mod tests {
     use std::collections::BTreeMap;
     use std::fs;
 
+    #[test]
+    fn event_temporary_names_match_only_atomic_event_logs() {
+        for name in [".run-test.ndjson.tmp-123-0", ".a.b.ndjson.tmp-1-42"] {
+            assert!(is_event_log_temporary(Path::new(name)), "{name}");
+        }
+        for name in [
+            "run.ndjson",
+            "run.ndjson.tmp-1-0",
+            ".run.txt.tmp-1-0",
+            ".run.ndjson.tmp-1-",
+            ".run.ndjson.tmp--0",
+            ".run.ndjson.tmp-a-0",
+            ".run.ndjson.tmp-1-0-extra",
+            ".ndjson.tmp-1-0",
+        ] {
+            assert!(!is_event_log_temporary(Path::new(name)), "{name}");
+        }
+    }
+
     /// Helper: collect the NDJSON output of a reporter session into a `String`.
     fn output_string(reporter: JsonReporter<Vec<u8>>) -> String {
         let buf = reporter.writer.into_inner().unwrap();
@@ -451,6 +493,7 @@ mod tests {
         fs::create_dir(&directory).unwrap();
         let final_path = directory.join("run-123.ndjson");
         let mut file = AtomicEventFile::create(&final_path).unwrap();
+        assert!(is_event_log_temporary(&file.temporary_path));
         file.write_all(b"{\"n\":1}\n").unwrap();
         OpenOptions::new()
             .append(true)

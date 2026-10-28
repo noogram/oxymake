@@ -490,7 +490,13 @@ ox clean --events --yes     # Remove retained NDJSON event logs
 
 `--events` is the explicit retention control for `.oxymake/events/*.ndjson`.
 It follows the command's normal confirmation, `--dry-run`, and `--json`
-behaviour. OxyMake never rotates or removes event logs automatically.
+behaviour. A live session blocks removal unless `--force` is supplied, using
+the same 300-second heartbeat threshold as execution-state cleanup. This guard
+applies to all event logs because sessions are not associated with run IDs.
+Event-log temporary files older than 300 seconds are also removed and counted
+in `removed.event_logs`; `--dry-run` lists their paths without removing them.
+Recent temporaries are preserved, including with `--force`. OxyMake never
+rotates or removes event logs automatically.
 
 ### `ox cancel`
 

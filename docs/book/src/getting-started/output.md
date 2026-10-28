@@ -246,3 +246,8 @@ ox run -vv       # Debug: also show each job's stdout/stderr
 
 - [CLI Commands](../reference/commands.md) -- full command reference
 - [Execution Modes](../concepts/execution-modes.md) -- how rules are executed
+
+Retained event logs can be reviewed with `ox clean --events --dry-run` and
+removed with `ox clean --events --yes`. Removal refuses live sessions unless
+`--force` is given. This also cleans temporary event logs older than 300 seconds;
+recent temporaries are kept. The dry run lists stale temporary paths.
