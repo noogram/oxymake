@@ -1,0 +1,6 @@
+exclude_re = [
+    # Reproducibility::default() is Deterministic, identical to this explicit arm.
+    'delete match arm Some\("deterministic"\) in parse_rule$',
+    # ErrorStrategy::default() is Terminate, identical to this explicit arm.
+    'delete match arm "terminate" in parse_error_strategy$',
+]

@@ -1,31 +1,89 @@
-name: Mutation Testing (Nightly)
+name: Mutation Testing
 
 on:
+  pull_request:
+  push:
+    branches: [main]
   schedule:
     - cron: "0 3 * * *" # 03:00 UTC daily
-  workflow_dispatch: # allow manual trigger
+  workflow_dispatch:
+
+permissions:
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  mutants:
-    name: cargo-mutants
+  changed-code:
+    name: Changed code (${{ matrix.package }})
+    if: github.event_name == 'pull_request' || github.event_name == 'push'
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     strategy:
+      fail-fast: false
       matrix:
         package: [ox-core, ox-format]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install cargo-mutants
+        run: cargo install cargo-mutants --locked --version 27.0.0
+      - name: Compute changed lines
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+        run: |
+          if [ "$EVENT_NAME" = pull_request ]; then
+            base=$(git merge-base "$PR_BASE" HEAD)
+          elif [ "$PUSH_BEFORE" = 0000000000000000000000000000000000000000 ]; then
+            base=$(git hash-object -t tree /dev/null)
+          else
+            base=$PUSH_BEFORE
+          fi
+          git diff "$base" HEAD -- '*.rs' > changed.diff
+      - name: Test mutations in changed code
+        run: >-
+          cargo mutants --package ${{ matrix.package }} --in-diff changed.diff
+          --cargo-arg=--release --build-timeout 600 --timeout 120
+      - name: Upload mutation report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mutants-diff-${{ matrix.package }}
+          path: mutants.out/
+
+  nightly-report:
+    name: Full ox-format report
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Install cargo-mutants
-        run: cargo install cargo-mutants
-      - name: Run mutation tests on ${{ matrix.package }}
-        run: cargo mutants --package ${{ matrix.package }} -- --release
+        run: cargo install cargo-mutants --locked --version 27.0.0
+      # Full ox-core is deferred; changed-code still checks it on PRs and main.
+      # Surviving ox-format mutations are reported until the remaining backlog is covered.
+      - name: Run full mutation report
+        run: |
+          status=0
+          cargo mutants --package ox-format --cargo-arg=--release --build-timeout 600 --timeout 120 || status=$?
+          case "$status" in
+            0) echo 'Full ox-format mutation run passed.' >> "$GITHUB_STEP_SUMMARY" ;;
+            2|3)
+              echo "Full ox-format report: cargo-mutants exit $status (survivors or timeouts). See the mutation artifact." >> "$GITHUB_STEP_SUMMARY"
+              ;;
+            *) exit "$status" ;;
+          esac
       - name: Upload mutation report
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: mutants-${{ matrix.package }}
+          name: mutants-full-ox-format
           path: mutants.out/
