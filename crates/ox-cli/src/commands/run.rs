@@ -248,7 +248,9 @@ pub struct RunArgs {
     /// Cache validation strategy: mtime, mtime+hash (default), or hash
     ///
     /// `mtime` checks timestamps only and never verifies content — opt-in
-    /// only, avoid on shared caches. `mtime+hash` re-hashes a file only when
+    /// only, avoid on shared caches. It also accepts a partial file left at an
+    /// output path by a hard kill, if the file is newer than the inputs.
+    /// `mtime+hash` re-hashes a file only when
     /// its timestamp or size changed. `hash` always verifies content.
     ///
     /// Resolution order (highest wins): this flag, the OX_CACHE_VALIDATION

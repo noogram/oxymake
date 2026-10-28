@@ -344,15 +344,18 @@ Model Context Protocol over stdio, exposing OxyMake's read/inspect commands
 
 OxyMake and user scripts share a clear responsibility split:
 
-- **OxyMake guarantees** write integrity — all outputs use atomic writes
-  (temp-then-rename), so a crash never leaves partial files. Cache validation
-  is pluggable: `mtime` (default, fast), `mtime+hash` (hybrid), or `hash`
-  (strict for CI). See ADR-006.
+- **OxyMake guarantees** that a failed job does not leave its outputs in
+  place (per `clean_outputs`) and that a job is cached only after it succeeds
+  and its outputs are verified. Commands write directly to the output paths,
+  so a hard kill (SIGKILL, power loss) can leave a partial file; the default
+  cache validation never treats it as a valid output, but `mtime` can. Cache
+  validation is pluggable: `mtime+hash` (default), `mtime` (fast, no content
+  check), or `hash` (strict for CI). See ADR-006.
 - **Scripts guarantee** domain validation — if `T` must be positive, the script
   asserts it. A script that exits 0 tells OxyMake "outputs are valid." OxyMake
   trusts this and caches the result.
-- **Users**: if you have corrupt outputs from a pre-atomic-write era, delete them
-  and re-run (`rm bad-file && ox run`).
+- **Users**: if a hard kill left a partial output, delete it and re-run
+  (`rm bad-file && ox run`).
 
 See [Output Integrity](docs/design/output-integrity.md) for the full contract.
 

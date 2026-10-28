@@ -15,6 +15,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `ox run --help`, `docs/design/output-integrity.md` and the README no longer
+  say that outputs are written atomically or that a crash never leaves partial
+  files. Commands write to the final output paths; only the post-success
+  verification and staging use renames, so a hard kill can leave a partial
+  file. The default cache validation modes do not accept such a file;
+  `--cache-validation=mtime` can, and its documentation now says so.
 - `ox run --executor ray --follow` now records each completed Ray task in the
   local cache under the same computation key as a local run, and stores its
   output blobs in `--cache-remote` when set. A resubmission after a killed

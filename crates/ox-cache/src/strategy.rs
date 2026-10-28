@@ -12,7 +12,9 @@ pub enum CacheValidation {
     /// Check mtime + size only. O(1) stat calls per output.
     /// Fast but can miss same-size edits within the same second, and never
     /// verifies content: a corrupted output with a newer mtime is served as
-    /// a hit. Matches Make/Snakemake behavior. **Opt-in only** — on a
+    /// a hit. This includes a partial file left at an output path by a hard
+    /// kill (SIGKILL, power loss) that is newer than the inputs. Matches
+    /// Make/Snakemake behavior. **Opt-in only** — on a
     /// shared or multi-user cache, prefer `MtimeHash` or `ContentHash`.
     Mtime,
 
