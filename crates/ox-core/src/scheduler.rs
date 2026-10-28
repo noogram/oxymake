@@ -167,6 +167,11 @@ pub struct SchedulerConfig {
     /// supplying precomputed cache hits must validate their resource declarations
     /// before adding them here (see [`validate_resource_budget`]).
     pub skip_jobs: HashSet<JobId>,
+    /// The subset of `skip_jobs` excluded by the job selection
+    /// (`--until` / `--omit-from`) rather than answered by the cache. They
+    /// are skipped with the reason `"not selected"` and are not counted in
+    /// `RunStarted.cached`. Ids outside `skip_jobs` have no effect.
+    pub not_selected: HashSet<JobId>,
     /// Jobs to force re-execute regardless of cache. These bypass the
     /// dynamic cache check in the scheduler, ensuring they always run
     /// even when the cache reports a hit (used by `--forcerun`).
@@ -210,6 +215,7 @@ impl Default for SchedulerConfig {
             resource_budget: BTreeMap::new(),
             keep_going: false,
             skip_jobs: HashSet::new(),
+            not_selected: HashSet::new(),
             force_rerun: HashSet::new(),
             run_reasons: HashMap::new(),
             root_cause_threshold: 3,
@@ -634,10 +640,14 @@ pub async fn run_scheduler_with_claims<E: Executor + 'static>(
     let state = Arc::new(Mutex::new(sched_state));
     let semaphore = Arc::new(Semaphore::new(config.max_jobs));
 
+    let not_selected_pre = skipped_pre_ids
+        .iter()
+        .filter(|id| config.not_selected.contains(*id))
+        .count();
     event_bus.emit(Event::RunStarted {
         total_jobs,
         to_run: topo_order.len() - skipped_pre,
-        cached: skipped_pre,
+        cached: skipped_pre - not_selected_pre,
     });
 
     // Planning is deliberately emitted before cache skips or execution. These
@@ -655,12 +665,17 @@ pub async fn run_scheduler_with_claims<E: Executor + 'static>(
         });
     }
 
-    // Emit JobSkipped events for pre-marked cached jobs so reporters
-    // can display them as instant completions in the progress bar.
+    // Emit JobSkipped events for pre-marked jobs. Reporters display the
+    // cache hits as instant completions in the progress bar.
     for job_id in skipped_pre_ids {
+        let reason = if config.not_selected.contains(&job_id) {
+            "not selected"
+        } else {
+            "cached"
+        };
         event_bus.emit(Event::JobSkipped {
             job_id,
-            reason: "cached".into(),
+            reason: reason.into(),
         });
     }
 
@@ -5566,6 +5581,43 @@ mod tests {
             }
         }
         assert!(found, "RunStarted event should have been emitted");
+    }
+
+    /// A job excluded by the selection (`--until` / `--omit-from`) is skipped
+    /// without being a cache hit: its `job_skipped` says so and `RunStarted`
+    /// does not count it as cached.
+    #[tokio::test]
+    async fn not_selected_skips_are_not_reported_as_cached() {
+        let jobs = vec![
+            make_job("A", "rA", vec![], vec!["a.txt"]),
+            make_job("X", "rX", vec!["a.txt"], vec!["x.txt"]),
+        ];
+        let graph = JobGraph::build(jobs).unwrap();
+        let executor = Arc::new(MockExecutor::new());
+        let config = SchedulerConfig {
+            skip_jobs: HashSet::from([JobId::from("X")]),
+            not_selected: HashSet::from([JobId::from("X")]),
+            ..Default::default()
+        };
+        let bus = EventBus::new();
+        let mut rx = bus.subscribe();
+        let ctx = default_ctx();
+
+        run_scheduler(&graph, executor, &config, &bus, &ctx)
+            .await
+            .unwrap();
+
+        let mut cached_at_start = None;
+        let mut skips = Vec::new();
+        while let Ok(event) = rx.try_recv() {
+            match event {
+                Event::RunStarted { cached, .. } => cached_at_start = Some(cached),
+                Event::JobSkipped { job_id, reason } => skips.push((job_id, reason)),
+                _ => {}
+            }
+        }
+        assert_eq!(cached_at_start, Some(0));
+        assert_eq!(skips, [(JobId::from("X"), "not selected".to_string())]);
     }
     // ---------------------------------------------------------------
     // Graceful shutdown (SIGINT contract)

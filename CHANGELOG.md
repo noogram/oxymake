@@ -28,7 +28,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `ox clean --events` refuses removal while sessions are live unless `--force`
   is supplied. It also removes event-log temporaries older than 300 seconds,
   lists them under `--dry-run`, and includes them in the removed event count.
-
+- A job excluded by `--until` or `--omit-from` is no longer reported as a
+  cache hit when the run executes other jobs. Its `job_skipped` reason is
+  `not selected` (it was `cached`), `run_started.cached` no longer counts it,
+  and a run that executed nothing is `success` rather than `all_cached` when
+  some jobs were excluded. In `state.db` the job is recorded as `skipped`, not
+  as a cached completion: `ox status --json --units` reports `cache_hit:
+  false` for it, and `ox history` shows no start time or exit code. Fully
+  cached runs already used `not selected` in events; their state rows are now
+  recorded the same way. Library callers of the scheduler mark such jobs with
+  the new `SchedulerConfig::not_selected` set.
 - `ox run --help`, `docs/design/output-integrity.md` and the README no longer
   say that outputs are written atomically or that a crash never leaves partial
   files. Commands write to the final output paths; only the post-success

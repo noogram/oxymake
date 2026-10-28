@@ -759,8 +759,12 @@ fn record_fully_cached_run(
     // Only genuine cache hits are recorded as cached: a job excluded by
     // `--until` / `--omit-from` was not run *and* was not a hit, and
     // labelling it cached would overstate cache effectiveness.
-    for job_id in job_ids.iter().filter(|id| cached.contains(id)) {
-        let _ = db.skip_job(job_id.as_str());
+    for job_id in &job_ids {
+        if cached.contains(*job_id) {
+            let _ = db.skip_job(job_id.as_str());
+        } else {
+            let _ = db.exclude_job(job_id.as_str());
+        }
     }
     let _ = db.record_job_cache_keys(run_id, provenance);
     let _ = db.finalize_job_history(
@@ -773,6 +777,18 @@ fn record_fully_cached_run(
     );
     let _ = db.end_run(run_id, 0, 0, ids.len());
     Ok(())
+}
+
+/// Record the jobs a DAG-level submission leaves out: cache hits as cached,
+/// jobs excluded by `--until` / `--omit-from` as excluded.
+fn record_skipped_jobs(db: &ox_state::db::StateDb, config: &SchedulerConfig) {
+    for job_id in &config.skip_jobs {
+        if config.not_selected.contains(job_id) {
+            let _ = db.exclude_job(job_id.as_str());
+        } else {
+            let _ = db.skip_job(job_id.as_str());
+        }
+    }
 }
 
 fn cache_status_reason(status: CacheHitStatus) -> Result<(), RunReason> {
@@ -1932,6 +1948,7 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
         max_jobs: args.jobs,
         keep_going: args.keep_going,
         skip_jobs,
+        not_selected: selective_skip,
         force_rerun,
         run_reasons,
         resource_budget,
@@ -2338,8 +2355,15 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
                                 let _ = db.claim_job(job_id.as_str(), &sid);
                                 let _ = db.fail_job(job_id.as_str(), &sid, exit_code.unwrap_or(1));
                             }
-                            Event::JobSkipped { ref job_id, .. } => {
-                                let _ = db.skip_job(job_id.as_str());
+                            Event::JobSkipped {
+                                ref job_id,
+                                ref reason,
+                            } => {
+                                if reason == "not selected" {
+                                    let _ = db.exclude_job(job_id.as_str());
+                                } else {
+                                    let _ = db.skip_job(job_id.as_str());
+                                }
                             }
                             Event::JobCancelled { ref job_id, .. } => {
                                 // Never cancel a row a live peer is executing:
@@ -2538,9 +2562,7 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
 
                     // Mark cached jobs as skipped in state.db before submission.
                     if let Some(ref db) = state_db {
-                        for job_id in &scheduler_config.skip_jobs {
-                            let _ = db.skip_job(job_id.as_str());
-                        }
+                        record_skipped_jobs(db, &scheduler_config);
                     }
 
                     // DAG-level submission: submit uncached jobs via sbatch
@@ -2702,9 +2724,7 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
 
                 // Mark cached jobs as skipped in state.db before submission.
                 if let Some(ref db) = state_db {
-                    for job_id in &scheduler_config.skip_jobs {
-                        let _ = db.skip_job(job_id.as_str());
-                    }
+                    record_skipped_jobs(db, &scheduler_config);
                 }
 
                 // DAG-level submission: submit only uncached jobs to Ray.

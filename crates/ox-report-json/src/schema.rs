@@ -118,7 +118,7 @@
 //! | Field    | Type     | Description                        |
 //! |---------|----------|------------------------------------|
 //! | `job_id` | `string` | Unique job identifier              |
-//! | `reason` | `string` | Why the job was skipped            |
+//! | `reason` | `string` | Why the job was skipped: `cached` (cache hit) or `not selected` (excluded by `--until` / `--omit-from`) |
 //!
 //! ## `gate_reached`
 //!

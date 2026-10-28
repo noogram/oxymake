@@ -753,9 +753,10 @@ impl StateDb {
 
     /// Mark a job as completed via cache hit (no execution needed).
     ///
-    /// Accepts `pending` → `completed` *and* `completed` → `completed`,
-    /// both with `cached = 1`.  Returns `true` when the row was marked
-    /// cached by this call.
+    /// Accepts `pending`, `completed` and `skipped` (a job an earlier run
+    /// excluded, see [`exclude_job`](StateDb::exclude_job)) → `completed`,
+    /// with `cached = 1`.  Returns `true` when the row was marked cached by
+    /// this call.
     ///
     /// The `completed` source state is what makes a repeated run's cache
     /// hit visible (#12).  A job row is keyed by job id and survives the
@@ -776,8 +777,35 @@ impl StateDb {
         let now = unix_now();
         let rows = self.conn.execute(
             "UPDATE jobs SET status = 'completed', cached = 1, completed_at = ?1
-             WHERE id = ?2 AND status IN ('pending', 'completed')",
+             WHERE id = ?2 AND status IN ('pending', 'completed', 'skipped')",
             rusqlite::params![now, job_id],
+        )?;
+        Ok(rows > 0)
+    }
+
+    /// Mark a job as excluded from this run by the job selection
+    /// (`--until` / `--omit-from`): `skipped`, not cached, with no start,
+    /// completion or exit code.  Returns `true` when the row was changed.
+    ///
+    /// The job was neither run nor a cache hit, so the row must not say
+    /// either: `ox status --units` reads `cached` as the cache hit, and the
+    /// run's history records the row's times and exit code.  `skipped` is
+    /// the status for "skipped for a non-cache reason"; the claim protocol
+    /// treats it like a completion (a row without a live owner is history
+    /// and is reset before a later run claims it), and
+    /// [`reset_inactive_job_rows`] leaves it alone like a completion.
+    ///
+    /// Same source states as [`skip_job`](StateDb::skip_job): a `running`
+    /// or `failed` row may belong to a live peer (ADR-012).  The owner is
+    /// kept, so a live peer's completion stays its own.
+    ///
+    /// [`reset_inactive_job_rows`]: StateDb::reset_inactive_job_rows
+    pub fn exclude_job(&self, job_id: &str) -> Result<bool, StateError> {
+        let rows = self.conn.execute(
+            "UPDATE jobs SET status = 'skipped', cached = 0, started_at = NULL,
+                             completed_at = NULL, exit_code = NULL
+             WHERE id = ?1 AND status IN ('pending', 'completed', 'skipped')",
+            rusqlite::params![job_id],
         )?;
         Ok(rows > 0)
     }
@@ -3912,5 +3940,62 @@ mod tests {
         db.fail_job("j2", &sid, 1).unwrap();
         assert!(!db.skip_job("j2").unwrap());
         assert_eq!(db.job_status("j2").unwrap().as_deref(), Some("failed"));
+    }
+
+    /// `(status, cached, started_at, completed_at, exit_code)` of `job_id`.
+    #[allow(clippy::type_complexity)]
+    fn row_state(
+        db: &StateDb,
+        job_id: &str,
+    ) -> (String, i64, Option<u64>, Option<u64>, Option<i32>) {
+        db.conn
+            .query_row(
+                "SELECT status, cached, started_at, completed_at, exit_code
+                 FROM jobs WHERE id = ?1",
+                [job_id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+            )
+            .unwrap()
+    }
+
+    #[test]
+    fn exclude_job_records_neither_a_cache_hit_nor_an_execution() {
+        let (_tmp, db) = temp_db();
+        let sid = db.create_session(1, "localhost", None).unwrap();
+        let record = |id: &str| JobRecord {
+            id: id.into(),
+            rule_name: "r".into(),
+            wildcards: "{}".into(),
+            cache_key: None,
+            run_id: None,
+        };
+        db.register_jobs(&[record("new"), record("hit"), record("ran"), record("live")])
+            .unwrap();
+
+        // A row this database has never settled.
+        assert!(db.exclude_job("new").unwrap());
+        assert_eq!(
+            row_state(&db, "new"),
+            ("skipped".into(), 0, None, None, None)
+        );
+
+        // A cache hit, and an execution, left by an earlier run.
+        db.skip_job("hit").unwrap();
+        db.claim_job("ran", &sid).unwrap();
+        db.complete_job("ran", &sid, 0, "{}").unwrap();
+        for id in ["hit", "ran"] {
+            assert!(db.exclude_job(id).unwrap());
+            assert_eq!(row_state(&db, id), ("skipped".into(), 0, None, None, None));
+        }
+
+        // A row a peer is executing is not this run's to settle (ADR-012).
+        db.claim_job("live", &sid).unwrap();
+        assert!(!db.exclude_job("live").unwrap());
+        assert_eq!(db.job_status("live").unwrap().as_deref(), Some("running"));
+
+        // A later run that hits the cache for an excluded job records it.
+        assert!(db.skip_job("new").unwrap());
+        assert_eq!(row_state(&db, "new").0, "completed");
+        assert_eq!(row_state(&db, "new").1, 1);
     }
 }

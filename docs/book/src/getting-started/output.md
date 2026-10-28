@@ -119,7 +119,13 @@ system CPU time (`cpu_time_ms`) and, for Ray tasks, the host it ran on
 and `job_completed` also name where the job ran: `endpoint` (the local host
 name, or the Ray dashboard address) and `submission_id` (the Ray submission
 ID; `null` for local jobs). Every planned job gets its `job_planned` line
-right after `run_started`, before any job starts or is skipped. The format is
+right after `run_started`, before any job starts or is skipped. A job that
+does not execute gets a `job_skipped` line whose `reason` is `cached` when the
+cache answered for it, or `not selected` when `--until` or `--omit-from`
+excluded it; `run_started.cached` counts only the first kind.
+`run_completed.status` is `success`, `failed`, `interrupted`, or `all_cached`
+when nothing ran and every skipped job was a cache hit: a run that executed
+nothing because the other jobs were excluded is `success`. The format is
 designed for AI agents and scripts: each line parses independently. Use
 `--report-json <path>` to write the same stream to a file. See
 [Agent-Driven Workflows](../cookbook/agent-workflows.md) for details.
