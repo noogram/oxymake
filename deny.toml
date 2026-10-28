@@ -13,10 +13,10 @@ yanked = "deny"
 # Exceptions must be dated. Policy: 90-day expiry — the ignore entry
 # itself should carry the date you wrote it; a later pass re-evaluates.
 ignore = [
-    # number_prefix 0.4.0 is unmaintained (transitive via indicatif).
-    # Not a security issue; upstream may switch to unit-prefix.
-    # Added 2026-04-23 — re-evaluate by 2026-07-22.
-    { id = "RUSTSEC-2025-0119", reason = "transitive via indicatif; unmaintained only, no security impact — reviewed 2026-04-23" },
+    # basic-toml is unmaintained (transitive via askama_derive).
+    # Askama 0.13/0.14 retain it; 0.15 requires Rust 1.88 (workspace MSRV 1.85).
+    # Added 2026-10-28 — re-evaluate by 2027-01-26.
+    { id = "RUSTSEC-2026-0374", reason = "unmaintained build-time TOML parser via Askama; no reported vulnerability; compatible upgrade unavailable at Rust 1.85 — reviewed 2026-10-28, re-evaluate by 2027-01-26" },
 ]
 
 [bans]

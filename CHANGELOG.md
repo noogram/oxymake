@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Update indicatif to 0.18 to remove unmaintained `number_prefix`
+  (RUSTSEC-2025-0119) and its expired advisory exception. Track unmaintained
+  `basic-toml` (RUSTSEC-2026-0374, via Askama) with a dated exception through
+  2027-01-26 while retaining Rust 1.85 compatibility.
+
 - Snakemake `configfile:` translation now uses saphyr instead of
   serde_yaml_ng, removing the unmaintained `unsafe-libyaml` dependency
   (RUSTSEC-2024-0449).
