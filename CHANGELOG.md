@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Snakemake `configfile:` translation now uses saphyr instead of
+  serde_yaml_ng, removing the unmaintained `unsafe-libyaml` dependency
+  (RUSTSEC-2024-0449).
+
 ### Fixed
 
 - `ox run --executor ray --follow` now records each completed Ray task in the

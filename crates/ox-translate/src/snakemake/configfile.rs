@@ -3,8 +3,8 @@
 
 use std::path::Path;
 
-use anyhow::{Context, Result};
-use serde_yaml_ng::Value;
+use anyhow::{Context, Result, bail};
+use saphyr::{LoadableYamlNode, Scalar, Yaml};
 
 use crate::ir::ConfigEntryIR;
 
@@ -22,61 +22,54 @@ pub fn resolve_configfile(config_path: &str, base_dir: &Path) -> Result<Vec<Conf
 
 /// Parse YAML content into config entries.
 pub fn parse_yaml_config(yaml: &str) -> Result<Vec<ConfigEntryIR>> {
-    let root: Value = serde_yaml_ng::from_str(yaml).context("failed to parse YAML config")?;
-
-    let mapping = match root {
-        Value::Mapping(m) => m,
+    let mut docs = Yaml::load_from_str(yaml).context("failed to parse YAML config")?;
+    // A config file is a single document, as required by the previous parser.
+    if docs.len() > 1 {
+        bail!(
+            "failed to parse YAML config: expected one document, found {}",
+            docs.len()
+        );
+    }
+    let mapping = match docs.pop() {
+        Some(Yaml::Mapping(mapping)) => mapping,
         _ => return Ok(vec![]),
     };
 
     let mut entries = Vec::new();
     for (key, value) in &mapping {
-        let key_str = match key {
-            Value::String(s) => s.clone(),
+        let key = match key {
+            Yaml::Value(Scalar::String(key)) => key.to_string(),
             _ => continue,
         };
-        match value {
-            Value::String(s) => {
-                entries.push(ConfigEntryIR {
-                    key: key_str,
-                    values: vec![s.clone()],
-                });
-            }
-            Value::Number(n) => {
-                entries.push(ConfigEntryIR {
-                    key: key_str,
-                    values: vec![n.to_string()],
-                });
-            }
-            Value::Bool(b) => {
-                entries.push(ConfigEntryIR {
-                    key: key_str,
-                    values: vec![b.to_string()],
-                });
-            }
-            Value::Sequence(seq) => {
-                let mut vals = Vec::new();
-                for item in seq {
-                    match item {
-                        Value::String(s) => vals.push(s.clone()),
-                        Value::Number(n) => vals.push(n.to_string()),
-                        Value::Bool(b) => vals.push(b.to_string()),
-                        _ => continue,
-                    }
-                }
-                if !vals.is_empty() {
-                    entries.push(ConfigEntryIR {
-                        key: key_str,
-                        values: vals,
-                    });
-                }
-            }
-            // Nested mappings and other complex types are skipped
-            _ => {}
+        let values: Vec<String> = match value {
+            Yaml::Value(scalar) => scalar_to_string(scalar).into_iter().collect(),
+            Yaml::Sequence(sequence) => sequence
+                .iter()
+                .filter_map(|item| match item {
+                    Yaml::Value(scalar) => scalar_to_string(scalar),
+                    _ => None,
+                })
+                .collect(),
+            // Nested mappings and other complex types are skipped.
+            _ => continue,
+        };
+        if !values.is_empty() {
+            entries.push(ConfigEntryIR { key, values });
         }
     }
-
     Ok(entries)
+}
+
+/// Render scalars for both top-level values and list items, skipping nulls.
+fn scalar_to_string(scalar: &Scalar<'_>) -> Option<String> {
+    match scalar {
+        Scalar::String(value) => Some(value.to_string()),
+        Scalar::Integer(value) => Some(value.to_string()),
+        // Debug retains the decimal point in values such as 1.0.
+        Scalar::FloatingPoint(value) => Some(format!("{:?}", value.0)),
+        Scalar::Boolean(value) => Some(value.to_string()),
+        Scalar::Null => None,
+    }
 }
 
 #[cfg(test)]
