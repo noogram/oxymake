@@ -1670,9 +1670,7 @@ fn parse_params(raw: &BTreeMap<String, toml::Value>) -> BTreeMap<String, String>
         .map(|(k, v)| {
             let s = match v {
                 toml::Value::String(s) => s.clone(),
-                toml::Value::Integer(n) => n.to_string(),
                 toml::Value::Float(f) => f.to_string(),
-                toml::Value::Boolean(b) => b.to_string(),
                 _ => v.to_string(),
             };
             (k.clone(), s)
@@ -1791,6 +1789,55 @@ mod tests {
             );
         }
         workflow
+    }
+
+    #[test]
+    fn workflow_v1_ignores_non_table_env() {
+        let workflow = parse_workflow(
+            "format_version = \"1\"\nenv = \"ignored\"\n",
+            Path::new("test.toml"),
+        )
+        .unwrap();
+        assert!(workflow.global_env.is_empty());
+    }
+
+    #[test]
+    fn workflow_v2_rejects_non_table_env() {
+        let error = parse_workflow(
+            "format_version = \"2\"\nox_version = \">=0.7.0\"\nenv = \"python\"\n",
+            Path::new("test.toml"),
+        )
+        .unwrap_err();
+        assert!(
+            error.to_string().contains("[env]: expected a table"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn workflow_env_accepts_leading_underscore() {
+        let workflow = parse_workflow("[env]\n_PRIVATE = \"1\"\n", Path::new("test.toml")).unwrap();
+        assert_eq!(
+            workflow.global_env,
+            BTreeMap::from([("_PRIVATE".into(), "1".into())])
+        );
+    }
+
+    #[test]
+    fn workflow_env_rejects_invalid_names() {
+        for name in ["BAD-NAME", "1ABC"] {
+            let error = parse_workflow(
+                &format!("[env]\n\"{name}\" = \"1\"\n"),
+                Path::new("test.toml"),
+            )
+            .unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("environment variable names must match"),
+                "{name}: {error}"
+            );
+        }
     }
 
     #[test]
@@ -4075,6 +4122,7 @@ shell = "train"
 name = "baseline"
 epochs = 42
 learning_rate = 0.125
+ratio = 1.0
 enabled = true
 "#;
         let wf = parse_workflow(toml, Path::new("test.toml")).unwrap();
@@ -4085,6 +4133,7 @@ enabled = true
                 ("epochs".into(), "42".into()),
                 ("learning_rate".into(), "0.125".into()),
                 ("name".into(), "baseline".into()),
+                ("ratio".into(), "1".into()),
             ])
         );
     }
