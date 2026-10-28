@@ -1729,6 +1729,31 @@ mod tests {
     }
 
     #[test]
+    fn ray_priority_order_follows_requested_targets() {
+        let rules = [
+            make_rule("a", &[], &["a.txt"]),
+            make_rule("z", &[], &["z.txt"]),
+        ];
+        for targets in [["z.txt", "a.txt"], ["a.txt", "z.txt"]] {
+            let resolved = resolve(&rules, &make_request(&targets, &[])).unwrap();
+            let expected: Vec<_> = targets
+                .iter()
+                .map(|target| target.trim_end_matches(".txt"))
+                .collect();
+            let graph = crate::job_graph::JobGraph::build(resolved.jobs).unwrap();
+            assert_eq!(
+                graph
+                    .priority_topological_order()
+                    .unwrap()
+                    .iter()
+                    .map(|id| graph.get_job(id).unwrap().rule.as_str())
+                    .collect::<Vec<_>>(),
+                expected
+            );
+        }
+    }
+
+    #[test]
     fn clean_outputs_is_inherited_by_concrete_jobs() {
         use crate::model::CleanOutputs;
         for policy in [

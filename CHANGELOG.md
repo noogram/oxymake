@@ -14,6 +14,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `basic-toml` (RUSTSEC-2026-0374, via Askama) with a dated exception through
   2027-01-26 while retaining Rust 1.85 compatibility.
 
+- Ray DAG submission now chooses the highest rule `priority` among ready jobs
+  (default `0`), then graph insertion order. Independent targets with equal
+  priorities follow their command-line order. Dependencies remain mandatory;
+  Ray still determines task execution order. Other executors are unchanged.
+
 - Snakemake `configfile:` translation now uses saphyr instead of
   serde_yaml_ng, removing the unmaintained `unsafe-libyaml` dependency
   (RUSTSEC-2024-0449).

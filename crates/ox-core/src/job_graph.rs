@@ -55,7 +55,8 @@
 //! - **Critical-path analysis**: annotates the longest chain for priority scheduling.
 //! - **Resource partitioning**: groups jobs by resource requirements.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::cmp::Reverse;
+use std::collections::{BTreeMap, BTreeSet, BinaryHeap, HashMap, HashSet};
 use std::path::PathBuf;
 
 use petgraph::Direction;
@@ -504,6 +505,57 @@ impl JobGraph {
             .collect())
     }
 
+    /// Order jobs with Kahn's algorithm, choosing the highest `priority`
+    /// (default zero), then earliest insertion, among ready jobs.
+    ///
+    /// Used for Ray DAG submission; [`Self::topological_order`] retains its
+    /// existing behavior. Output nodes and skipped jobs are traversed before
+    /// choosing the next live job, preserving dependencies through skipped jobs.
+    ///
+    /// # Errors
+    /// Returns [`DagError::CycleDetected`] if the graph contains a cycle.
+    pub fn priority_topological_order(&self) -> Result<Vec<&JobId>, DagError> {
+        let mut indegrees = vec![0; self.graph.node_count()];
+        let mut ready = BinaryHeap::new();
+        let key = |idx: NodeIndex| match &self.graph[idx] {
+            JobNode::Job(job) if !self.skipped.contains(&job.id) => {
+                (false, job.priority.unwrap_or(0), Reverse(idx.index()))
+            }
+            // Eagerly propagate readiness through non-submitted nodes.
+            _ => (true, 0, Reverse(idx.index())),
+        };
+        for idx in self.graph.node_indices() {
+            indegrees[idx.index()] = self.graph.edges_directed(idx, Direction::Incoming).count();
+            if indegrees[idx.index()] == 0 {
+                ready.push(key(idx));
+            }
+        }
+        let mut order = Vec::with_capacity(self.job_count());
+        let mut visited = 0;
+        while let Some((_, _, Reverse(index))) = ready.pop() {
+            let idx = NodeIndex::new(index);
+            visited += 1;
+            if let JobNode::Job(job) = &self.graph[idx] {
+                if !self.skipped.contains(&job.id) {
+                    order.push(&job.id);
+                }
+            }
+            for edge in self.graph.edges_directed(idx, Direction::Outgoing) {
+                let next = edge.target();
+                indegrees[next.index()] -= 1;
+                if indegrees[next.index()] == 0 {
+                    ready.push(key(next));
+                }
+            }
+        }
+        if visited != self.graph.node_count() {
+            return Err(DagError::CycleDetected {
+                cycle: vec!["(cycle in job graph)".into()],
+            });
+        }
+        Ok(order)
+    }
+
     /// Get upstream dependencies of a job (jobs whose outputs are this job's inputs).
     ///
     /// Traversal: for each input of the target job, find the output node,
@@ -823,6 +875,89 @@ pub mod tests {
 
     // Re-export the helper so doc tests can use it.
     pub use super::make_test_job;
+
+    #[test]
+    fn priority_order_rechecks_ready_jobs_after_each_submission() {
+        let a = make_test_job("a", &["source.txt"], &["a.txt"]);
+        let mut b = make_test_job("b", &["a.txt"], &["b.txt"]);
+        b.priority = Some(10);
+        let c = make_test_job("c", &[], &["c.txt"]);
+        let mut graph = JobGraph::build(vec![a, b, c]).unwrap();
+        let names = |g: &JobGraph| {
+            g.priority_topological_order()
+                .unwrap()
+                .iter()
+                .map(|id| id.to_string())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(names(&graph), ["a", "b", "c"]);
+        graph.mark_skipped(&JobId::from("a"));
+        assert_eq!(names(&graph), ["b", "c"]);
+        assert!(
+            JobGraph::build(vec![])
+                .unwrap()
+                .priority_topological_order()
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn priority_order_detects_cycles_even_when_skipped() {
+        let mut graph = JobGraph::build(vec![
+            make_test_job("a", &["b.txt"], &["a.txt"]),
+            make_test_job("b", &["a.txt"], &["b.txt"]),
+        ])
+        .unwrap();
+        graph.mark_skipped(&JobId::from("a"));
+        assert!(matches!(
+            graph.priority_topological_order(),
+            Err(DagError::CycleDetected { .. })
+        ));
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn priority_order_respects_random_dag(
+            priorities in proptest::collection::vec(proptest::option::of(proptest::num::u32::ANY), 1..24),
+            edges in proptest::collection::vec((0usize..24, 0usize..24), 0..100),
+            skips in proptest::collection::vec(proptest::bool::ANY, 24),
+        ) {
+            let n = priorities.len();
+            let mut jobs = Vec::new();
+            for (i, priority) in priorities.iter().enumerate() {
+                let inputs: BTreeSet<String> = edges.iter()
+                    .filter(|&&(a, b)| a < b && b == i && a < n)
+                    .map(|(a, _)| format!("out-{a}")).collect();
+                let refs: Vec<&str> = inputs.iter().map(String::as_str).collect();
+                let mut job = make_test_job(&format!("job-{i}"), &refs, &[&format!("out-{i}")]);
+                job.priority = *priority;
+                jobs.push(job);
+            }
+            // Reverse insertion relative to dependency order.
+            jobs.reverse();
+            let mut graph = JobGraph::build(jobs).unwrap();
+            for (i, skip) in skips.iter().take(n).enumerate() {
+                if *skip { graph.mark_skipped(&JobId::from(format!("job-{i}"))); }
+            }
+            let order = graph.priority_topological_order().unwrap();
+            let mut remaining: BTreeSet<&JobId> = graph.job_ids().into_iter().collect();
+            for id in order {
+                let ready: Vec<_> = remaining.iter().copied()
+                    .filter(|candidate| graph.upstream(candidate).iter().all(|dep| !remaining.contains(dep)))
+                    .collect();
+                // Independent oracle: choose the highest priority, then earliest insertion.
+                let expected = ready.into_iter().max_by_key(|candidate| {
+                    let job = graph.get_job(candidate).unwrap();
+                    let original: usize = candidate.as_str().strip_prefix("job-").unwrap().parse().unwrap();
+                    (job.priority.unwrap_or(0), original)
+                }).unwrap();
+                proptest::prop_assert_eq!(id, expected);
+                proptest::prop_assert!(remaining.remove(id));
+            }
+            proptest::prop_assert!(remaining.is_empty());
+        }
+    }
 
     // ── Empty graph ─────────────────────────────────────────────────────
 
