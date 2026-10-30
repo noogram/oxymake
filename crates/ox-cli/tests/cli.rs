@@ -4545,6 +4545,50 @@ fn not_selected_skips_do_not_make_a_run_all_cached() {
     assert_eq!(all_hits.last().unwrap()["status"], "all_cached");
 }
 
+/// The same holds when the run goes through the scheduler (a selected job has
+/// to run): the excluded job is `not selected`, and state.db does not record
+/// it as a cache hit.
+#[test]
+fn scheduled_run_reports_excluded_jobs_as_not_selected() {
+    let dir = TempDir::new().unwrap();
+    fs::write(dir.path().join("Oxymakefile.toml"), CACHED_CHAIN).unwrap();
+    ox().arg("run").current_dir(dir.path()).assert().success();
+    fs::remove_file(dir.path().join("first.txt")).unwrap();
+
+    let events = cached_run_events(dir.path(), &["--omit-from", "second"]);
+    let settled: Vec<(&str, &str)> = events
+        .iter()
+        .filter(|line| line["event"] == "job_completed" || line["event"] == "job_skipped")
+        .map(|line| {
+            (
+                line["job_id"].as_str().unwrap(),
+                line["reason"].as_str().unwrap_or(""),
+            )
+        })
+        .collect();
+    assert_eq!(settled.len(), 2, "{settled:?}");
+    assert!(settled.contains(&("second", "not selected")), "{settled:?}");
+    let started = events.first().unwrap();
+    assert_eq!(started["event"], "run_started");
+    assert_eq!(started["cached"], 0);
+
+    // Both runs can start within the same second: name this one.
+    let run_id = started["run_id"].as_str().unwrap();
+    let output = ox()
+        .args(["status", "--json", "--units", "--run", run_id])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let status: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let units = status["units"].as_array().unwrap();
+    let excluded = units
+        .iter()
+        .find(|unit| unit["job_id"] == "second")
+        .expect("the excluded job has a unit");
+    assert_ne!(excluded["cache_hit"], true, "{excluded}");
+}
+
 #[test]
 fn default_event_log_records_plans_and_the_all_cached_terminal_outcome() {
     let dir = TempDir::new().unwrap();
