@@ -267,9 +267,9 @@ run's bound remote driver cannot be resolved, the code is
 
 `--units` (with `--json`) adds a `units` array to the run object, one record
 per unit: `job_id`, `rule`, `wildcards` (object), `outputs`, `state`
-(`pending`, `running`, `orphaned`, `completed`, `failed`, `skipped` or
-`cancelled`), `executor`, `endpoint`, `submission_id`, `node`, `started_at` and
-`ended_at` (Unix seconds), `exit_code`, and `cache_hit`. This is how a
+(`pending`, `running`, `orphaned`, `completed`, `failed`, `skipped`,
+`cancelled` or `unknown`), `executor`, `endpoint`, `submission_id`, `node`,
+`started_at` and `ended_at` (Unix seconds), `exit_code`, and `cache_hit`. This is how a
 dashboard that reads OxyMake only through its commands learns which cluster and
 node ran each unit of a DAG split across several `ox run` invocations.
 `endpoint` is the Ray dashboard address or, for a local job, the host name;
@@ -280,6 +280,16 @@ lists the outputs whose hash the run recorded; state keeps no declared output
 paths, so it is empty for a unit the cache layer never keyed. Fields that do
 not apply are `null`, never absent. To list the runs of a workflow folder,
 including runs still in progress, use `ox history --json`.
+
+For a selected older run, terminal job history supplies units whose live rows
+have since moved to another run. A live row still naming the selected run takes
+precedence, independently for each job. History written before state schema v13
+lacks the terminal state and cache observation: exit code zero means `completed`,
+nonzero means `failed`, and a missing exit code means `unknown` (it cannot
+distinguish skipped from cancelled). Such units have `cache_hit: null` and
+`submission_id: null`. Unknown units count toward `jobs.total`, but do not enter
+a named status counter. Runs interrupted before history was recorded cannot be
+reconstructed this way.
 
 #### Running vs. orphaned
 

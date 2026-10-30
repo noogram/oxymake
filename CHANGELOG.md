@@ -25,6 +25,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `ox status --json --units --run ID` retains terminal units and job counts
+  after later runs re-register the same jobs, including partial overlap.
+  State schema v13 preserves terminal status, cache hits and submission IDs
+  in history. Older history uses exit codes to derive completed/failed states;
+  missing exits render as `unknown`, with null cache hits and submission IDs.
+  The unstable Rust `UnitView::cache_hit` exposes this nullable observation;
+  `EffectiveCounts::other` includes unknown states in totals.
+
 - `ox clean --events` refuses removal while sessions are live unless `--force`
   is supplied. It also removes event-log temporaries older than 300 seconds,
   lists them under `--dry-run`, and includes them in the removed event count.

@@ -151,6 +151,12 @@ summaries (`--group-by rule` or `stage`), absent state, and any separate Ray
 driver or cluster summary. Ray status can emit several consecutive JSON
 objects; consumers should parse a stream of JSON values.
 
+When inspecting older runs with `ox status --json --units --run ID`, completed
+history keeps units visible after a later run reuses their job IDs. Legacy
+history may show `state: "unknown"` when no exit code was recorded, and
+`cache_hit: null` when no cache observation was retained. See
+[`ox status`](../reference/commands.md#ox-status) for the fallback rules.
+
 `ox history --json` includes the same field in each NDJSON run record and
 each job record selected by `--run-id ID`. No state, no runs, or a selected
 run with no job history produces an empty stream.
