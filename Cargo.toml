@@ -66,7 +66,7 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 
 # Reporting
 miette = { version = "7", features = ["fancy"] }
-indicatif = "0.17"
+indicatif = "0.18"
 console = "0.16"
 
 # Platform
