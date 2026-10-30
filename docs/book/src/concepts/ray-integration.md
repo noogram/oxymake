@@ -510,12 +510,37 @@ flowchart LR
 | **DAG construction** | Parses Oxymakefile, resolves wildcards | -- |
 | **Cache checking** | Content-addressable (blake3) | -- |
 | **Optimization** | Cache pruning, task fusion, critical path | -- |
-| **Scheduling order** | Topological sort, priority, gates | -- |
+| **Submission order** | Topological; highest rule `priority` first among ready jobs, then insertion order | Execution order and placement depend on Ray resources |
 | **Task placement** | -- | Which node, which GPU |
 | **Resource allocation** | -- | CPU, memory, GPU scheduling |
 | **Autoscaling** | -- | Scale workers up/down |
 | **Object store** | -- | Zero-copy data passing |
 | **Fault tolerance** | Retry strategy (OxyMake-managed) | Worker failure detection |
+
+### Submission order and priority
+
+The native DAG driver submits tasks in topological order. Among jobs whose
+upstream tasks have already been submitted, higher rule `priority` values go
+first (default `0`). Equal priorities use graph insertion order, so independent
+targets keep their command-line order. The ready set is reconsidered after each
+submission: a newly available high-priority dependent can precede a lower-priority
+independent job.
+
+```toml
+[rule.urgent]
+output = ["urgent.txt"]
+shell = "echo urgent > {output}"
+priority = 10
+```
+
+For independent targets, `ox run ordinary.txt urgent.txt --executor ray` submits
+`urgent.txt` first when its rule has priority `10` and the other rule uses the
+default. With equal priorities, `ordinary.txt` is submitted first. Priority
+never overrides dependencies. This is submission order, not a guarantee of task
+start or completion order: Ray controls execution according to available
+resources. Local and SLURM executor ordering is unchanged. Approval gates are
+not supported by native Ray DAG submission; the CLI rejects gated workflows
+with this backend.
 
 ### State Synchronization
 
@@ -583,7 +608,7 @@ OxyMake and Ray solve orthogonal problems:
 | **Configuration** | Declarative TOML | Python API / YAML |
 | **DAG model** | Three-level (Rule → Job → Exec) | Flat task graph |
 | **Cache** | blake3 content hashing | None (execution-only) |
-| **Scheduling** | Topological + priorities + gates | Resource-based bin packing |
+| **Scheduling** | Topological submission + priorities; gates require the local scheduler | Resource-based bin packing |
 | **State** | Persistent (state.db, cache) | Ephemeral (cluster lifetime) |
 
 ### Why Not Snakemake + Ray or Airflow + Ray?

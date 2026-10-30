@@ -530,3 +530,7 @@ Run-label support adds unstable Rust surfaces
 `ox_state::db::{StateDb::begin_run_with_metadata, RunRecord::metadata}` and
 `ox_report_json::reporter::JsonReporter::with_metadata`. Existing `begin_run`
 callers and legacy database rows default to empty labels.
+
+`ox_core::job_graph::JobGraph::priority_topological_order` is an **unstable**
+Rust API for priority-aware, insertion-stable topological ordering. Ray's DAG
+driver uses it for submission; existing `topological_order` callers are unchanged.

@@ -72,6 +72,7 @@ shell = "python process.py {input} {output}"
 | `env` | Table of string → string | No | Environment variables for the command. Merged over the workflow-level `[env]` table, with the rule winning per key. |
 | `environment` | Table | No | The software environment backend (`uv`, conda, Docker, Nix, or Apptainer); see the environment backend section. |
 | `when` | String | No | Conditional guard expression |
+| `priority` | Non-negative integer (u32) | No | Default `0`; higher values win rule ambiguity resolution and take precedence among ready jobs in the local scheduler and Ray DAG submission. Dependencies always come first. |
 | `params` | Table | No | Rule-specific parameters |
 | `clean_outputs` | String | No | `always` (default), `on-failure`, `never`; see Output cleanup below |
 | `cache_platform` | String | No | `exact` (default), `any`; see Cross-platform cache reuse below |

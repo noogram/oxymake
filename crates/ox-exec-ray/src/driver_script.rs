@@ -52,7 +52,7 @@ pub(crate) fn generate_driver_with_python(
     python: &str,
 ) -> Result<String, RayError> {
     let topo_order = graph
-        .topological_order()
+        .priority_topological_order()
         .map_err(|e| RayError::CallModeError(format!("topological sort failed: {e}")))?;
 
     // Filter out cached jobs.
@@ -624,6 +624,42 @@ mod tests {
 
     fn no_skip() -> HashSet<JobId> {
         HashSet::new()
+    }
+
+    fn submitted_ids(script: &str) -> Vec<String> {
+        script
+            .lines()
+            .filter(|line| line.starts_with("ref_") && line.contains(".remote("))
+            .map(|line| {
+                let args = line.split_once(".remote(").unwrap().1;
+                serde_json::from_str(args.split_once(", ").unwrap().0).unwrap()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn submission_order_preserves_independent_target_order() {
+        // Deliberately different from alphabetical order.
+        let graph = JobGraph::build(vec![
+            shell_job("z-first", "true", vec![], vec![]),
+            shell_job("a-second", "true", vec![], vec![]),
+        ])
+        .unwrap();
+        let staging = tempfile::tempdir().unwrap();
+        let script = generate_driver(&graph, &ctx(), staging.path(), &no_skip()).unwrap();
+        assert_eq!(submitted_ids(&script), ["z-first", "a-second"]);
+    }
+
+    #[test]
+    fn submission_order_prioritizes_ready_jobs() {
+        let low = shell_job("low", "true", vec![], vec![]);
+        let mut high = shell_job("high", "true", vec![], vec![]);
+        high.priority = Some(u32::MAX);
+        let other = shell_job("other", "true", vec![], vec![]);
+        let graph = JobGraph::build(vec![low, high, other]).unwrap();
+        let staging = tempfile::tempdir().unwrap();
+        let script = generate_driver(&graph, &ctx(), staging.path(), &no_skip()).unwrap();
+        assert_eq!(submitted_ids(&script), ["high", "low", "other"]);
     }
 
     #[test]
