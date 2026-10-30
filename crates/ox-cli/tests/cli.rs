@@ -5176,3 +5176,81 @@ shell = "echo $$ > job.pid; trap ': > term-seen.txt' TERM; touch started.txt; wh
         "no row may stay 'running': {jobs:?}"
     );
 }
+
+#[test]
+fn clean_events_refuses_live_session_unless_forced() {
+    let dir = TempDir::new().unwrap();
+    let events = dir.path().join(".oxymake/events");
+    fs::create_dir_all(&events).unwrap();
+    let log = events.join("run-test.ndjson");
+    fs::write(&log, "{}\n").unwrap();
+    let temporary = events.join(".run-test.ndjson.tmp-123-0");
+    fs::write(&temporary, "").unwrap();
+    fs::File::options()
+        .write(true)
+        .open(&temporary)
+        .unwrap()
+        .set_times(
+            fs::FileTimes::new()
+                .set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(600)),
+        )
+        .unwrap();
+    let db = ox_state::db::StateDb::open(&dir.path().join(".oxymake/state.db")).unwrap();
+    let sid = db
+        .create_session(std::process::id(), "localhost", None)
+        .unwrap();
+    db.close().unwrap();
+
+    ox().args(["clean", "--events", "--yes"])
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("live session"));
+    assert!(log.exists());
+    assert!(temporary.exists());
+    ox().args(["clean", "--events", "--yes", "--force"])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+    assert!(!log.exists());
+    assert!(!temporary.exists());
+    let db = ox_state::db::StateDb::open(&dir.path().join(".oxymake/state.db")).unwrap();
+    assert!(db.active_sessions().unwrap().iter().any(|s| s.id == sid));
+}
+
+#[test]
+fn clean_events_removes_only_old_temporaries_and_lists_dry_run() {
+    let dir = TempDir::new().unwrap();
+    let events = dir.path().join(".oxymake/events");
+    fs::create_dir_all(&events).unwrap();
+    let old = events.join(".run-old.ndjson.tmp-123-0");
+    let recent = events.join(".run-recent.ndjson.tmp-123-1");
+    let unrelated = events.join(".run-other.ndjson.tmp-invalid");
+    for path in [&old, &recent, &unrelated] {
+        fs::write(path, "").unwrap();
+    }
+    let past = std::time::SystemTime::now() - std::time::Duration::from_secs(600);
+    for path in [&old, &unrelated] {
+        fs::File::options()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_times(fs::FileTimes::new().set_modified(past))
+            .unwrap();
+    }
+    ox().args(["clean", "--events", "--dry-run", "--json"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicates::str::contains(".run-old.ndjson.tmp-123-0"));
+    assert!(old.exists());
+    assert!(recent.exists());
+    ox().args(["clean", "--events", "--yes", "--json"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("\"event_logs\": 1"));
+    assert!(!old.exists());
+    assert!(recent.exists());
+    assert!(unrelated.exists());
+}

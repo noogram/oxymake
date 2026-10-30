@@ -69,6 +69,9 @@ The `ox` binary exposes 27 subcommands today (see `crates/ox-cli/src/lib.rs`).
   (see §7).
 - **`ox cancel`**, **`ox invalidate`**, **`ox clean`** — names and the
   fact that they mutate state stable; specific flags unstable.
+  `clean --events` guards live sessions and includes temporaries older than
+  300 seconds. The source-level `ox_report_json::reporter::is_event_log_temporary`
+  name predicate is unstable.
 - **`ox translate`**, **`ox export`** — *names* and the positional
   `FORMAT` argument (`snakemake`, `wdl`) are stable. Promoted in 0.4.0, the
   release that chose not to touch them: the cache-adoption commands were

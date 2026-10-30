@@ -6,6 +6,8 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 
+const STALE_THRESHOLD_SECS: u64 = 300;
+
 // ---------------------------------------------------------------------------
 // Args
 // ---------------------------------------------------------------------------
@@ -24,7 +26,7 @@ pub struct CleanArgs {
     #[arg(long, conflicts_with = "cache_only")]
     pub state_only: bool,
 
-    /// Only remove retained NDJSON event logs
+    /// Remove retained NDJSON event logs and temporaries older than 300 seconds
     #[arg(long, conflicts_with_all = ["cache_only", "state_only", "state", "all"])]
     pub events: bool,
 
@@ -41,7 +43,7 @@ pub struct CleanArgs {
     #[arg(short = 'y', long)]
     pub yes: bool,
 
-    /// Clear execution state even if live (non-stale) sessions exist
+    /// Clean execution state or event logs even if live sessions exist
     #[arg(long)]
     pub force: bool,
 
@@ -124,18 +126,18 @@ pub fn cmd_clean(args: CleanArgs) -> Result<()> {
 
     // State
     let state_path = oxymake_dir.join("state.db");
-    let (stale_sessions, stale_jobs) = if clean_state && state_path.exists() {
+    let (stale_sessions, stale_jobs) = if (clean_state || clean_events) && state_path.exists() {
         let db = ox_state::db::StateDb::open(&state_path).context("failed to open state.db")?;
         let counts = db.job_counts()?;
         let sessions = db.active_sessions()?;
-        let stale = db.find_stale_sessions(300)?; // 5 min threshold
+        let stale = db.find_stale_sessions(STALE_THRESHOLD_SECS)?; // 5 min threshold
 
         let total_jobs =
             counts.pending + counts.running + counts.completed + counts.failed + counts.skipped;
 
         // H17: a session with a fresh heartbeat is a run in flight.
-        // Clearing execution state under it would make its audit trail
-        // read an empty jobs table mid-run. Refuse unless --force.
+        // Clearing state or event logs under it would disrupt the run or
+        // its subscribers. Refuse unless --force.
         let live = sessions.iter().filter(|s| !stale.contains(&s.id)).count();
         if live > 0 && !args.force && !args.dry_run {
             anyhow::bail!(
@@ -145,16 +147,16 @@ pub fn cmd_clean(args: CleanArgs) -> Result<()> {
             );
         }
 
-        if !stale.is_empty() {
+        if clean_state && !stale.is_empty() {
             actions.push(format!("Reclaim {} stale sessions", stale.len()));
         }
-        if total_jobs > 0 {
+        if clean_state && total_jobs > 0 {
             actions.push(format!(
                 "Clear execution state ({total_jobs} jobs, {} sessions)",
                 sessions.len(),
             ));
         }
-        if args.all {
+        if clean_state && args.all {
             let runs = db.list_runs()?;
             if !runs.is_empty() {
                 actions.push(format!("Remove audit trail ({} runs) (--all)", runs.len(),));
@@ -180,22 +182,25 @@ pub fn cmd_clean(args: CleanArgs) -> Result<()> {
     // Event streams are retained by default. Their removal is an explicit
     // operator action, intentionally separate from ordinary log cleanup.
     let events_dir = oxymake_dir.join("events");
-    let event_log_count = if clean_events && events_dir.exists() {
-        let count = std::fs::read_dir(&events_dir)
-            .map(|entries| {
-                entries
-                    .flatten()
-                    .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "ndjson"))
-                    .count()
-            })
-            .unwrap_or(0);
-        if count > 0 {
-            actions.push(format!("Remove {count} retained event log(s)"));
+    let mut event_logs = Vec::new();
+    if clean_events && events_dir.exists() {
+        for entry in std::fs::read_dir(&events_dir).context("failed to read events directory")? {
+            let entry = entry.context("failed to read event log entry")?;
+            let path = entry.path();
+            if entry.file_type()?.is_file() && is_removable_event_log(&path) {
+                if ox_report_json::reporter::is_event_log_temporary(&path) {
+                    actions.push(format!(
+                        "Remove stale event log temporary {}",
+                        path.display()
+                    ));
+                }
+                event_logs.push(path);
+            }
         }
-        count
-    } else {
-        0
-    };
+        if !event_logs.is_empty() {
+            actions.push(format!("Remove {} retained event log(s)", event_logs.len()));
+        }
+    }
 
     // -----------------------------------------------------------------------
     // Report
@@ -298,12 +303,12 @@ pub fn cmd_clean(args: CleanArgs) -> Result<()> {
             let db = ox_state::db::StateDb::open(&state_path).context("failed to open state.db")?;
 
             // Reclaim stale sessions
-            let stale = db.find_stale_sessions(300)?;
+            let stale = db.find_stale_sessions(STALE_THRESHOLD_SECS)?;
             let cutoff = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_secs()
-                .saturating_sub(300);
+                .saturating_sub(STALE_THRESHOLD_SECS);
             for session_id in &stale {
                 // Re-checked inside the transaction: a session that
                 // heartbeated since `find_stale_sessions` keeps its jobs.
@@ -332,11 +337,11 @@ pub fn cmd_clean(args: CleanArgs) -> Result<()> {
         removed_logs = true;
     }
 
-    if clean_events && event_log_count > 0 {
-        for entry in std::fs::read_dir(&events_dir).context("failed to read events directory")? {
-            let entry = entry.context("failed to read event log entry")?;
-            if entry.path().extension().is_some_and(|ext| ext == "ndjson") {
-                std::fs::remove_file(entry.path()).context("failed to remove event log")?;
+    if clean_events && !event_logs.is_empty() {
+        for path in &event_logs {
+            // A temporary may have been touched since the inventory.
+            if is_removable_event_log(path) {
+                std::fs::remove_file(path).context("failed to remove event log")?;
                 removed_events += 1;
             }
         }
@@ -463,6 +468,18 @@ fn clean_state_file(oxymake_dir: &Path, args: &CleanArgs) -> Result<()> {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/// Preserve recent temporaries and files whose age cannot be established.
+fn is_removable_event_log(path: &Path) -> bool {
+    path.extension().is_some_and(|ext| ext == "ndjson")
+        || (ox_report_json::reporter::is_event_log_temporary(path)
+            && path
+                .metadata()
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|mtime| mtime.elapsed().ok())
+                .is_some_and(|age| age > std::time::Duration::from_secs(STALE_THRESHOLD_SECS)))
+}
 
 /// Calculate total size of a directory tree in bytes.
 fn dir_size(path: &Path) -> u64 {

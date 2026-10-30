@@ -20,6 +20,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `ox clean --events` refuses removal while sessions are live unless `--force`
+  is supplied. It also removes event-log temporaries older than 300 seconds,
+  lists them under `--dry-run`, and includes them in the removed event count.
+
 - `ox run --help`, `docs/design/output-integrity.md` and the README no longer
   say that outputs are written atomically or that a crash never leaves partial
   files. Commands write to the final output paths; only the post-success
