@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-10-31
+
+### Known limitations
+
+- Output paths are not yet checked before dispatch on the Ray and Slurm
+  executors. Declare outputs under the project root; ADR-021 fixes the policy
+  and the shared check follows in a later release. The local executor already
+  refuses outputs outside the project.
+
 ### Changed
 
 - Update indicatif to 0.18 to remove unmaintained `number_prefix`
