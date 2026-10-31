@@ -478,8 +478,8 @@ pub struct GateRecord {
 /// let tmp = NamedTempFile::new().unwrap();
 /// let db = StateDb::open(tmp.path()).unwrap();
 ///
-/// // Database is at schema version 1 after open.
-/// assert_eq!(db.schema_version().unwrap(), 12);
+/// // Database is at the current schema version after open.
+/// assert_eq!(db.schema_version().unwrap(), 13);
 ///
 /// db.close().unwrap();
 /// ```
@@ -599,9 +599,8 @@ impl StateDb {
 
     /// Register a batch of jobs with status `pending`.
     ///
-    /// Existing jobs with the same ID are silently skipped (`INSERT OR
-    /// IGNORE`) so that re-running `ox run` after a crash does not
-    /// duplicate entries.
+    /// Existing jobs retain their state and identity fields; only `run_id`
+    /// is updated so re-running after a crash does not duplicate entries.
     pub fn register_jobs(&self, jobs: &[JobRecord]) -> Result<(), StateError> {
         let tx = self.conn.unchecked_transaction()?;
         {
@@ -1448,14 +1447,25 @@ impl StateDb {
 
     /// Record a single job execution in the append-only audit trail.
     pub fn record_job_history(&self, entry: &JobHistoryEntry) -> Result<(), StateError> {
+        self.record_job_history_with_state(entry, None, None, None)
+    }
+
+    fn record_job_history_with_state(
+        &self,
+        entry: &JobHistoryEntry,
+        status: Option<&str>,
+        cached: Option<bool>,
+        submission_id: Option<&str>,
+    ) -> Result<(), StateError> {
         self.conn.execute(
             "INSERT INTO job_history
                 (run_id, job_id, rule_name, wildcards, input_hashes, output_hashes,
                  params_hash, env_hash, executor, hostname,
                  started_at, completed_at, wall_time_ms, peak_mem_mb, exit_code,
-                 reproducibility_class, artifact_provenance_json, cpu_time_ms, node)
+                 reproducibility_class, artifact_provenance_json, cpu_time_ms, node,
+                 status, cached, submission_id)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17,
-                     ?18, ?19)",
+                     ?18, ?19, ?20, ?21, ?22)",
             rusqlite::params![
                 entry.run_id,
                 entry.job_id,
@@ -1476,6 +1486,9 @@ impl StateDb {
                 entry.artifact_provenance_json,
                 entry.cpu_time_ms,
                 entry.node,
+                status,
+                cached,
+                submission_id,
             ],
         )?;
         Ok(())
@@ -1640,13 +1653,14 @@ impl StateDb {
         nodes: &std::collections::HashMap<String, String>,
     ) -> Result<usize, StateError> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, rule_name, wildcards, status, started_at, completed_at, exit_code
+            "SELECT id, rule_name, wildcards, status, started_at, completed_at, exit_code,
+                    cached, executor_submission_id
              FROM jobs
              WHERE run_id = ?1 AND status IN ('completed', 'failed', 'skipped', 'cancelled')
                AND NOT EXISTS (SELECT 1 FROM job_history h
                                WHERE h.run_id = ?1 AND h.job_id = jobs.id)",
         )?;
-        let entries: Vec<JobHistoryEntry> = stmt
+        let entries = stmt
             .query_map(rusqlite::params![run_id], |row| {
                 let job_id: String = row.get(0)?;
                 let status: String = row.get(3)?;
@@ -1665,44 +1679,56 @@ impl StateDb {
                 let actual_executor = executors.get(&job_id).map_or(executor, String::as_str);
                 let cpu_time_ms = cpu_times_ms.get(&job_id).copied();
                 let node = nodes.get(&job_id).cloned();
-                Ok(JobHistoryEntry {
-                    run_id: run_id.to_string(),
-                    job_id,
-                    rule_name: row.get(1)?,
-                    wildcards: row.get(2)?,
-                    input_hashes: prov.input_hashes,
-                    output_hashes: prov.output_hashes,
-                    params_hash: prov.params_hash,
-                    env_hash: prov.env_hash,
-                    executor: Some(actual_executor.to_string()),
-                    hostname: Some(hostname.to_string()),
-                    started_at: row.get(4)?,
-                    completed_at: row.get(5)?,
-                    wall_time_ms,
-                    // Store the executor's per-job observation: local cold
-                    // children and Ray tasks via wait4, or SLURM CLI steps.
-                    // Warm workers and SLURM REST remain unmeasured; work that
-                    // escapes the child is outside its observation.
-                    peak_mem_mb,
-                    cpu_time_ms,
-                    node,
-                    exit_code,
-                    reproducibility_class: prov.reproducibility_class,
-                    artifact_provenance_json: prov.artifact_provenance_json,
-                })
+                let cached: Option<bool> = row.get(7)?;
+                let submission_id: Option<String> = row.get(8)?;
+                Ok((
+                    JobHistoryEntry {
+                        run_id: run_id.to_string(),
+                        job_id,
+                        rule_name: row.get(1)?,
+                        wildcards: row.get(2)?,
+                        input_hashes: prov.input_hashes,
+                        output_hashes: prov.output_hashes,
+                        params_hash: prov.params_hash,
+                        env_hash: prov.env_hash,
+                        executor: Some(actual_executor.to_string()),
+                        hostname: Some(hostname.to_string()),
+                        started_at: row.get(4)?,
+                        completed_at: row.get(5)?,
+                        wall_time_ms,
+                        // Store the executor's per-job observation: local cold
+                        // children and Ray tasks via wait4, or SLURM CLI steps.
+                        // Warm workers and SLURM REST remain unmeasured; work that
+                        // escapes the child is outside its observation.
+                        peak_mem_mb,
+                        cpu_time_ms,
+                        node,
+                        exit_code,
+                        reproducibility_class: prov.reproducibility_class,
+                        artifact_provenance_json: prov.artifact_provenance_json,
+                    },
+                    status,
+                    cached,
+                    submission_id,
+                ))
             })?
             .collect::<Result<Vec<_>, _>>()?;
-        let entries: Vec<JobHistoryEntry> = match only {
+        let entries: Vec<_> = match only {
             Some(ids) => entries
                 .into_iter()
-                .filter(|entry| ids.contains(&entry.job_id))
+                .filter(|(entry, _, _, _)| ids.contains(&entry.job_id))
                 .collect(),
             None => entries,
         };
 
         let count = entries.len();
-        for entry in &entries {
-            self.record_job_history(entry)?;
+        for (entry, status, cached, submission_id) in &entries {
+            self.record_job_history_with_state(
+                entry,
+                Some(status),
+                *cached,
+                submission_id.as_deref(),
+            )?;
         }
         Ok(count)
     }
@@ -2603,7 +2629,7 @@ mod tests {
     #[test]
     fn open_creates_schema() {
         let (_tmp, db) = temp_db();
-        assert_eq!(db.schema_version().unwrap(), 12);
+        assert_eq!(db.schema_version().unwrap(), 13);
     }
 
     /// Two sessions opening a fresh `state.db` at the same time must both
@@ -2626,7 +2652,7 @@ mod tests {
                 .collect();
             for w in workers {
                 let version = w.join().unwrap().expect("concurrent open must succeed");
-                assert_eq!(version, 12);
+                assert_eq!(version, 13);
             }
         }
     }
@@ -3445,7 +3471,7 @@ mod tests {
         let (_tmp, db) = temp_db();
         let backend: &dyn StateBackend = &db;
 
-        assert_eq!(backend.schema_version().unwrap(), 12);
+        assert_eq!(backend.schema_version().unwrap(), 13);
 
         let sid = backend.create_session(1, "localhost", None).unwrap();
 

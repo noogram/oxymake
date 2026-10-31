@@ -382,7 +382,7 @@ pub fn cmd_status(args: StatusArgs, theme: &ox_render::Theme) -> Result<()> {
                         "started_at": u.view.started_at,
                         "ended_at": u.view.completed_at,
                         "exit_code": u.view.exit_code,
-                        "cache_hit": u.view.cached,
+                        "cache_hit": u.cache_hit,
                     })
                 })
                 .collect();

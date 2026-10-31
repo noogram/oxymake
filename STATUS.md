@@ -205,7 +205,7 @@ The state database is an **internal artifact** of the `ox` process. It
 holds run history, job status, and cache validation metadata. Users
 should not query it directly.
 
-- Schema version: `LATEST_VERSION = 9` (see
+- Schema version: `LATEST_VERSION = 13` (see
   `crates/ox-state/src/migration.rs`).
 - Migrations: forward-only, transactional, run on open.
 - **Public contract:** *opening a state DB written by an older `ox`
@@ -223,7 +223,7 @@ should not query it directly.
 - Table names, column names, indexes, triggers — all internal. Tools
   that parse `state.db` outside of `ox` will break and we will not
   treat that as a regression.
-- The current schema version (`11`) will keep climbing.
+- The current schema version (`13`) will keep climbing.
 
 ---
 
@@ -234,6 +234,10 @@ carry top-level integer `schema_version = 1`. Each command's schema is
 **unstable** and versioned independently of the other and of run events.
 Non-additive changes increment the affected version; additive fields do not.
 This covers absent/grouped/selected/Ray status and run/job history records.
+Historical status units may report `state: "unknown"` and `cache_hit: null`
+when legacy history lacks those observations. The unstable Rust
+`UnitView::cache_hit: Option<bool>` carries this distinction;
+`EffectiveCounts::other` includes unmodelled states in totals.
 Empty history remains an empty stream; stderr diagnostics are separate.
 
 `ox run --report-json <path>` and the `JsonReporter` write one JSON

@@ -243,7 +243,8 @@ pub struct JobView {
     pub completed_at: Option<u64>,
     /// Process exit code.
     pub exit_code: Option<i32>,
-    /// Whether the row was satisfied from cache.
+    /// Whether the row was observed satisfied from cache. Legacy history
+    /// without an observation is false; [`UnitView::cache_hit`] preserves null.
     pub cached: bool,
     /// The claiming session, when the row names one.
     pub session_id: Option<String>,
@@ -255,6 +256,8 @@ pub struct JobView {
 pub struct UnitView {
     /// The job row, resolved through [`effective_status`].
     pub view: JobView,
+    /// Whether this unit was satisfied from cache; unknown for legacy history.
+    pub cache_hit: Option<bool>,
     /// Executor backend: the run's DAG submission, else the job's history
     /// row; `None` while neither exists.
     pub executor: Option<String>,
@@ -291,6 +294,8 @@ pub struct EffectiveCounts {
     pub cached: usize,
     /// Jobs that were cancelled.
     pub cancelled: usize,
+    /// Rows with an unmodelled status, including ambiguous legacy history.
+    pub other: usize,
 }
 
 impl EffectiveCounts {
@@ -304,6 +309,7 @@ impl EffectiveCounts {
             + self.failed
             + self.skipped
             + self.cancelled
+            + self.other
     }
 
     /// Aggregate a slice of views.
@@ -318,7 +324,7 @@ impl EffectiveCounts {
                 EffectiveStatus::Failed => c.failed += 1,
                 EffectiveStatus::Skipped => c.skipped += 1,
                 EffectiveStatus::Cancelled => c.cancelled += 1,
-                EffectiveStatus::Other(_) => {}
+                EffectiveStatus::Other(_) => c.other += 1,
             }
             if v.cached {
                 c.cached += 1;
@@ -361,6 +367,25 @@ impl PendingJobView {
     }
 }
 
+/// A job's live row wins only while it still names the selected run.
+/// Terminal history fills each missing job independently (ADR-012 read path).
+const RUN_JOBS: &str = "WITH run_jobs AS (
+    SELECT id, rule_name, wildcards, status, started_at, completed_at, exit_code,
+           COALESCE(cached, 0) AS cached, session_id, executor_submission_id, run_id
+    FROM jobs WHERE run_id = ?1
+    UNION ALL
+    SELECT h.job_id, h.rule_name, h.wildcards,
+           COALESCE(h.status, CASE WHEN h.exit_code = 0 THEN 'completed'
+                                  WHEN h.exit_code IS NOT NULL THEN 'failed'
+                                  ELSE 'unknown' END),
+           h.started_at, h.completed_at, h.exit_code,
+           CASE WHEN h.status IS NULL THEN NULL ELSE h.cached END,
+           NULL, CASE WHEN h.status IS NULL THEN NULL ELSE h.submission_id END, h.run_id
+    FROM job_history h
+    WHERE h.run_id = ?1 AND NOT EXISTS (
+        SELECT 1 FROM jobs live WHERE live.id = h.job_id AND live.run_id = ?1)
+)";
+
 /// Columns every view query selects, in the order [`row_to_view`] expects.
 const VIEW_COLUMNS: &str = "j.id, j.rule_name, COALESCE(j.wildcards, '{}'), j.status,
      j.started_at, j.completed_at, j.exit_code, COALESCE(j.cached, 0),
@@ -400,6 +425,7 @@ fn row_to_view(row: &rusqlite::Row<'_>, now: u64, lease_secs: u64) -> rusqlite::
 /// Where a unit ran, as joined from `dag_submissions` and `job_history`.
 #[derive(Default)]
 struct UnitPlace {
+    cache_hit: Option<bool>,
     executor: Option<String>,
     endpoint: Option<String>,
     submission_id: Option<String>,
@@ -425,6 +451,7 @@ impl UnitPlace {
             .map(|map| map.keys().cloned().collect())
             .unwrap_or_default();
         Ok(Self {
+            cache_hit: row.get(8)?,
             executor,
             endpoint,
             submission_id: row.get(3)?,
@@ -471,15 +498,16 @@ impl StateDb {
         now: u64,
         lease_secs: u64,
     ) -> Result<Vec<JobView>, StateError> {
-        let sql = format!(
-            "SELECT {VIEW_COLUMNS}
-             FROM jobs j LEFT JOIN sessions s ON s.id = j.session_id
-             {}",
-            match run_id {
-                Some(_) => "WHERE j.run_id = ?1",
-                None => "",
-            }
-        );
+        let sql = match run_id {
+            Some(_) => format!(
+                "{RUN_JOBS} SELECT {VIEW_COLUMNS}
+                FROM run_jobs j LEFT JOIN sessions s ON s.id = j.session_id"
+            ),
+            None => format!(
+                "SELECT {VIEW_COLUMNS}
+                FROM jobs j LEFT JOIN sessions s ON s.id = j.session_id"
+            ),
+        };
         let mut stmt = self.conn().prepare(&sql)?;
         let map = |row: &rusqlite::Row<'_>| row_to_view(row, now, lease_secs);
         let rows = match run_id {
@@ -501,14 +529,15 @@ impl StateDb {
         now: u64,
         lease_secs: u64,
     ) -> Result<Vec<UnitView>, StateError> {
-        let mut stmt = self.conn().prepare(
-            "SELECT j.id, d.executor, d.dashboard_address, j.executor_submission_id,
-                    h.executor, h.hostname, h.node, h.output_hashes
-             FROM jobs j
+        let mut stmt = self.conn().prepare(&format!(
+            "{RUN_JOBS}
+             SELECT j.id, d.executor, d.dashboard_address, j.executor_submission_id,
+                    h.executor, h.hostname, h.node, h.output_hashes, j.cached
+             FROM run_jobs j
              LEFT JOIN dag_submissions d ON d.run_id = j.run_id
              LEFT JOIN job_history h ON h.run_id = j.run_id AND h.job_id = j.id
              WHERE j.run_id = ?1",
-        )?;
+        ))?;
         let mut places = std::collections::HashMap::new();
         let rows = stmt.query_map(rusqlite::params![run_id], |row| {
             Ok((row.get::<_, String>(0)?, UnitPlace::from_row(row)?))
@@ -524,6 +553,7 @@ impl StateDb {
                 let place = places.remove(&view.id).unwrap_or_default();
                 UnitView {
                     view,
+                    cache_hit: place.cache_hit,
                     executor: place.executor,
                     endpoint: place.endpoint,
                     submission_id: place.submission_id,
@@ -604,6 +634,126 @@ mod tests {
         SessionLiveness {
             status: status.into(),
             heartbeat_at,
+        }
+    }
+
+    #[test]
+    fn old_run_views_survive_partial_and_full_reregistration() {
+        use crate::db::JobRecord;
+        for moved in [vec!["j"], vec!["j", "k"]] {
+            let tmp = tempfile::NamedTempFile::new().unwrap();
+            let db = StateDb::open(tmp.path()).unwrap();
+            db.begin_run("run-1", None, 2, None).unwrap();
+            let jobs = |run: &str, ids: &[&str]| {
+                ids.iter()
+                    .map(|id| JobRecord {
+                        id: (*id).into(),
+                        rule_name: (*id).into(),
+                        wildcards: "{}".into(),
+                        cache_key: None,
+                        run_id: Some(run.into()),
+                    })
+                    .collect::<Vec<_>>()
+            };
+            db.register_jobs(&jobs("run-1", &["j", "k"])).unwrap();
+            db.skip_job("j").unwrap();
+            db.exclude_job("k").unwrap();
+            db.conn()
+                .execute_batch("UPDATE jobs SET executor_submission_id = 'submission-1';")
+                .unwrap();
+            db.finalize_job_history_with_executors(
+                "run-1",
+                "local",
+                "",
+                &Default::default(),
+                &Default::default(),
+                &Default::default(),
+                &Default::default(),
+                &Default::default(),
+                &[("j".into(), "node-1".into()), ("k".into(), "node-2".into())].into(),
+            )
+            .unwrap();
+            db.begin_run("run-2", None, moved.len(), None).unwrap();
+            db.register_jobs(&jobs("run-2", &moved)).unwrap();
+            db.conn()
+                .execute(
+                    "UPDATE jobs SET status='failed', cached=0, exit_code=7,
+                executor_submission_id='submission-2' WHERE run_id='run-2'",
+                    [],
+                )
+                .unwrap();
+            let units = db.unit_views("run-1", NOW, LEASE).unwrap();
+            assert_eq!(units.len(), 2, "moved {moved:?}");
+            let j = units.iter().find(|u| u.view.id == "j").unwrap();
+            let k = units.iter().find(|u| u.view.id == "k").unwrap();
+            assert_eq!(j.view.effective, EffectiveStatus::Completed);
+            assert!(j.view.cached);
+            assert_eq!(j.cache_hit, Some(true));
+            assert_eq!(j.view.exit_code, Some(0));
+            assert_eq!(j.node.as_deref(), Some("node-1"));
+            assert_eq!(j.submission_id.as_deref(), Some("submission-1"));
+            assert_eq!(k.view.effective, EffectiveStatus::Skipped);
+            assert!(!k.view.cached);
+            assert_eq!(k.cache_hit, Some(false));
+            assert_eq!(k.view.exit_code, None);
+            assert_eq!(k.node.as_deref(), Some("node-2"));
+            assert_eq!(db.job_views(Some("run-1"), NOW, LEASE).unwrap().len(), 2);
+            assert_eq!(
+                db.unit_views("run-2", NOW, LEASE).unwrap().len(),
+                moved.len()
+            );
+            assert_eq!(db.job_views(None, NOW, LEASE).unwrap().len(), 2);
+        }
+    }
+
+    #[test]
+    fn history_preserves_all_terminal_states_and_live_rows_win() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let db = StateDb::open(tmp.path()).unwrap();
+        db.begin_run("run-1", None, 4, None).unwrap();
+        db.conn()
+            .execute_batch(
+                "INSERT INTO jobs (id, rule_name, run_id, status, cached, exit_code)
+            VALUES ('ok', 'r', 'run-1', 'completed', 0, 0),
+                   ('bad', 'r', 'run-1', 'failed', 0, 7),
+                   ('cancelled', 'r', 'run-1', 'cancelled', 0, NULL),
+                   ('skipped', 'r', 'run-1', 'skipped', 0, NULL);",
+            )
+            .unwrap();
+        db.finalize_job_history(
+            "run-1",
+            "local",
+            "",
+            &Default::default(),
+            &Default::default(),
+            &Default::default(),
+        )
+        .unwrap();
+        db.conn()
+            .execute_batch("UPDATE jobs SET status='pending' WHERE id='ok';")
+            .unwrap();
+        let live = db.job_views(Some("run-1"), NOW, LEASE).unwrap();
+        assert_eq!(live.len(), 4);
+        assert_eq!(
+            live.iter().find(|v| v.id == "ok").unwrap().effective,
+            EffectiveStatus::Pending
+        );
+        db.begin_run("run-2", None, 4, None).unwrap();
+        db.conn()
+            .execute_batch("UPDATE jobs SET run_id='run-2';")
+            .unwrap();
+        let units = db.unit_views("run-1", NOW, LEASE).unwrap();
+        assert_eq!(units.len(), 4);
+        for (id, expected, exit) in [
+            ("ok", "completed", Some(0)),
+            ("bad", "failed", Some(7)),
+            ("cancelled", "cancelled", None),
+            ("skipped", "skipped", None),
+        ] {
+            let unit = units.iter().find(|unit| unit.view.id == id).unwrap();
+            assert_eq!(unit.view.effective.as_str(), expected);
+            assert_eq!(unit.view.exit_code, exit);
+            assert_eq!(unit.cache_hit, Some(false));
         }
     }
 

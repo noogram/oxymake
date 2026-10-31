@@ -25,7 +25,7 @@ use rusqlite::Connection;
 use crate::error::StateError;
 
 /// The latest schema version.  Bump this when adding a migration.
-const LATEST_VERSION: u32 = 12;
+const LATEST_VERSION: u32 = 13;
 
 /// Run all pending migrations, bringing the database up to
 /// `LATEST_VERSION`.
@@ -88,6 +88,7 @@ fn migrate_locked(conn: &Connection) -> Result<(), StateError> {
             9 => migrate_v9_to_v10(conn)?,
             10 => migrate_v10_to_v11(conn)?,
             11 => migrate_v11_to_v12(conn)?,
+            12 => migrate_v12_to_v13(conn)?,
             _ => {
                 return Err(StateError::Migration {
                     from: v,
@@ -587,10 +588,67 @@ fn migrate_v11_to_v12(conn: &Connection) -> Result<(), StateError> {
     Ok(())
 }
 
+/// Retain terminal state and submission identity when live jobs move to another run.
+fn migrate_v12_to_v13(conn: &Connection) -> Result<(), StateError> {
+    conn.execute_batch(
+        "SAVEPOINT migration_step;
+         ALTER TABLE job_history ADD COLUMN status TEXT;
+         ALTER TABLE job_history ADD COLUMN cached INTEGER;
+         ALTER TABLE job_history ADD COLUMN submission_id TEXT;
+         DELETE FROM schema_version;
+         INSERT INTO schema_version (version) VALUES (13);
+         RELEASE migration_step;",
+    )
+    .map_err(|e| StateError::Migration {
+        from: 12,
+        to: 13,
+        reason: e.to_string(),
+    })?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use rusqlite::Connection;
+
+    #[test]
+    fn v13_reads_v12_history_with_nullable_observations() {
+        let conn = v9_database();
+        migrate_v9_to_v10(&conn).unwrap();
+        migrate_v10_to_v11(&conn).unwrap();
+        migrate_v11_to_v12(&conn).unwrap();
+        conn.execute_batch("INSERT INTO runs (id, started_at) VALUES ('legacy', 42);
+            INSERT INTO job_history (run_id, job_id, rule_name, exit_code) VALUES
+            ('legacy', 'ok', 'r', 0), ('legacy', 'bad', 'r', 9), ('legacy', 'ambiguous', 'r', NULL);").unwrap();
+        // Reopen a real v12 file through the public API, including migration.
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        conn.execute("VACUUM INTO ?1", [tmp.path().to_str().unwrap()])
+            .unwrap();
+        let db = crate::db::StateDb::open(tmp.path()).unwrap();
+        let units = db.unit_views("legacy", 100, 90).unwrap();
+        assert_eq!(units.len(), 3);
+        for (id, state) in [
+            ("ok", "completed"),
+            ("bad", "failed"),
+            ("ambiguous", "unknown"),
+        ] {
+            let unit = units.iter().find(|unit| unit.view.id == id).unwrap();
+            assert_eq!(unit.view.effective.as_str(), state);
+            assert_eq!(unit.submission_id, None);
+            assert_eq!(unit.cache_hit, None);
+        }
+        assert_eq!(
+            db.effective_job_counts(Some("legacy"), 100, 90)
+                .unwrap()
+                .total(),
+            3
+        );
+        let absent: i64 = db.conn().query_row(
+            "SELECT COUNT(*) FROM job_history WHERE status IS NULL AND cached IS NULL AND submission_id IS NULL",
+            [], |row| row.get(0)).unwrap();
+        assert_eq!(absent, 3);
+    }
 
     #[test]
     fn v12_preserves_legacy_runs_with_empty_metadata() {
