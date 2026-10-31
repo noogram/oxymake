@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Breaking changes
+
+- `ox run` now checks every resolved file output before dry-run reporting,
+  cache restoration and dispatch, for local, Ray and Slurm execution. Outputs
+  must normalize under the project directory or an absolute scalar config
+  value after profiles and `--set`. Ray and Slurm previously accepted outputs
+  outside these roots. To migrate, declare `[config] outdir = "/absolute/dir"`
+  (or pass `--set outdir=/absolute/dir`) and use `{config.outdir}/file`.
+  Absolute outputs inside the project and relative outputs under config roots
+  are accepted. The disk writer under `--memory-budget` uses the same roots
+  and retains its canonical symlink check. Library callers can use the new
+  unstable `ox_core::output_path` validators before cache restoration and
+  dispatch, and `spawn_disk_writer_with_roots` for materialization.
+  `ExecLocalError::OutputPath` replaces `OutputPathEscapesRoot` and carries
+  the shared diagnostic.
+
 ### Changed
 
 - Update indicatif to 0.18 to remove unmaintained `number_prefix`

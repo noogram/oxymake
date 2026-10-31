@@ -538,3 +538,10 @@ callers and legacy database rows default to empty labels.
 `ox_core::job_graph::JobGraph::priority_topological_order` is an **unstable**
 Rust API for priority-aware, insertion-stable topological ordering. Ray's DAG
 driver uses it for submission; existing `topological_order` callers are unchanged.
+
+The output-path policy is unstable: `ox run` validates every resolved file
+output against the project root and absolute scalar configuration roots before
+cache restoration, dry-run reporting or executor dispatch (ADR-021). The Rust
+`ox_core::output_path` module, `spawn_disk_writer_with_roots`, and
+`ExecLocalError::OutputPath` are unstable source-level APIs. Library dispatch
+callers must invoke the shared graph validator themselves.

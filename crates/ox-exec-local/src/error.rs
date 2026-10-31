@@ -30,14 +30,9 @@ pub enum ExecLocalError {
     #[error("unsupported execution block: {0}")]
     UnsupportedExecution(String),
 
-    /// An output path escapes the project root directory (path traversal).
-    #[error("output path escapes project root: {path} resolves outside {root}")]
-    OutputPathEscapesRoot {
-        /// The offending output path.
-        path: String,
-        /// The project root that the path must stay within.
-        root: String,
-    },
+    /// A declared file output is outside every declared root (ADR-021).
+    #[error(transparent)]
+    OutputPath(#[from] ox_core::output_path::OutputPathError),
 
     /// A declared output file was not produced by a successful job.
     #[error("output not produced: {path}")]

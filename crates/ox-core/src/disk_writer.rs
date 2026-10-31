@@ -232,19 +232,36 @@ pub fn spawn_disk_writer(buffer_size: usize) -> (DiskWriterHandle, tokio::task::
     spawn_disk_writer_confined(buffer_size, None)
 }
 
-/// Spawn the background disk-writer task with an optional workspace
-/// confinement root (H13).
+/// Spawn the disk writer confined to an optional project root.
 ///
-/// When `workspace_root` is set, every target path is resolved against it
-/// (relative targets are joined to the root) and must stay inside it:
-/// `../` traversal is rejected lexically before any directory is created,
-/// and symlink escapes are rejected by canonicalizing the parent directory
-/// after creation. Rejected targets count as write failures. Target paths
-/// come from the Oxymakefile, which is untrusted input — a shared workflow
-/// file must not be able to write outside the project workspace.
+/// For workflows with absolute configuration directories, use
+/// [`spawn_disk_writer_with_roots`] to apply the complete ADR-021 root set.
+/// With `None`, writes are unconfined.
 pub fn spawn_disk_writer_confined(
     buffer_size: usize,
     workspace_root: Option<PathBuf>,
+) -> (DiskWriterHandle, tokio::task::JoinHandle<()>) {
+    spawn_disk_writer_impl(buffer_size, workspace_root, Vec::new())
+}
+
+/// Spawn the disk writer with the project's declared output roots (ADR-021).
+///
+/// Relative targets resolve against the absolute `project_root`. Lexical
+/// containment is checked before directory creation. After creation, the
+/// canonical parent must be under a canonical declared root. Roots may be
+/// symlinks or may not yet exist. Refusals count as persistence failures.
+pub fn spawn_disk_writer_with_roots(
+    buffer_size: usize,
+    project_root: PathBuf,
+    trusted_dirs: Vec<PathBuf>,
+) -> (DiskWriterHandle, tokio::task::JoinHandle<()>) {
+    spawn_disk_writer_impl(buffer_size, Some(project_root), trusted_dirs)
+}
+
+fn spawn_disk_writer_impl(
+    buffer_size: usize,
+    workspace_root: Option<PathBuf>,
+    trusted_dirs: Vec<PathBuf>,
 ) -> (DiskWriterHandle, tokio::task::JoinHandle<()>) {
     let (tx, rx) = mpsc::channel(buffer_size);
     let stats = Arc::new(DiskWriterStats::default());
@@ -256,7 +273,13 @@ pub fn spawn_disk_writer_confined(
         pending: pending.clone(),
     };
 
-    let join_handle = tokio::spawn(disk_writer_loop(rx, stats, pending, workspace_root));
+    let join_handle = tokio::spawn(disk_writer_loop(
+        rx,
+        stats,
+        pending,
+        workspace_root,
+        trusted_dirs,
+    ));
 
     (handle, join_handle)
 }
@@ -267,24 +290,13 @@ async fn disk_writer_loop(
     stats: Arc<DiskWriterStats>,
     pending: Arc<PendingWrites>,
     workspace_root: Option<PathBuf>,
+    trusted_dirs: Vec<PathBuf>,
 ) {
-    // Canonicalize the root once so symlink checks compare like with like
-    // (e.g. /tmp vs /private/tmp on macOS).
-    let confinement = match workspace_root {
-        Some(root) => {
-            let canonical = tokio::fs::canonicalize(&root)
-                .await
-                .unwrap_or_else(|_| root.clone());
-            Some((root, canonical))
-        }
-        None => None,
-    };
-
     while let Some(req) = rx.recv().await {
         let outcome = async {
-            let target = match &confinement {
-                Some((root, canonical_root)) => {
-                    match confine_target(root, canonical_root, &req.target_path).await {
+            let target = match &workspace_root {
+                Some(root) => {
+                    match confine_target(root, &trusted_dirs, &req.job_id, &req.target_path).await {
                         Ok(t) => t,
                         Err(e) => {
                             return Err(format!(
@@ -358,55 +370,20 @@ pub async fn flush_disk_writer(
     Ok(())
 }
 
-/// Lexically normalize a path: resolve `.` and `..` components without
-/// touching the filesystem. `..` at the root is preserved (and will fail
-/// the containment check).
-fn lexical_normalize(path: &std::path::Path) -> PathBuf {
-    use std::path::Component;
-    let mut out = PathBuf::new();
-    for comp in path.components() {
-        match comp {
-            Component::CurDir => {}
-            Component::ParentDir => {
-                if !out.pop() {
-                    out.push("..");
-                }
-            }
-            other => out.push(other.as_os_str()),
-        }
-    }
-    out
-}
-
-/// Resolve and validate a write target against the workspace root (H13).
-///
-/// Two-layer defense:
-/// 1. **Lexical**: the target (joined to the root if relative) is normalized
-///    without filesystem access and must start with the root — this rejects
-///    `../` traversal *before* any directory is created.
-/// 2. **Physical**: after creating the parent directory, its canonicalized
-///    path must start with the canonicalized root — this rejects escapes
-///    through symlinks placed inside the workspace.
+/// Apply lexical containment, then require the canonical parent to be under
+/// the canonical form of at least one declared root.
 async fn confine_target(
     root: &std::path::Path,
-    canonical_root: &std::path::Path,
+    trusted_dirs: &[PathBuf],
+    job: &JobId,
     target: &std::path::Path,
 ) -> Result<PathBuf, OxError> {
-    let abs = if target.is_absolute() {
-        target.to_path_buf()
-    } else {
-        root.join(target)
-    };
-    let norm = lexical_normalize(&abs);
-    if !(norm.starts_with(root) || norm.starts_with(canonical_root)) {
-        return Err(OxError::Exec(ExecError::Executor {
-            message: format!(
-                "target {} escapes the workspace root {}",
-                target.display(),
-                root.display()
-            ),
-        }));
-    }
+    let norm =
+        crate::output_path::validate_output_path(job, target, root, trusted_dirs).map_err(|e| {
+            OxError::Exec(ExecError::Executor {
+                message: e.to_string(),
+            })
+        })?;
 
     // Create the parent now so it can be canonicalized for the symlink check.
     if let Some(parent) = norm.parent() {
@@ -428,10 +405,28 @@ async fn confine_target(
                 ),
             })
         })?;
-        if !canon_parent.starts_with(canonical_root) {
+        // Resolve roots after creating the parent: a declared directory may
+        // not have existed when the writer started. Canonicalize symlink roots
+        // themselves as well as the target parent.
+        let mut contained = false;
+        for declared_root in std::iter::once(root).chain(
+            trusted_dirs
+                .iter()
+                .map(PathBuf::as_path)
+                .filter(|p| p.is_absolute()),
+        ) {
+            let normalized_root = crate::output_path::lexical_normalize(declared_root);
+            if let Ok(canonical_root) = tokio::fs::canonicalize(normalized_root).await {
+                if canon_parent.starts_with(canonical_root) {
+                    contained = true;
+                    break;
+                }
+            }
+        }
+        if !contained {
             return Err(OxError::Exec(ExecError::Executor {
                 message: format!(
-                    "target {} resolves through a symlink outside the workspace root {}",
+                    "target {} resolves through a symlink outside every declared root (project root {})",
                     target.display(),
                     root.display()
                 ),
@@ -664,8 +659,7 @@ mod tests {
     }
 
     /// H13: a target that lexically escapes the workspace root (`../`)
-    /// must be rejected — an Oxymakefile is untrusted input and must not
-    /// write outside the workspace.
+    /// must be rejected before the writer creates directories.
     #[tokio::test]
     async fn traversal_target_outside_root_is_rejected() {
         let outer = tempfile::tempdir().unwrap();
@@ -1006,5 +1000,80 @@ mod tests {
             .await;
 
         assert!(result.is_err());
+    }
+    #[tokio::test]
+    async fn declared_config_roots_accept_absolute_and_relative_outputs() {
+        let outer = tempfile::tempdir().unwrap();
+        let root = outer.path().join("project");
+        let trusted = outer.path().join("results");
+        std::fs::create_dir_all(&root).unwrap();
+        let (handle, join) = spawn_disk_writer_with_roots(16, root, vec![trusted.clone()]);
+        for target in [
+            trusted.join("new/absolute.dat"),
+            PathBuf::from("../results/new/relative.dat"),
+        ] {
+            handle
+                .write(DiskWriteRequest {
+                    job_id: JobId::from("config-output"),
+                    target_path: target,
+                    data: Arc::from(b"data" as &[u8]),
+                })
+                .await
+                .unwrap();
+        }
+        flush_disk_writer(handle, join).await.unwrap();
+        for name in ["absolute.dat", "relative.dat"] {
+            assert_eq!(
+                std::fs::read(trusted.join("new").join(name)).unwrap(),
+                b"data"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn symlink_declared_root_uses_canonical_root_set() {
+        let outer = tempfile::tempdir().unwrap();
+        let root = outer.path().join("project");
+        let physical = outer.path().join("physical");
+        let trusted = outer.path().join("declared");
+        let outside = outer.path().join("outside");
+        for dir in [&root, &physical, &outside] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        std::os::unix::fs::symlink(&physical, &trusted).unwrap();
+        std::os::unix::fs::symlink(&outside, trusted.join("escape")).unwrap();
+        std::os::unix::fs::symlink(&physical, root.join("allowed")).unwrap();
+        let (handle, join) = spawn_disk_writer_with_roots(16, root.clone(), vec![trusted.clone()]);
+        for target in [
+            trusted.join("ok.dat"),
+            root.join("allowed/from-project.dat"),
+        ] {
+            handle
+                .write(DiskWriteRequest {
+                    job_id: JobId::from("allowed"),
+                    target_path: target,
+                    data: Arc::from(b"data" as &[u8]),
+                })
+                .await
+                .unwrap();
+        }
+        flush_disk_writer(handle, join).await.unwrap();
+        assert_eq!(std::fs::read(physical.join("ok.dat")).unwrap(), b"data");
+        assert_eq!(
+            std::fs::read(physical.join("from-project.dat")).unwrap(),
+            b"data"
+        );
+        let (handle, join) = spawn_disk_writer_with_roots(16, root, vec![trusted.clone()]);
+        handle
+            .write(DiskWriteRequest {
+                job_id: JobId::from("refused"),
+                target_path: trusted.join("escape/out.dat"),
+                data: Arc::from(b"data" as &[u8]),
+            })
+            .await
+            .unwrap();
+        assert!(flush_disk_writer(handle, join).await.is_err());
+        assert!(!outside.join("out.dat").exists());
     }
 }
