@@ -115,6 +115,7 @@ fn run_driver(project: &Path, run_dir: &Path, kill_after: Option<u32>) {
 async fn follow_run(
     project: &Path,
     remote: &Path,
+    targets: &[&str],
     kill_after: Option<u32>,
     terminal: &'static str,
 ) -> std::process::Output {
@@ -130,7 +131,7 @@ async fn follow_run(
     let child = std::process::Command::new(assert_cmd::cargo::cargo_bin("ox"))
         .current_dir(project)
         .arg("run")
-        .args(TARGETS)
+        .args(targets)
         .args(["--executor", "ray", "--ray-allow-pending", "--follow"])
         .arg("--cache-remote")
         .arg(remote)
@@ -198,7 +199,7 @@ async fn killed_ray_driver_leaves_its_completed_units_cached_locally_and_remotel
     std::fs::write(project.path().join("Oxymakefile.toml"), WORKFLOW).unwrap();
 
     // The driver is killed after two of the four units.
-    let first = follow_run(project.path(), remote.path(), Some(2), "FAILED").await;
+    let first = follow_run(project.path(), remote.path(), &TARGETS, Some(2), "FAILED").await;
     let completed = ran(project.path());
     assert_eq!(
         completed.len(),
@@ -220,7 +221,7 @@ async fn killed_ray_driver_leaves_its_completed_units_cached_locally_and_remotel
     );
 
     // Resubmission: the two completed units are cache hits, the other two run.
-    let second = follow_run(project.path(), remote.path(), None, "SUCCEEDED").await;
+    let second = follow_run(project.path(), remote.path(), &TARGETS, None, "SUCCEEDED").await;
     let stderr = String::from_utf8_lossy(&second.stderr);
     assert!(second.status.success(), "{stderr}");
     assert!(
@@ -242,4 +243,128 @@ async fn killed_ray_driver_leaves_its_completed_units_cached_locally_and_remotel
             content
         );
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn absolute_output_outside_project_is_cached_and_remote_blobs_need_local_metadata() {
+    let project = tempfile::tempdir().unwrap();
+    let outputs = tempfile::tempdir().unwrap();
+    let remote = tempfile::tempdir().unwrap();
+    let output = outputs.path().join("result.txt");
+    let target = output.to_str().unwrap();
+    let workflow = format!(
+        r#"ox_version = "0.1"
+[config]
+results = "{}"
+[rule.produce]
+output = ["{{config.results}}/result.txt"]
+shell = "echo ran >> ran.log && echo result > {{output}}"
+"#,
+        outputs.path().display()
+    );
+    std::fs::write(project.path().join("Oxymakefile.toml"), workflow).unwrap();
+
+    let first = follow_run(project.path(), remote.path(), &[target], None, "SUCCEEDED").await;
+    let stderr = String::from_utf8_lossy(&first.stderr);
+    assert!(first.status.success(), "{stderr}");
+    assert_eq!(std::fs::read(&output).unwrap(), b"result\n");
+    assert_eq!(
+        remote_blobs(remote.path()),
+        BTreeSet::from([b"result\n".to_vec()]),
+        "{stderr}"
+    );
+    assert_eq!(ran(project.path()).len(), 1);
+    let history = std::process::Command::new(assert_cmd::cargo::cargo_bin("ox"))
+        .current_dir(project.path())
+        .args(["history", "--json"])
+        .output()
+        .unwrap();
+    assert!(
+        history.status.success(),
+        "{}",
+        String::from_utf8_lossy(&history.stderr)
+    );
+    let rows: Vec<serde_json::Value> = String::from_utf8(history.stdout)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    let details = std::process::Command::new(assert_cmd::cargo::cargo_bin("ox"))
+        .current_dir(project.path())
+        .args([
+            "history",
+            "--run-id",
+            rows[0]["run_id"].as_str().unwrap(),
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        details.status.success(),
+        "{}",
+        String::from_utf8_lossy(&details.stderr)
+    );
+    let rows: Vec<serde_json::Value> = String::from_utf8(details.stdout)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(rows[0]["job_id"], "produce", "{rows:?}");
+    assert_eq!(rows[0]["exit_code"], 0, "{rows:?}");
+    assert!(rows[0]["wall_time_ms"].is_number(), "{rows:?}");
+
+    // Same local metadata: skip the unit without submitting a driver.
+    let second = std::process::Command::new(assert_cmd::cargo::cargo_bin("ox"))
+        .current_dir(project.path())
+        .args([
+            "run",
+            target,
+            "--executor",
+            "ray",
+            "--follow",
+            "--cache-remote",
+        ])
+        .arg(remote.path())
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&second.stderr);
+    assert!(second.status.success(), "{stderr}");
+    let events: Vec<serde_json::Value> = std::fs::read_dir(project.path().join(".oxymake/events"))
+        .unwrap()
+        .flat_map(|entry| {
+            std::fs::read_to_string(entry.unwrap().path())
+                .unwrap()
+                .lines()
+                .map(|line| serde_json::from_str(line).unwrap())
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    assert!(
+        events.iter().any(|event| {
+            event["event"] == "job_skipped"
+                && event["job_id"] == "produce"
+                && event["reason"] == "cached"
+        }),
+        "{events:?}"
+    );
+    assert_eq!(ran(project.path()).len(), 1, "cached unit ran again");
+
+    // Fresh local state with the same output and remote bytes still executes:
+    // the remote store carries blobs, not the computation's cache entry.
+    let old_state = tempfile::tempdir().unwrap();
+    std::fs::rename(
+        project.path().join(".oxymake"),
+        old_state.path().join("state"),
+    )
+    .unwrap();
+    let third = follow_run(project.path(), remote.path(), &[target], None, "SUCCEEDED").await;
+    let stderr = String::from_utf8_lossy(&third.stderr);
+    assert!(third.status.success(), "{stderr}");
+    assert!(
+        stderr.contains("DAG submitted to Ray: 1 active jobs (0 cached, 1 total"),
+        "{stderr}"
+    );
+    assert_eq!(ran(project.path()).len(), 2);
 }
