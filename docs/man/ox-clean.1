@@ -4,7 +4,7 @@
 .SH NAME
 ox\-clean \- Clean outputs and cache
 .SH SYNOPSIS
-\fBox\-clean\fR [\fB\-\-dry\-run\fR] [\fB\-\-cache\-only\fR] [\fB\-\-state\-only\fR] [\fB\-\-state\fR] [\fB\-\-all\fR] [\fB\-y\fR|\fB\-\-yes\fR] [\fB\-\-force\fR] [\fB\-\-json\fR] [\fB\-f\fR|\fB\-\-file\fR] [\fB\-h\fR|\fB\-\-help\fR] 
+\fBox\-clean\fR [\fB\-\-dry\-run\fR] [\fB\-\-cache\-only\fR] [\fB\-\-state\-only\fR] [\fB\-\-events\fR] [\fB\-\-state\fR] [\fB\-\-all\fR] [\fB\-y\fR|\fB\-\-yes\fR] [\fB\-\-force\fR] [\fB\-\-json\fR] [\fB\-f\fR|\fB\-\-file\fR] [\fB\-h\fR|\fB\-\-help\fR] 
 .SH DESCRIPTION
 Clean outputs and cache
 .SH OPTIONS
@@ -18,6 +18,9 @@ Only clean cache entries
 \fB\-\-state\-only\fR
 Only clean state database
 .TP
+\fB\-\-events\fR
+Remove retained NDJSON event logs and temporaries older than 300 seconds
+.TP
 \fB\-\-state\fR
 Delete the state database file entirely (recovery escape hatch for a corrupt state.db — it is a regenerable cache)
 .TP
@@ -28,7 +31,7 @@ Also remove the audit trail (runs and job history)
 Skip confirmation prompt
 .TP
 \fB\-\-force\fR
-Clear execution state even if live (non\-stale) sessions exist
+Clean execution state or event logs even if live sessions exist
 .TP
 \fB\-\-json\fR
 Output JSON

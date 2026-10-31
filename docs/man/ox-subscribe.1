@@ -13,7 +13,7 @@ Subscribe to the event stream for an active session
 Session (run) ID to subscribe to. If omitted, subscribes to the most recent active session
 .TP
 \fB\-\-event\-type\fR \fI<TYPE>\fR
-Filter to specific event types (repeatable). If omitted, all events are streamed. Valid types: run_started, job_queued, job_started, job_completed, job_failed, job_skipped, gate_reached, gate_approved, run_completed, run_failed
+Filter to specific event types (repeatable). If omitted, all events are streamed. Valid types: run_started, job_planned, job_queued, job_started, job_completed, job_failed, job_skipped, gate_reached, gate_approved, run_completed, run_failed
 .TP
 \fB\-\-where\fR \fI<KEY=VALUE>\fR
 Filter events by tag values on the originating job (repeatable, KEY=VALUE format, AND logic)

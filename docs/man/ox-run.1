@@ -1,16 +1,16 @@
 .ie \n(.g .ds Aq \(aq
 .el .ds Aq '
-.TH ox-run 1  "ox-run "
+.TH ox-run 1  "ox-run " 
 .SH NAME
 ox\-run \- Execute a workflow, ensuring requested outputs exist
 .SH SYNOPSIS
-\fBox\-run\fR [\fB\-j\fR|\fB\-\-jobs\fR] [\fB\-\-resource\-budget\fR] [\fB\-\-rule\fR] [\fB\-\-json\fR] [\fB\-\-report\-json\fR] [\fB\-n\fR|\fB\-\-dry\-run\fR] [\fB\-k\fR|\fB\-\-keep\-going\fR] [\fB\-\-note\fR] [\fB\-\-metadata\fR] [\fB\-\-set\fR] [\fB\-\-executor\fR] [\fB\-\-partition\fR] [\fB\-\-account\fR] [\fB\-\-qos\fR] [\fB\-\-slurm\-api\fR] [\fB\-\-ray\-address\fR] [\fB\-\-ray\-python\fR] [\fB\-\-ray\-allow\-pending\fR] [\fB\-\-follow\fR] [\fB\-f\fR|\fB\-\-file\fR] [\fB\-\-no\-cache\fR] [\fB\-\-cache\-validation\fR] [\fB\-\-cache\-remote\fR] [\fB\-v\fR|\fB\-\-verbose\fR]... [\fB\-\-until\fR] [\fB\-\-omit\-from\fR] [\fB\-\-touch\fR] [\fB\-\-forcerun\fR] [\fB\-\-profile\fR] [\fB\-\-timings\fR] [\fB\-\-open\-dashboard\fR] [\fB\-\-memory\-budget\fR] [\fB\-\-warm\-workers\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fITARGETS\fR]
+\fBox\-run\fR [\fB\-j\fR|\fB\-\-jobs\fR] [\fB\-\-resource\-budget\fR] [\fB\-\-rule\fR] [\fB\-\-json\fR] [\fB\-\-report\-json\fR] [\fB\-n\fR|\fB\-\-dry\-run\fR] [\fB\-k\fR|\fB\-\-keep\-going\fR] [\fB\-\-note\fR] [\fB\-\-metadata\fR] [\fB\-\-set\fR] [\fB\-\-executor\fR] [\fB\-\-partition\fR] [\fB\-\-account\fR] [\fB\-\-qos\fR] [\fB\-\-slurm\-api\fR] [\fB\-\-ray\-address\fR] [\fB\-\-ray\-python\fR] [\fB\-\-ray\-allow\-pending\fR] [\fB\-\-follow\fR] [\fB\-f\fR|\fB\-\-file\fR] [\fB\-\-no\-cache\fR] [\fB\-\-cache\-validation\fR] [\fB\-\-cache\-remote\fR] [\fB\-v\fR|\fB\-\-verbose\fR]... [\fB\-\-until\fR] [\fB\-\-omit\-from\fR] [\fB\-\-touch\fR] [\fB\-\-forcerun\fR] [\fB\-\-profile\fR] [\fB\-\-timings\fR] [\fB\-\-open\-dashboard\fR] [\fB\-\-memory\-budget\fR] [\fB\-\-warm\-workers\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fITARGETS\fR] 
 .SH DESCRIPTION
 Execute a workflow, ensuring requested outputs exist
 .PP
-OxyMake writes all outputs atomically (temp\-then\-rename) so a crash never leaves partial files. Cache keys include content hashes of inputs.
+Commands write directly to the declared output paths. After a successful exit OxyMake verifies the outputs, then stages and commits them with renames; after a failure it removes them according to `clean_outputs`. A hard kill (SIGKILL, power loss) skips this cleanup and can leave a partial file at an output path. The default cache validation modes never accept such a file as a valid output; `\-\-cache\-validation=mtime` can. Cache keys include content hashes of inputs.
 .PP
-Scripts are responsible for domain validation: if a script exits 0, OxyMake trusts the outputs are valid and caches them. See docs/design/output\-integrity.md for the full contract.
+Scripts are responsible for domain validation: if a script exits 0, OxyMake trusts the outputs are valid and caches them. See docs/design/output\-integrity.md for the full contract and docs/book/src/reference/format.md (Output cleanup) for the policies.
 .SH OPTIONS
 .TP
 \fB\-j\fR, \fB\-\-jobs\fR \fI<JOBS>\fR [default: 1]
@@ -89,7 +89,7 @@ Disable the content\-addressable cache (re\-execute everything)
 \fB\-\-cache\-validation\fR \fI<STRATEGY>\fR
 Cache validation strategy: mtime, mtime+hash (default), or hash
 
-`mtime` checks timestamps only and never verifies content — opt\-in only, avoid on shared caches. `mtime+hash` re\-hashes a file only when its timestamp or size changed. `hash` always verifies content.
+`mtime` checks timestamps only and never verifies content — opt\-in only, avoid on shared caches. It also accepts a partial file left at an output path by a hard kill, if the file is newer than the inputs. `mtime+hash` re\-hashes a file only when its timestamp or size changed. `hash` always verifies content.
 
 Resolution order (highest wins): this flag, the OX_CACHE_VALIDATION environment variable, `cache_validation` under `[config]` in the Oxymakefile, `cache_validation` in `~/.config/oxymake/config.toml` (or `$XDG_CONFIG_HOME/oxymake/config.toml`), then the built\-in default `mtime+hash`.
 .TP
