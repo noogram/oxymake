@@ -179,12 +179,9 @@ pub struct ExecContext {
     /// executor, which is required for the content-addressable cache to
     /// record and match outputs correctly.
     pub project_dir: std::path::PathBuf,
-    /// Trusted external directories from `{config.*}` substitution.
-    ///
-    /// Absolute output paths that fall under one of these directories are
-    /// allowed by the path-traversal check in `prepare_workspace`. Config
-    /// values are user-declared and trusted.
-    #[allow(clippy::doc_markdown)]
+    /// Additional declared roots: all absolute scalar config values after
+    /// profiles and overrides. Relative and absolute file outputs are allowed
+    /// under these roots or `project_dir` (ADR-021).
     pub trusted_dirs: Vec<std::path::PathBuf>,
     /// In-memory input data from upstream jobs (Stage 2).
     ///
@@ -205,6 +202,10 @@ pub struct ExecContext {
 ///
 /// Every executor implementation handles the full lifecycle of a remote
 /// or local job: prepare workspace, execute, finalize, cancel.
+///
+/// Callers that dispatch jobs must first validate the complete resolved graph
+/// with [`crate::output_path::validate_output_paths`], before cache restoration
+/// or any output-file action (ADR-021).
 ///
 /// # Implementors
 ///

@@ -15,7 +15,7 @@ use ox_cache::{
 };
 use ox_cache_remote::{DirectoryCache, RemoteCache};
 use ox_core::dag::RuleGraph;
-use ox_core::disk_writer::spawn_disk_writer_confined;
+use ox_core::disk_writer::spawn_disk_writer_with_roots;
 use ox_core::event::EventBus;
 use ox_core::hashing::{hash_kv_map, update_field, update_opt_field};
 use ox_core::job_graph::JobGraph;
@@ -1416,6 +1416,8 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
 
     // Build the JobGraph.
     let mut job_graph = JobGraph::build(resolve_result.jobs).context("failed to build JobGraph")?;
+    let project_dir = std::env::current_dir().context("failed to determine project directory")?;
+    ox_core::output_path::validate_output_paths(&job_graph, &project_dir, &trusted_dirs)?;
     // Attach `[gate.<name>]` nodes: every job of a rule listed in a gate's
     // `before` is blocked until the gate is approved (issue #2).
     let gated_jobs = attach_gates(&mut job_graph, &workflow.gates);
@@ -1958,7 +1960,6 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
     };
 
     let event_bus = EventBus::new();
-    let project_dir = std::env::current_dir().context("failed to determine project directory")?;
 
     let ctx = ExecContext {
         global_job_limit: args.jobs,
@@ -2451,10 +2452,14 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
         // Spawn the async disk writer when a memory budget is active.
         // The writer persists in-memory outputs to disk in the background,
         // ensuring cache correctness without blocking the critical path.
-        // Targets are confined to the project workspace (H13): an
-        // Oxymakefile is untrusted input and must not write outside it.
+        // Apply all declared roots and retain the canonical parent check
+        // as runtime defence in depth (ADR-021).
         let disk_writer_state = if memory_budget_bytes > 0 {
-            let (handle, join) = spawn_disk_writer_confined(128, Some(ctx.project_dir.clone()));
+            let (handle, join) = spawn_disk_writer_with_roots(
+                128,
+                ctx.project_dir.clone(),
+                ctx.trusted_dirs.clone(),
+            );
             Some((handle, join))
         } else {
             None

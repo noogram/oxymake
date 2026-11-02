@@ -390,8 +390,7 @@ async fn prepare_workspace_rejects_path_traversal() {
 #[tokio::test]
 #[serial]
 async fn prepare_workspace_rejects_absolute_output_path() {
-    // An absolute output path should also be rejected — outputs must be
-    // relative to the workspace.
+    // An absolute output outside every declared root must be rejected.
     let exec = LocalExecutor::new();
     let tmp = tempfile::tempdir().unwrap();
     let ctx = test_ctx(tmp.path());
@@ -1785,4 +1784,47 @@ def sleeping(seconds):
     );
 
     pool.shutdown().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn prepare_workspace_accepts_absolute_project_output() {
+    let root = std::env::current_dir().unwrap();
+    let tmp = tempfile::tempdir_in(&root).unwrap();
+    let ctx = test_ctx(tmp.path());
+    let exec = LocalExecutor::new();
+    let mut job = shell_job("absolute-project", "true");
+    job.outputs = vec![ResolvedOutput {
+        reference: OutputRef::File(tmp.path().join("nested/result.txt")),
+        name: None,
+        format: None,
+        lifecycle: OutputLifecycle::Permanent,
+        materialize: MaterializePolicy::Always,
+    }];
+    let result = exec.prepare_workspace(&job, &ctx).await;
+    assert!(result.is_ok(), "{result:?}");
+    assert!(tmp.path().join("nested").is_dir());
+}
+
+#[tokio::test]
+#[serial]
+async fn prepare_workspace_accepts_relative_output_under_config_root() {
+    let root = std::env::current_dir().unwrap();
+    let trusted = tempfile::tempdir_in(root.parent().unwrap()).unwrap();
+    let relative = std::path::PathBuf::from("..")
+        .join(trusted.path().file_name().unwrap())
+        .join("nested/result.txt");
+    let ctx = test_ctx_with_trusted(trusted.path(), vec![trusted.path().to_path_buf()]);
+    let exec = LocalExecutor::new();
+    let mut job = shell_job("relative-config", "true");
+    job.outputs = vec![ResolvedOutput {
+        reference: OutputRef::File(relative),
+        name: None,
+        format: None,
+        lifecycle: OutputLifecycle::Permanent,
+        materialize: MaterializePolicy::Always,
+    }];
+    let result = exec.prepare_workspace(&job, &ctx).await;
+    assert!(result.is_ok(), "{result:?}");
+    assert!(trusted.path().join("nested").is_dir());
 }

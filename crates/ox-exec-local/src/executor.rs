@@ -169,24 +169,6 @@ impl Default for LocalExecutor {
     }
 }
 
-/// Lexically normalize a path by resolving `.` and `..` components without
-/// touching the filesystem.  This is needed because the target directory may
-/// not exist yet, so `std::fs::canonicalize` would fail.
-fn normalize_path(path: &std::path::Path) -> std::path::PathBuf {
-    use std::path::Component;
-    let mut out = std::path::PathBuf::new();
-    for component in path.components() {
-        match component {
-            Component::ParentDir => {
-                out.pop();
-            }
-            Component::CurDir => {}
-            c => out.push(c),
-        }
-    }
-    out
-}
-
 /// Minimally escape a string for safe embedding in a shell single-quote context.
 fn shell_escape(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
@@ -778,36 +760,12 @@ impl Executor for LocalExecutor {
         // Create output directories before execution.
         for output in &job.outputs {
             if let OutputRef::File(p) = &output.reference {
-                let normalized = if p.is_absolute() {
-                    // Absolute paths are allowed only if they fall under a
-                    // trusted config directory (e.g. {config.results_dir}).
-                    let norm = normalize_path(p);
-                    let trusted = ctx.trusted_dirs.iter().any(|dir| {
-                        let dir_norm = normalize_path(dir);
-                        norm.starts_with(&dir_norm)
-                    });
-                    if !trusted {
-                        return Err(ExecLocalError::OutputPathEscapesRoot {
-                            path: p.display().to_string(),
-                            root: work_dir.display().to_string(),
-                        });
-                    }
-                    norm
-                } else {
-                    // Validate that the joined path stays within the work
-                    // directory by normalizing ".." components lexically (the
-                    // directory may not exist yet, so canonicalize() would
-                    // fail).
-                    let joined = work_dir.join(p);
-                    let norm = normalize_path(&joined);
-                    if !norm.starts_with(&work_dir) {
-                        return Err(ExecLocalError::OutputPathEscapesRoot {
-                            path: p.display().to_string(),
-                            root: work_dir.display().to_string(),
-                        });
-                    }
-                    norm
-                };
+                let normalized = ox_core::output_path::validate_output_path(
+                    &job.id,
+                    p,
+                    &work_dir,
+                    &ctx.trusted_dirs,
+                )?;
 
                 if let Some(parent) = normalized.parent() {
                     if !parent.as_os_str().is_empty() {
@@ -2183,38 +2141,6 @@ mod tests {
         let _ws = result.unwrap();
         assert!(!tmp.exists(), "stale .oxytmp should be removed");
         assert!(!out_abs.exists(), "stale output should be removed");
-    }
-
-    // -- Path handling tests (ox-58w3) ----------------------------------------
-
-    #[test]
-    fn normalize_path_resolves_parent_components() {
-        let p = std::path::Path::new("/a/b/../c/./d");
-        assert_eq!(normalize_path(p), PathBuf::from("/a/c/d"));
-    }
-
-    #[test]
-    fn normalize_path_absolute_trailing_slash() {
-        let p = std::path::Path::new("/a/b/c/");
-        assert_eq!(normalize_path(p), PathBuf::from("/a/b/c"));
-    }
-
-    #[test]
-    fn normalize_path_relative_dotdot() {
-        let p = std::path::Path::new("a/b/../../c");
-        assert_eq!(normalize_path(p), PathBuf::from("c"));
-    }
-
-    #[test]
-    fn normalize_path_preserves_unicode() {
-        let p = std::path::Path::new("/données/résultats/../output");
-        assert_eq!(normalize_path(p), PathBuf::from("/données/output"));
-    }
-
-    #[test]
-    fn normalize_path_preserves_spaces() {
-        let p = std::path::Path::new("/my project/sub dir/../out put");
-        assert_eq!(normalize_path(p), PathBuf::from("/my project/out put"));
     }
 
     #[test]

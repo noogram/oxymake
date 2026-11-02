@@ -42,7 +42,45 @@ chromosomes = ["chr1", "chr2", "chr3"]
 models = ["linear", "ridge", "lasso"]
 ```
 
-Config values are arrays of strings. They drive wildcard expansion in rules.
+Array config values drive wildcard expansion. Scalar values can be used as
+`{config.NAME}` in paths and commands. Profiles and `--set NAME=value` override
+configuration before paths are resolved.
+
+### Declared output roots
+
+For every executor, each declared file output must resolve under the project
+root (the Oxymakefile's directory) or an absolute scalar value of the resolved
+configuration. Relative paths are joined to the project root, then `.` and `..`
+are removed lexically. Absolute paths inside the project are accepted too;
+the path and directory need not exist. Relative paths that normalize under an
+absolute config directory are also accepted.
+
+To write outside the project, declare the directory explicitly:
+
+```toml
+[config]
+outdir = "/absolute/results"
+
+[rule.summary]
+output = ["{config.outdir}/summary.txt"]
+shell = "summarize > {output}"
+```
+
+You can override this root with `ox run --set outdir=/another/results`.
+Every absolute scalar config value declares a root, including values used for
+other purposes; `/` permits all absolute paths. No extra field is required.
+
+`ox run` checks the entire resolved job graph before dry-run reporting, cache
+restoration, selection with `--until` or `--omit-from`, and local, Ray or Slurm
+dispatch. A refusal exits 1 and names the job, declared and normalized paths,
+project root, and config remedy. Library callers that dispatch jobs themselves
+must call `ox_core::output_path::validate_output_paths` first.
+
+This lexical check catches declaration mistakes; it does not sandbox executable
+workflow commands. With `--memory-budget`, the disk writer additionally rejects
+a target whose canonical parent is outside every canonical declared root.
+Declared roots may themselves be symlinks. Without disk-writer materialization,
+a symlink under a declared root can still lead outside these roots.
 
 ## Rule Definitions
 

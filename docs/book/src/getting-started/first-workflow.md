@@ -247,6 +247,26 @@ Completed: 2 succeeded, 0 failed, 2 skipped, 0 cancelled (0.4s)
 Only the new student was computed. Alice and Bob's stats were cached
 (reported as `skipped`).
 
+## Write results outside the project
+
+Declare an absolute results directory in `[config]`, then refer to it in the
+output pattern:
+
+```toml
+[config]
+outdir = "/absolute/results"
+
+[rule.report]
+output = ["{config.outdir}/report.txt"]
+shell = "echo complete > {output}"
+```
+
+Use `ox run --set outdir=/another/results` to choose a different directory.
+Local, Ray and Slurm apply the same rule before starting any work, including
+under `--dry-run`. A path outside the project and every absolute config root
+is refused. See [declared output roots](../reference/format.md#declared-output-roots)
+for normalization and symlink behavior.
+
 ## What You Learned
 
 1. **Rules declare intent** -- input/output patterns with wildcards

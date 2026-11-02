@@ -128,6 +128,7 @@ pub mod hashing;
 pub mod job_graph;
 pub mod memory_map;
 pub mod model;
+pub mod output_path;
 pub mod resolver;
 pub mod resource;
 pub mod scheduler;
