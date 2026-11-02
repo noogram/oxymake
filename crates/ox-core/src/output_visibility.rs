@@ -2,8 +2,9 @@
 //!
 //! On an NFS client, a failed lookup of a path is cached: after a `stat` that
 //! found nothing, further `stat` calls on the same path keep failing until
-//! the directory's attribute cache expires (`acdirmin`, 30 s by default on a
-//! Linux NFSv4 client), even after another host has created the file. A
+//! the directory's attribute cache expires (between `acdirmin` and
+//! `acdirmax`, 30 s and 60 s by default on a Linux NFSv4 client), even after
+//! another host has created the file. A
 //! `stat` of the parent directory does not help. Listing the parent directory
 //! does: it revalidates the directory, and the file becomes visible at once.
 //!

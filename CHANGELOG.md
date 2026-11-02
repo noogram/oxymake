@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-11-02
+
 ### Breaking changes
 
 - `ox run` now checks every resolved file output before dry-run reporting,
@@ -34,8 +36,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - A completed task whose output was written on another host is cached again
   when the output is not yet visible locally. On an NFS client the absence of
-  a path stays cached for up to the directory attribute cache time (30 s by
-  default on Linux), so Ray tasks shorter than that under `--follow` created
+  a path stays cached for up to the directory attribute cache time (30 to
+  60 s by default on Linux), so Ray tasks shorter than that under `--follow` created
   neither a cache entry nor a `--cache-remote` blob. The cache check and the
   recording of a completed job now read an output's parent directory before
   reporting it missing, and recording waits up to 5 s for a missing output.

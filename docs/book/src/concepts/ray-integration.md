@@ -403,11 +403,13 @@ An output written on a worker node may not yet be visible on the host that
 runs `ox run --follow`. A Linux NFS client caches the absence of a path: once
 a lookup has found nothing, as the cache check at planning does for every
 output, later `stat` calls keep failing until the directory's attribute cache
-expires (`acdirmin`, 30 s by default), even after the file exists on the
-server. In a measurement between two hosts, a new file stayed invisible to
-repeated `stat` calls for 26 s; reading its parent directory before each
-`stat` made it visible within 0.04 s, and a `stat` of the parent directory did
-not help. Without a countermeasure, tasks shorter than that delay were never
+expires, even after the file exists on the server. That timeout grows with
+the time since the directory last changed, from `acdirmin` to `acdirmax` (30 s
+and 60 s by default). In measurements between two hosts, a new file stayed
+invisible to repeated `stat` calls for 26 s, and for more than 45 s in a
+directory left unchanged for a minute; reading its parent directory, even a
+single entry, before each `stat` made it visible within 0.04 s, and a `stat`
+of the parent directory did not help. Without a countermeasure, tasks shorter than that delay were never
 cached. OxyMake therefore reads an output's parent directory before reporting
 it missing, and waits up to 5 s for an output of a completed task that is
 still missing. An output that does not appear in that time is not cached, and
