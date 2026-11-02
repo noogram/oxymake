@@ -16,6 +16,7 @@ use rusqlite::{Connection, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
 
 use ox_core::model::{ContentHash, PlatformScope};
+use ox_core::output_visibility::output_exists;
 
 use crate::error::CacheError;
 use crate::hash;
@@ -351,7 +352,7 @@ impl CacheStore {
                 None => return Ok(false),
             };
 
-            if !path.exists() {
+            if !output_exists(path) {
                 return Ok(false);
             }
 
@@ -441,7 +442,7 @@ impl CacheStore {
                 None => return Ok(CacheHitStatus::Miss),
             };
 
-            if !path.exists() {
+            if !output_exists(path) {
                 // Missing materialization is still a cache miss, but retain the
                 // last successful hashes for comparison after a rebuild (#19).
                 // Planning also calls this method, so the snapshot must survive
@@ -532,7 +533,7 @@ impl CacheStore {
         // Check each output: must exist and be newer than all inputs.
         for path in outputs {
             let key = path.to_string_lossy().to_string();
-            if !path.exists() {
+            if !output_exists(path) {
                 return Ok(CacheHitStatus::OutputMissing { path: key });
             }
             let (output_mt, _sz) = hash::file_meta(path)?;

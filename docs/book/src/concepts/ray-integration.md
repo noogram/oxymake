@@ -399,6 +399,21 @@ local state, the unit executes again even if its output and the remote blob
 still exist: the remote directory carries bytes, not the computation-key
 metadata needed to identify a hit. See [Caching](./cache.md#continuing-a-dag-on-another-machine).
 
+An output written on a worker node may not yet be visible on the host that
+runs `ox run --follow`. A Linux NFS client caches the absence of a path: once
+a lookup has found nothing, as the cache check at planning does for every
+output, later `stat` calls keep failing until the directory's attribute cache
+expires (`acdirmin`, 30 s by default), even after the file exists on the
+server. In a measurement between two hosts, a new file stayed invisible to
+repeated `stat` calls for 26 s; reading its parent directory before each
+`stat` made it visible within 0.04 s, and a `stat` of the parent directory did
+not help. Without a countermeasure, tasks shorter than that delay were never
+cached. OxyMake therefore reads an output's parent directory before reporting
+it missing, and waits up to 5 s for an output of a completed task that is
+still missing. An output that does not appear in that time is not cached, and
+`ox run` prints `warning: not caching job <id>: output not visible after 5s:
+<path>`; the unit runs again on the next submission.
+
 `ox status` does not record cache entries: it does not load the
 workflow, and recomputing a key from the current Oxymakefile could attach the
 outputs to a rule edited since submission. A run submitted without `--follow`
