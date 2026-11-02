@@ -16,9 +16,24 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 
 /// `.remote()` runs the task at once. `OX_STUB_KILL_AFTER=n` SIGKILLs the
 /// driver before its (n+1)-th task, as `ray job stop` or an OOM kill would.
+/// `OX_STUB_HIDE=path` moves `path` to `path.hidden` just before the driver
+/// writes a completed record: the record is readable while the output is not
+/// yet visible, as on a network filesystem whose client has cached the
+/// output's absence.
 const SYNC_RAY_STUB: &str = r#"
 import os, signal
 _runs = 0
+def _hide_on_record(scope):
+    hidden = os.environ.get('OX_STUB_HIDE')
+    original = scope.get('_write_record')
+    if not hidden or original is None or getattr(original, 'hides', False):
+        return
+    def write(record):
+        if record.get('status') == 'completed' and os.path.exists(hidden):
+            os.replace(hidden, hidden + '.hidden')
+        original(record)
+    write.hides = True
+    scope['_write_record'] = write
 class _Context:
     def get_node_id(self): return 'stub-node'
 def get_runtime_context(): return _Context()
@@ -34,6 +49,7 @@ class _Task:
         if limit is not None and _runs >= int(limit):
             os.kill(os.getpid(), signal.SIGKILL)
         _runs += 1
+        _hide_on_record(self.fn.__globals__)
         try:
             return _Ref(value=self.fn(*args))
         except Exception as e:
@@ -90,7 +106,7 @@ async fn ray_api(done: Arc<AtomicBool>, terminal: &'static str) -> MockServer {
 }
 
 /// Run the submitted driver as the Ray job would, with `ray` stubbed.
-fn run_driver(project: &Path, run_dir: &Path, kill_after: Option<u32>) {
+fn run_driver(project: &Path, run_dir: &Path, kill_after: Option<u32>, hide: Option<&Path>) {
     let stub = tempfile::tempdir().unwrap();
     std::fs::write(stub.path().join("ray.py"), SYNC_RAY_STUB).unwrap();
     let mut driver = std::process::Command::new("python3");
@@ -100,6 +116,9 @@ fn run_driver(project: &Path, run_dir: &Path, kill_after: Option<u32>) {
         .env("PYTHONPATH", stub.path());
     if let Some(n) = kill_after {
         driver.env("OX_STUB_KILL_AFTER", n.to_string());
+    }
+    if let Some(path) = hide {
+        driver.env("OX_STUB_HIDE", path);
     }
     let output = driver.output().unwrap();
     assert_eq!(
@@ -118,6 +137,19 @@ async fn follow_run(
     targets: &[&str],
     kill_after: Option<u32>,
     terminal: &'static str,
+) -> std::process::Output {
+    follow_run_hiding(project, remote, targets, kill_after, terminal, None).await
+}
+
+/// [`follow_run`], with the driver hiding `hide` when it records the task
+/// that produced it (see `OX_STUB_HIDE`).
+async fn follow_run_hiding(
+    project: &Path,
+    remote: &Path,
+    targets: &[&str],
+    kill_after: Option<u32>,
+    terminal: &'static str,
+    hide: Option<&Path>,
 ) -> std::process::Output {
     let done = Arc::new(AtomicBool::new(false));
     let server = ray_api(done.clone(), terminal).await;
@@ -154,13 +186,63 @@ async fn follow_run(
         assert!(started.elapsed() < Duration::from_secs(30));
         tokio::time::sleep(Duration::from_millis(50)).await;
     };
-    run_driver(project, &run_dir, kill_after);
+    run_driver(project, &run_dir, kill_after, hide);
     done.store(true, Ordering::SeqCst);
 
     tokio::task::spawn_blocking(move || child.wait_with_output())
         .await
         .unwrap()
         .unwrap()
+}
+
+/// Once `ox` has logged `job`'s completion, wait `delay` and move the output
+/// hidden by the driver back to `output`.
+fn restore_after_completion(
+    project: &Path,
+    job: &'static str,
+    output: PathBuf,
+    delay: Duration,
+) -> std::thread::JoinHandle<()> {
+    let events = project.join(".oxymake/events");
+    std::thread::spawn(move || {
+        let started = Instant::now();
+        let completed = || {
+            std::fs::read_dir(&events)
+                .into_iter()
+                .flatten()
+                .filter_map(|entry| std::fs::read_to_string(entry.ok()?.path()).ok())
+                .flat_map(|log| log.lines().map(str::to_string).collect::<Vec<_>>())
+                .filter_map(|line| serde_json::from_str::<serde_json::Value>(&line).ok())
+                .any(|event| event["event"] == "job_completed" && event["job_id"] == job)
+        };
+        while !completed() {
+            assert!(
+                started.elapsed() < Duration::from_secs(60),
+                "{job} never completed"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        std::thread::sleep(delay);
+        let mut hidden = output.clone().into_os_string();
+        hidden.push(".hidden");
+        std::fs::rename(hidden, output).unwrap();
+    })
+}
+
+/// The jobs `ox plan` would run for `target`: none when it is cached.
+fn planned_jobs(project: &Path, target: &str) -> serde_json::Value {
+    let plan = std::process::Command::new(assert_cmd::cargo::cargo_bin("ox"))
+        .current_dir(project)
+        .args(["plan", target, "--json"])
+        .output()
+        .unwrap();
+    assert!(
+        plan.status.success(),
+        "{}",
+        String::from_utf8_lossy(&plan.stderr)
+    );
+    let plan: serde_json::Value = serde_json::from_slice(&plan.stdout).unwrap();
+    plan["jobs"].clone()
 }
 
 /// Output paths in the order their recipes executed.
@@ -367,4 +449,85 @@ shell = "echo ran >> ran.log && echo result > {{output}}"
         "{stderr}"
     );
     assert_eq!(ran(project.path()).len(), 2);
+}
+
+/// One unit writing a relative output.
+const SINGLE_UNIT: &str = r#"ox_version = "0.1"
+[rule.produce]
+output = ["out/result.txt"]
+shell = "echo ran >> ran.log && mkdir -p out && echo result > {output}"
+"#;
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn output_visible_shortly_after_its_record_is_still_cached() {
+    let project = tempfile::tempdir().unwrap();
+    let remote = tempfile::tempdir().unwrap();
+    std::fs::write(project.path().join("Oxymakefile.toml"), SINGLE_UNIT).unwrap();
+    let output = project.path().join("out/result.txt");
+
+    // The output reappears 300 ms after `ox` has read the task's record.
+    let restorer = restore_after_completion(
+        project.path(),
+        "produce",
+        output.clone(),
+        Duration::from_millis(300),
+    );
+    let run = follow_run_hiding(
+        project.path(),
+        remote.path(),
+        &["out/result.txt"],
+        None,
+        "SUCCEEDED",
+        Some(&output),
+    )
+    .await;
+    restorer.join().unwrap();
+    let stderr = String::from_utf8_lossy(&run.stderr);
+    assert!(run.status.success(), "{stderr}");
+    assert!(!stderr.contains("not visible"), "{stderr}");
+
+    assert_eq!(
+        remote_blobs(remote.path()),
+        BTreeSet::from([b"result\n".to_vec()]),
+        "{stderr}"
+    );
+    let jobs = planned_jobs(project.path(), "out/result.txt");
+    assert_eq!(jobs, serde_json::json!([]), "{stderr}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn output_that_never_appears_is_named_in_a_warning_and_not_cached() {
+    let project = tempfile::tempdir().unwrap();
+    let remote = tempfile::tempdir().unwrap();
+    std::fs::write(project.path().join("Oxymakefile.toml"), SINGLE_UNIT).unwrap();
+    let output = project.path().join("out/result.txt");
+
+    let started = Instant::now();
+    let run = follow_run_hiding(
+        project.path(),
+        remote.path(),
+        &["out/result.txt"],
+        None,
+        "SUCCEEDED",
+        Some(&output),
+    )
+    .await;
+    let elapsed = started.elapsed();
+    let stderr = String::from_utf8_lossy(&run.stderr);
+    assert!(
+        stderr.lines().any(|line| line.starts_with("warning:")
+            && line.contains("not visible")
+            && line.contains("out/result.txt")),
+        "{stderr}"
+    );
+    // One follow round (3 s), the visibility bound (5 s), and slack.
+    assert!(elapsed < Duration::from_secs(20), "{elapsed:?}\n{stderr}");
+    assert!(remote_blobs(remote.path()).is_empty(), "{stderr}");
+
+    // Restored after the run, the output still has no cache entry.
+    let mut hidden = output.clone().into_os_string();
+    hidden.push(".hidden");
+    std::fs::rename(hidden, &output).unwrap();
+    let jobs = planned_jobs(project.path(), "out/result.txt");
+    assert_eq!(jobs[0]["reason"], "no cache entry", "{jobs}\n{stderr}");
 }

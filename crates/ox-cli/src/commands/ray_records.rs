@@ -267,7 +267,9 @@ impl<'a> Follower<'a> {
             self.bus.emit(event);
         }
         // The driver finalised the outputs before writing a completed
-        // record; `record` also skips a job whose outputs are not all present.
+        // record, possibly on another host: `record` lists each output's
+        // directory before checking it, waits a bounded time for an output
+        // not yet visible here, and warns about one that never appears.
         if record.status == TaskStatus::Completed
             && let Some(cache) = &self.cache
             && let Some(concrete) = self.graph.get_job(&JobId::from(job))

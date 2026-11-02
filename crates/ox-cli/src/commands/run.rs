@@ -909,8 +909,20 @@ impl CacheCheck for SchedulerCache {
             if output_paths.is_empty() {
                 return;
             }
-            // All outputs must exist on disk.
-            if !output_paths.iter().all(|p| p.exists()) {
+            // All outputs must exist on disk. An output written on another
+            // host may not be visible here yet (network filesystem): wait a
+            // bounded time for it, then say which output is missing.
+            let wait = ox_core::output_visibility::OUTPUT_VISIBILITY_WAIT;
+            let missing = ox_core::output_visibility::wait_for_outputs(&output_paths, wait).await;
+            if !missing.is_empty() {
+                let missing: Vec<String> =
+                    missing.iter().map(|p| p.display().to_string()).collect();
+                eprintln!(
+                    "warning: not caching job {}: output not visible after {}s: {}",
+                    job.id.as_str(),
+                    wait.as_secs(),
+                    missing.join(", ")
+                );
                 return;
             }
             // Compute cache key with components for provenance tracking.

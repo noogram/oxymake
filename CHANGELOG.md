@@ -30,6 +30,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the same local state skips completed units, and fresh local state re-executes
   because the remote directory does not carry cache-hit metadata.
 
+### Fixed
+
+- A completed task whose output was written on another host is cached again
+  when the output is not yet visible locally. On an NFS client the absence of
+  a path stays cached for up to the directory attribute cache time (30 s by
+  default on Linux), so Ray tasks shorter than that under `--follow` created
+  neither a cache entry nor a `--cache-remote` blob. The cache check and the
+  recording of a completed job now read an output's parent directory before
+  reporting it missing, and recording waits up to 5 s for a missing output.
+  An output still missing after that is named in a `warning: not caching job`
+  line instead of being skipped silently. Library callers can use the
+  unstable `ox_core::output_visibility` helpers for the same check.
+
 ## [0.7.0] - 2026-10-31
 
 ### Known limitations
