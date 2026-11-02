@@ -75,7 +75,7 @@ mod tests {
         assert!(!output_exists(&dir.path().join("missing/out.txt")));
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[tokio::test]
     async fn wait_returns_once_a_late_output_appears() {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("out.txt");
