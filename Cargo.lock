@@ -1976,7 +1976,7 @@ checksum = "d211803b9b6b570f68772237e415a029d5a50c65d382910b879fb19d3271f94d"
 
 [[package]]
 name = "ox-api"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "ox-cache",
  "ox-core",
@@ -1990,7 +1990,7 @@ dependencies = [
 
 [[package]]
 name = "ox-cache"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "blake3",
  "ox-core",
@@ -2006,7 +2006,7 @@ dependencies = [
 
 [[package]]
 name = "ox-cache-remote"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "blake3",
  "ox-core",
@@ -2017,7 +2017,7 @@ dependencies = [
 
 [[package]]
 name = "ox-cli"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "anyhow",
  "assert_cmd",
@@ -2065,7 +2065,7 @@ dependencies = [
 
 [[package]]
 name = "ox-codec-core"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "ox-core",
  "serde",
@@ -2076,7 +2076,7 @@ dependencies = [
 
 [[package]]
 name = "ox-core"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "blake3",
  "criterion",
@@ -2096,7 +2096,7 @@ dependencies = [
 
 [[package]]
 name = "ox-dashboard"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "askama",
  "axum",
@@ -2113,7 +2113,7 @@ dependencies = [
 
 [[package]]
 name = "ox-env-system"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "ox-core",
  "thiserror 2.0.21",
@@ -2121,7 +2121,7 @@ dependencies = [
 
 [[package]]
 name = "ox-env-uv"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "ox-core",
  "tempfile",
@@ -2130,7 +2130,7 @@ dependencies = [
 
 [[package]]
 name = "ox-exec-local"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "libc",
  "ox-codec-core",
@@ -2147,7 +2147,7 @@ dependencies = [
 
 [[package]]
 name = "ox-exec-ray"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "ox-codec-core",
  "ox-core",
@@ -2162,7 +2162,7 @@ dependencies = [
 
 [[package]]
 name = "ox-exec-slurm"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "ox-core",
  "reqwest",
@@ -2176,7 +2176,7 @@ dependencies = [
 
 [[package]]
 name = "ox-format"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "insta",
  "ox-core",
@@ -2192,7 +2192,7 @@ dependencies = [
 
 [[package]]
 name = "ox-lock"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "blake3",
  "ox-core",
@@ -2205,7 +2205,7 @@ dependencies = [
 
 [[package]]
 name = "ox-mcp"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "anyhow",
  "ox-api",
@@ -2221,7 +2221,7 @@ dependencies = [
 
 [[package]]
 name = "ox-monitor-tui"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "anyhow",
  "crossterm 0.28.1",
@@ -2236,7 +2236,7 @@ dependencies = [
 
 [[package]]
 name = "ox-plan"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "ox-core",
  "petgraph",
@@ -2249,14 +2249,14 @@ dependencies = [
 
 [[package]]
 name = "ox-render"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "console 0.16.3",
 ]
 
 [[package]]
 name = "ox-report-json"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "ox-core",
  "serde",
@@ -2267,7 +2267,7 @@ dependencies = [
 
 [[package]]
 name = "ox-report-term"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "console 0.16.3",
  "indicatif",
@@ -2280,7 +2280,7 @@ dependencies = [
 
 [[package]]
 name = "ox-state"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "libc",
  "ox-core",
@@ -2297,7 +2297,7 @@ dependencies = [
 
 [[package]]
 name = "ox-storage-local"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "ox-core",
  "tempfile",
@@ -2306,7 +2306,7 @@ dependencies = [
 
 [[package]]
 name = "ox-translate"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "anyhow",
  "ox-core",
