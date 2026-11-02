@@ -373,7 +373,33 @@ Under `ox run --follow`, a completed task also enters the cache when its record
 is read: its outputs are hashed and recorded under the same computation key a
 local run would use, and their blobs are stored in `--cache-remote` when it is
 set. A resubmission, including one after a killed driver, then skips the units
-that completed. `ox status` does not record cache entries: it does not load the
+that completed. This also applies to declared absolute file outputs outside
+the project directory; declare their directory as an absolute `[config]`
+value, for example:
+
+```toml
+[config]
+results = "/absolute/results"
+
+[rule.produce]
+output = ["{config.results}/result.txt"]
+shell = "echo result > {output}"
+```
+
+Run it with:
+
+```bash
+ox run /absolute/results/result.txt --executor ray --follow \
+  --cache-remote /absolute/cache
+```
+
+A successful task publishes the output blob.
+Repeating the run with the same local cache index skips the unit. With fresh
+local state, the unit executes again even if its output and the remote blob
+still exist: the remote directory carries bytes, not the computation-key
+metadata needed to identify a hit. See [Caching](./cache.md#continuing-a-dag-on-another-machine).
+
+`ox status` does not record cache entries: it does not load the
 workflow, and recomputing a key from the current Oxymakefile could attach the
 outputs to a rule edited since submission. A run submitted without `--follow`
 therefore re-executes its completed units on the next `ox run`.

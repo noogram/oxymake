@@ -23,6 +23,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ExecLocalError::OutputPath` replaces `OutputPathEscapesRoot` and carries
   the shared diagnostic.
 
+### Added
+
+- Acceptance coverage and Ray guide example for caching declared absolute file
+  outputs outside the project: `--follow --cache-remote` publishes their blobs,
+  the same local state skips completed units, and fresh local state re-executes
+  because the remote directory does not carry cache-hit metadata.
+
 ## [0.7.0] - 2026-10-31
 
 ### Known limitations
