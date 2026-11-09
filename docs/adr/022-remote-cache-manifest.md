@@ -29,8 +29,9 @@ sibling temporary file and renames it into place; `fetch` copies the blob and
 deletes the copy if its hash does not match the name. The directory carries no computation keys.
 
 The lookup is local. `restore_remote_outputs` (`crates/ox-cli/src/commands/run.rs`)
-computes the job's cache key, reads the `cache_entries` row for that key from
-the local `cache.db`, and fetches the blobs named in its `output_records`.
+receives the job's cache key from its caller, reads the `cache_entries` row for
+that key from the local `cache.db`, and fetches the blobs named in its
+`output_records`.
 Without a local row it returns `false` and the job runs. It is called from two
 places: the planning pre-scan (`execution_plan::determine_execution`, which
 walks the job graph in topological order) and the scheduler's cache check
@@ -54,7 +55,13 @@ hit".
   relative to the workflow root (`workflow_relative_path`), the params, env and
   shell terms, `clean_outputs`, and the platform under `cache_platform =
   "exact"`. Two checkouts of the same workflow over the same input bytes compute
-  the same key.
+  the same key. Observed with the current binary: two checkouts at different
+  absolute paths, one rule with an in-project output and one with an output
+  under an absolute `[config]` root, produced identical keys for both units.
+  One known exception: for a uv environment the key hashes every
+  `.python-version` in the working directory and its ancestors
+  (`env_spec_content_hash`), so a checkout placed under a different ancestor
+  pin gets a different key, hence a miss.
 - **The key needs the inputs.** `job_cache_key_with_components` returns `None`
   when a declared input does not exist. The pre-scan runs in topological order,
   so an upstream unit restored from the remote makes its outputs available for
@@ -191,12 +198,14 @@ In `SchedulerCache::record_with_hashes`, after the local row is written:
 2. If any blob store failed, publish no entry. An entry never names a blob its
    writer did not publish.
 3. If `entries/<k0k1>/<cache_key>.json` already exists, parses, has the same
-   `cache_key`, and every blob it names exists, publish nothing. Otherwise
-   write the entry to a staging name in the same directory and rename it into
-   place.
+   `cache_key`, names the same output hashes as the unit just recorded, and
+   every blob it names exists, publish nothing. Otherwise write the entry to a
+   staging name in the same directory and rename it into place, replacing any
+   existing entry.
 
 The staging name is unique across hosts: it is derived from the ADR-020 run id
-and a per-process counter. The blob store's existing staging name (PID plus
+of the publishing run (minted before the scheduler's cache is built, so it is
+known at every publish site) and a per-process counter. The blob store's existing staging name (PID plus
 sub-second nanoseconds) moves to the same scheme. Publish failures print a
 warning and never fail the run, as blob stores do today.
 
@@ -204,8 +213,12 @@ Two heads that publish the same key at the same moment both write complete
 files; the later rename wins. For a deterministic rule the two files describe
 the same bytes. For an `approximate` or `seed_deterministic` rule they may
 name different outputs; each is a valid result of the computation and its blobs
-exist. Step 3 makes the first published entry stick outside that race, so
-downstream keys, which hash the upstream outputs, do not churn.
+exist. Outside such a race, a unit that already has a valid entry is restored
+rather than executed, so a unit executes with an entry in place mainly when it
+was forced (`--forcerun`). A forced run is a statement that the previous result
+should not be reused, and the key does not always see why (a call block's
+module source is not part of the key), so step 3 replaces the entry whenever
+the recorded hashes differ.
 
 Publication is per unit, at the moment the unit is recorded. An interrupted run
 has therefore published every unit it recorded. Under Ray, units are recorded
@@ -247,18 +260,27 @@ key:
    output under `content` validation.
 
 The pre-scan and the scheduler's cache check both go through this function, so
-there is one restore path for every executor.
+there is one restore path for every executor. `ox run --dry-run` keeps passing
+no remote to its pre-scan: it neither reads entries nor fetches blobs, so with
+fresh local state it reports as runs the units a real run would restore.
 
 ### What the remote entry is trusted for
 
 Verification establishes that the restored bytes are the bytes the entry names.
 It does not establish that the entry describes the output of that computation:
 a writer able to write the remote directory can publish a wrong entry with
-matching blobs. This is the trust already placed in `cache.db` and in the blob
-directory. The remote directory is a trust boundary set by its filesystem
-permissions; anyone who can write it is trusted as a producer. Restore step 5
-makes every restored row enumerable, and the per-key file makes one bad entry
-removable without touching the others.
+matching blobs.
+
+This is a new grant of trust. Today a writer of the remote directory can only
+offer bytes for hashes that the reader's local `cache.db` already names, and
+`fetch` rejects anything else; the `RemoteCache` trait documents writers of the
+directory as a threat for that reason. With entries, a writer of `entries/`
+chooses which outputs satisfy any key a reader computes. After this decision,
+anyone who can write the remote directory is trusted as a producer for every
+run that uses it, as anyone who can write `cache.db` is for one checkout. The
+boundary is the directory's filesystem permissions. Restore step 5 makes every
+restored row enumerable, and the per-key file makes one bad entry removable
+without touching the others.
 
 ### Versioning
 
@@ -353,9 +375,9 @@ Two variants of A were also considered:
 
 - **No-replace publication** (`link(2)` or `renameat2(RENAME_NOREPLACE)`) to
   make the first writer win in every case. `RENAME_NOREPLACE` is Linux-only and
-  not supported over NFS; hard links are unavailable on some mounts. The
-  check-then-rename of Publish step 3 gives first-writer-wins outside a race,
-  and the race outcome is valid either way.
+  not supported over NFS; hard links are unavailable on some mounts. A first
+  writer that always wins would also keep a forced run from replacing an entry,
+  and the race outcome it prevents is valid either way.
 - **Reading the entry path as the restore destination.** Simpler, but it lets a
   shared, writable file choose where `ox` writes, which ADR-021 exists to
   prevent. Rejected.
@@ -370,3 +392,5 @@ Two variants of A were also considered:
   as increments 1 to 3?
 - Should `non_reproducible` units be excluded from publication, to match
   `ox cache-export`, instead of following the local cache?
+- Should reading entries require an explicit opt-in beyond `--cache-remote`,
+  given that it extends the trust placed in the remote directory (see above)?
