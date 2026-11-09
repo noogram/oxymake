@@ -67,6 +67,7 @@ the corpus by concern without changing the URL of any ADR.
 | 019 | Cross-Machine Continuation                       | decision            | CAS    | Proposed                               |
 | 020 | UUIDv4 Run Identity and Exact Selection          | decision            | COOP   | Accepted                               |
 | 021 | One Output-Path Policy for Every Executor        | decision            | EXT    | Accepted                               |
+| 022 | Remote Cache Entries per Computation Key         | decision            | CAS    | Proposed                               |
 
 † ADR-011's filename retains the historical `three-layer` slug (renaming
 breaks the URL, per the flat 3-digit no-rename rule above); its title was
