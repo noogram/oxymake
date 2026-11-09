@@ -4698,6 +4698,100 @@ shell = "printf done > out.txt"
 }
 
 #[test]
+fn default_event_log_records_failed_terminal_outcome() {
+    let dir = TempDir::new().unwrap();
+    fs::write(
+        dir.path().join("Oxymakefile.toml"),
+        "[rule.fail]\noutput = [\"out.txt\"]\nshell = \"exit 3\"\n",
+    )
+    .unwrap();
+
+    ox().args(["run", "out.txt"])
+        .current_dir(dir.path())
+        .timeout(std::time::Duration::from_secs(30))
+        .assert()
+        .code(1);
+
+    let events = only_event_log(dir.path());
+    let failed = events
+        .iter()
+        .find(|event| event["event"] == "job_failed")
+        .expect("the failing rule must report job_failed");
+    assert_eq!(failed["exit_code"], 3);
+    let terminal = events.last().unwrap();
+    assert_eq!(terminal["event"], "run_completed");
+    assert_eq!(terminal["status"], "failed");
+}
+
+fn only_event_log(dir: &std::path::Path) -> Vec<serde_json::Value> {
+    let logs: Vec<_> = fs::read_dir(dir.join(".oxymake/events"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .collect();
+    assert_eq!(logs.len(), 1, "one published journal for one run");
+    assert_eq!(logs[0].extension().unwrap(), "ndjson");
+    fs::read_to_string(&logs[0])
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect()
+}
+
+#[test]
+#[cfg(unix)]
+fn default_event_log_records_interrupted_terminal_outcome() {
+    use std::process::{Command as StdCommand, Stdio};
+    use std::time::{Duration, Instant};
+
+    let dir = TempDir::new().unwrap();
+    fs::write(
+        dir.path().join("Oxymakefile.toml"),
+        "[rule.slow]\noutput = [\"out.txt\"]\nshell = \"touch started.txt && sleep 60 && touch out.txt\"\n",
+    )
+    .unwrap();
+    let mut child = StdCommand::new(env!("CARGO_BIN_EXE_oxymake"))
+        .args(["run", "out.txt"])
+        .current_dir(dir.path())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    // Dispatch follows signal-handler installation. Wait for the shell rather
+    // than sleeping a fixed interval that can race startup on a busy machine.
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !dir.path().join("started.txt").exists() {
+        assert!(
+            child.try_wait().unwrap().is_none(),
+            "run exited before dispatch"
+        );
+        if Instant::now() >= deadline {
+            child.kill().unwrap();
+            child.wait().unwrap();
+            panic!("job did not start within 30 s");
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    assert!(
+        StdCommand::new("kill")
+            .args(["-INT", &child.id().to_string()])
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert_eq!(wait_for_exit(&mut child, 15).code(), Some(130));
+
+    let events = only_event_log(dir.path());
+    let cancelled = events
+        .iter()
+        .position(|event| event["event"] == "job_cancelled")
+        .expect("SIGINT must cancel the running job");
+    let terminal = events.last().unwrap();
+    assert_eq!(terminal["event"], "run_completed");
+    assert_eq!(terminal["status"], "interrupted");
+    assert!(cancelled < events.len() - 1);
+}
+
+#[test]
 fn run_report_json_unwritable_path_fails_cleanly() {
     let dir = TempDir::new().unwrap();
     let oxymakefile = dir.path().join("Oxymakefile.toml");

@@ -94,6 +94,7 @@ async fn assert_submitted_driver_python(python: Option<&str>) {
     .unwrap();
     let start: serde_json::Value = serde_json::from_str(log.lines().next().unwrap()).unwrap();
     assert_eq!(start["event"], "run_started");
+    assert_eq!(start["run_id"], run_id);
     assert_eq!(start["metadata"]["external.id"], "driver-test");
     assert_eq!(run_id.len(), 40);
     assert_eq!(
@@ -127,7 +128,9 @@ async fn assert_submitted_driver_python(python: Option<&str>) {
             .join(".oxymake/state.db"),
     )
     .unwrap();
-    assert!(db.list_runs().unwrap().iter().any(|run| run.id == run_id));
+    let runs = db.list_runs().unwrap();
+    assert_eq!(runs.len(), 1);
+    assert_eq!(runs[0].id, run_id);
     assert_eq!(
         payload["entrypoint"],
         format!(
