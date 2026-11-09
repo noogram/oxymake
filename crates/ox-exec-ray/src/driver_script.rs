@@ -188,6 +188,12 @@ def _run_measured(job_id, args, shell, work_dir, env_vars, outputs, clean_output
     """
     outputs = [(os.path.join(work_dir, path), os.path.join(work_dir, temporary))
                for path, temporary in outputs]
+    # Match local pre-execution cleanup: scratch first, then outputs only
+    # for the default policy. Removal is best effort for every path.
+    for path, temporary in outputs:
+        _remove_output(temporary)
+        if clean_outputs == 'always':
+            _remove_output(path)
     start = time.time()
     record = {'job_id': job_id, 'started_at': start, 'node_id': _node_id(),
               'hostname': socket.gethostname()}
@@ -1003,6 +1009,71 @@ os.replace = _fail_replace
                 // a commit failure removes all outputs and scratch.
                 assert_eq!(dir.path().join(name).exists(), phase == "stage");
                 assert!(!dir.path().join(format!("{name}.oxytmp")).exists());
+            }
+        }
+    }
+
+    #[test]
+    fn ray_cleans_outputs_before_execution() {
+        for execution_mode in ["shell", "script", "run"] {
+            for policy in [
+                CleanOutputs::Always,
+                CleanOutputs::OnFailure,
+                CleanOutputs::Never,
+            ] {
+                let dir = tempfile::tempdir().unwrap();
+                std::fs::write(dir.path().join("out"), "existing").unwrap();
+                std::fs::write(dir.path().join("out.oxytmp"), "stale scratch").unwrap();
+                let predicate = if policy == CleanOutputs::Always {
+                    "! -e"
+                } else {
+                    "-e"
+                };
+                let command = format!(
+                    "test {predicate} out || exit 42; test ! -e out.oxytmp || exit 43; echo updated > out"
+                );
+                let mut job = shell_job(
+                    "produce",
+                    &command,
+                    vec![],
+                    vec![ResolvedOutput {
+                        reference: OutputRef::File("out".into()),
+                        name: None,
+                        lifecycle: OutputLifecycle::Permanent,
+                        materialize: MaterializePolicy::Always,
+                        format: None,
+                    }],
+                );
+                job.clean_outputs = policy;
+                if execution_mode == "script" {
+                    let path = dir.path().join("recipe.sh");
+                    std::fs::write(&path, &command).unwrap();
+                    job.execution = ExecutionBlock::Script {
+                        path,
+                        lang: Some("bash".into()),
+                    };
+                } else if execution_mode == "run" {
+                    job.execution = ExecutionBlock::Run {
+                        code: command,
+                        lang: "bash".into(),
+                    };
+                }
+                let graph = JobGraph::build(vec![job]).unwrap();
+                let ctx = ExecContext {
+                    project_dir: dir.path().into(),
+                    ..ctx()
+                };
+                let source = generate_driver(&graph, &ctx, dir.path(), &no_skip()).unwrap();
+                assert_eq!(
+                    run_with_stub(dir.path(), source, None),
+                    0,
+                    "{execution_mode}, {policy}"
+                );
+                assert_eq!(
+                    std::fs::read_to_string(dir.path().join("out")).unwrap(),
+                    "updated\n"
+                );
+                assert!(!dir.path().join("out.oxytmp").exists());
             }
         }
     }

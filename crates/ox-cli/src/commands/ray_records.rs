@@ -2,7 +2,7 @@
 //! driver, see [`ox_exec_ray::task_record`]) into state.db, job history and
 //! the run's event log. Shared by `ox status` and `ox run --follow`.
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -281,6 +281,28 @@ impl<'a> Follower<'a> {
             .borrow_mut()
             .insert(job.to_string(), status.clone());
         Some(status)
+    }
+
+    /// A task without its own record did not run when an upstream task
+    /// failed. Do not attribute the shared driver's log to that task.
+    pub(super) fn dependency_failure(&self, job: &str) -> Option<JobStatus> {
+        let id = JobId::from(job);
+        let mut pending = self.graph.upstream(&id);
+        let mut seen = HashSet::new();
+        while let Some(upstream) = pending.pop() {
+            if !seen.insert(upstream) {
+                continue;
+            }
+            if let Some(record) = task_record::read(&self.tasks_dir, upstream.as_str())
+                && record.status == TaskStatus::Failed
+            {
+                return Some(JobStatus::Failed(format!(
+                    "dependency {upstream} failed; task did not run"
+                )));
+            }
+            pending.extend(self.graph.upstream(upstream));
+        }
+        None
     }
 
     /// Declared outputs, as the scheduler reports them in `job_completed`.

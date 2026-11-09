@@ -746,9 +746,13 @@ executor.
 ### Output finalization
 
 Shell, script and inline `run` tasks write directly to their declared final
-paths. After a zero exit, Ray verifies every declared file exists, stages all
-files to sibling `.oxytmp` paths, then renames them back, as the local executor
-does. Each rename is atomic; the set of outputs is not a filesystem transaction.
+paths. Before execution, Ray clears `.oxytmp` staging files for every cleanup
+policy and removes existing declared outputs when `clean_outputs = "always"`
+(the default), matching local execution. With `on-failure` or `never`, existing
+outputs remain available to the command. After a zero exit, Ray verifies every
+declared file exists, stages all files to sibling `.oxytmp` paths, then renames
+them back, as the local executor does. Each rename is atomic; the set of outputs
+is not a filesystem transaction.
 A missing output fails the task with `OutputMissing`. A nonzero exit or missing
 output removes declared files and engine scratch, unless `clean_outputs =
 "never"` preserves the final files. With `never`, successful files are verified

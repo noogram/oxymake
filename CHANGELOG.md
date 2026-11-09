@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Ray shell, script and inline `run` tasks now clear stale `.oxytmp` files
+  before execution and remove existing declared outputs with
+  `clean_outputs = "always"`, matching the local executor. `on-failure` and
+  `never` continue to keep existing outputs before execution. This lets
+  uncached tasks that refuse to overwrite a file rebuild successfully (#65).
+- Ray `--follow` now names the failed dependency for a task that could not
+  run, instead of attributing the shared driver's error trace to that task.
+  Per-task records take precedence when the driver reaches a terminal state (#65).
+
 ## [0.8.0] - 2026-11-02
 
 ### Breaking changes

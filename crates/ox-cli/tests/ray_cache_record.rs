@@ -51,7 +51,8 @@ class _Task:
         _runs += 1
         _hide_on_record(self.fn.__globals__)
         try:
-            return _Ref(value=self.fn(*args))
+            resolved = [get(arg) if isinstance(arg, _Ref) else arg for arg in args]
+            return _Ref(value=self.fn(*resolved))
         except Exception as e:
             return _Ref(error=e)
 def remote(fn): return _Task(fn)
@@ -98,7 +99,9 @@ async fn ray_api(done: Arc<AtomicBool>, terminal: &'static str) -> MockServer {
             } else {
                 "RUNNING"
             };
-            ResponseTemplate::new(200).set_body_json(json!({ "status": status }))
+            ResponseTemplate::new(200).set_body_json(
+                json!({ "status": status, "message": "OTHER_TASK_TRACE: unrelated driver log" }),
+            )
         })
         .mount(&server)
         .await;
@@ -106,7 +109,13 @@ async fn ray_api(done: Arc<AtomicBool>, terminal: &'static str) -> MockServer {
 }
 
 /// Run the submitted driver as the Ray job would, with `ray` stubbed.
-fn run_driver(project: &Path, run_dir: &Path, kill_after: Option<u32>, hide: Option<&Path>) {
+fn run_driver(
+    project: &Path,
+    run_dir: &Path,
+    kill_after: Option<u32>,
+    hide: Option<&Path>,
+    success: bool,
+) {
     let stub = tempfile::tempdir().unwrap();
     std::fs::write(stub.path().join("ray.py"), SYNC_RAY_STUB).unwrap();
     let mut driver = std::process::Command::new("python3");
@@ -123,7 +132,7 @@ fn run_driver(project: &Path, run_dir: &Path, kill_after: Option<u32>, hide: Opt
     let output = driver.output().unwrap();
     assert_eq!(
         output.status.success(),
-        kill_after.is_none(),
+        success,
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
@@ -186,7 +195,7 @@ async fn follow_run_hiding(
         assert!(started.elapsed() < Duration::from_secs(30));
         tokio::time::sleep(Duration::from_millis(50)).await;
     };
-    run_driver(project, &run_dir, kill_after, hide);
+    run_driver(project, &run_dir, kill_after, hide, terminal == "SUCCEEDED");
     done.store(true, Ordering::SeqCst);
 
     tokio::task::spawn_blocking(move || child.wait_with_output())
@@ -530,4 +539,178 @@ async fn output_that_never_appears_is_named_in_a_warning_and_not_cached() {
     std::fs::rename(hidden, &output).unwrap();
     let jobs = planned_jobs(project.path(), "out/result.txt");
     assert_eq!(jobs[0]["reason"], "no cache entry", "{jobs}\n{stderr}");
+}
+
+/// An uncached upstream output must be rebuilt with the documented policy,
+/// even when the run was requested through a downstream target (#65).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ray_rebuilds_existing_uncached_outputs_with_clean_outputs_policy() {
+    for policy in ["always", "on-failure", "never"] {
+        let project = tempfile::tempdir().unwrap();
+        let remote = tempfile::tempdir().unwrap();
+        std::fs::write(
+            project.path().join("Oxymakefile.toml"),
+            format!(
+                r#"ox_version = "0.1"
+[rule.produce]
+output = ["out.txt"]
+clean_outputs = "{policy}"
+shell = "test ! -e out.txt || exit 1; echo built >> attempts; echo complete > out.txt"
+[rule.consume]
+input = ["out.txt"]
+output = ["final.txt"]
+shell = "cat {{input}} > {{output}}"
+"#
+            ),
+        )
+        .unwrap();
+        let first = follow_run(
+            project.path(),
+            remote.path(),
+            &["out.txt"],
+            None,
+            "SUCCEEDED",
+        )
+        .await;
+        assert!(
+            first.status.success(),
+            "{}",
+            String::from_utf8_lossy(&first.stderr)
+        );
+        assert_eq!(
+            std::fs::read_to_string(project.path().join("out.txt")).unwrap(),
+            "complete\n"
+        );
+        // Clear only cache metadata/state. Keep the output from the first run.
+        std::fs::remove_dir_all(project.path().join(".oxymake")).unwrap();
+        let succeeds = policy == "always";
+        let second = follow_run(
+            project.path(),
+            remote.path(),
+            &["final.txt"],
+            None,
+            if succeeds { "SUCCEEDED" } else { "FAILED" },
+        )
+        .await;
+        let stderr = String::from_utf8_lossy(&second.stderr);
+        assert_eq!(second.status.success(), succeeds, "{policy}: {stderr}");
+        assert_eq!(
+            project.path().join("final.txt").exists(),
+            succeeds,
+            "{policy}: {stderr}"
+        );
+        assert_eq!(
+            project.path().join("out.txt").exists(),
+            policy != "on-failure",
+            "{policy}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(project.path().join("attempts"))
+                .unwrap()
+                .lines()
+                .count(),
+            if succeeds { 2 } else { 1 }
+        );
+        if succeeds {
+            assert_eq!(
+                std::fs::read_to_string(project.path().join("final.txt")).unwrap(),
+                "complete\n"
+            );
+        } else {
+            assert!(stderr.contains("produce"), "{stderr}");
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn failed_ray_attempts_keep_their_own_exit_codes_and_times_in_history() {
+    let project = tempfile::tempdir().unwrap();
+    let remote = tempfile::tempdir().unwrap();
+    let mut previous = None;
+    for code in [7, 9] {
+        std::fs::write(
+            project.path().join("Oxymakefile.toml"),
+            format!(
+                r#"ox_version = "0.1"
+[rule.fail]
+output = ["out.txt"]
+shell = "sleep 1.1; echo own_failure >&2; exit {code}"
+"#
+            ),
+        )
+        .unwrap();
+        let output = follow_run(project.path(), remote.path(), &["out.txt"], None, "FAILED").await;
+        assert!(!output.status.success());
+        let db = rusqlite::Connection::open(project.path().join(".oxymake/state.db")).unwrap();
+        let row: (String, i64, i64, i32) = db.query_row(
+            "SELECT run_id, started_at, completed_at, exit_code FROM job_history WHERE job_id = 'fail' ORDER BY id DESC LIMIT 1",
+            [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))).unwrap();
+        let record: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(
+                project
+                    .path()
+                    .join(".oxymake/runs")
+                    .join(&row.0)
+                    .join("tasks/fail.json"),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(record["exit_code"], code);
+        assert_eq!(row.3, code);
+        assert_eq!(row.1, record["started_at"].as_f64().unwrap() as i64);
+        assert_eq!(row.2, record["ended_at"].as_f64().unwrap() as i64);
+        assert!(row.2 > row.1);
+        if let Some((run, start, end, exit)) = previous {
+            let old: (i64, i64, i32) = db.query_row(
+                "SELECT started_at, completed_at, exit_code FROM job_history WHERE run_id = ? AND job_id = 'fail'",
+                [run], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))).unwrap();
+            assert_eq!(old, (start, end, exit));
+            assert!(row.1 > end);
+        }
+        previous = Some(row);
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn follow_does_not_attribute_driver_trace_to_a_dependency_failed_task() {
+    let project = tempfile::tempdir().unwrap();
+    let remote = tempfile::tempdir().unwrap();
+    std::fs::write(
+        project.path().join("Oxymakefile.toml"),
+        r#"ox_version = "0.1"
+[rule.produce]
+output = ["out.txt"]
+shell = "echo UPSTREAM_FAILURE >&2; exit 7"
+[rule.consume]
+input = ["out.txt"]
+output = ["final.txt"]
+shell = "echo ran > consumer-ran; cat {input} > {output}"
+"#,
+    )
+    .unwrap();
+    let output = follow_run(
+        project.path(),
+        remote.path(),
+        &["final.txt"],
+        None,
+        "FAILED",
+    )
+    .await;
+    assert!(!output.status.success());
+    assert!(!project.path().join("consumer-ran").exists());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("UPSTREAM_FAILURE"), "{stderr}");
+    let failure = stderr
+        .lines()
+        .find(|line| line.contains("FAILED: consume"))
+        .expect("dependent failure is reported");
+    assert!(
+        failure.contains("dependency") && failure.contains("produce"),
+        "{stderr}"
+    );
+    assert!(
+        !failure.contains("OTHER_TASK_TRACE") && !failure.contains("UPSTREAM_FAILURE"),
+        "{stderr}"
+    );
 }

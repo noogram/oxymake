@@ -358,8 +358,8 @@ impl fmt::Display for MaterializePolicy {
 
 /// Automatic cleanup policy for declared file outputs.
 ///
-/// Executors define when cleanup runs; local also applies it before execution,
-/// while the Ray DAG driver applies it during post-execution finalization.
+/// Local execution and Ray shell, script and inline run tasks apply this
+/// policy before execution and after failure.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum CleanOutputs {

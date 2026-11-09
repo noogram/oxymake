@@ -188,10 +188,10 @@ history record the executor selected for each executed job.
 
 Three values express three distinct lifecycles; a boolean cannot represent
 all of them. The default preserves the existing guarantee that stale outputs
-from a failed run cannot masquerade as valid results. The local executor always clears
-its own `.oxytmp` staging files before execution. Output verification and
-hashing after execution are unchanged. A failed job is still recorded as a
-failure and never writes a successful cache entry. Changing the policy
+from a failed run cannot masquerade as valid results. Local execution and Ray
+shell, script and inline `run` tasks always clear their own `.oxytmp` staging
+files before execution. Output verification and hashing after execution are
+unchanged. A failed job is still recorded as a failure and never writes a successful cache entry. Changing the policy
 invalidates the job's cache key.
 
 **Warning:** `"never"` hands the staleness guarantee to the script. The script
@@ -200,10 +200,9 @@ when every declared output is complete. Preserved files alone do not prove
 that a failed run succeeded. `"on-failure"` also requires the script to validate
 any existing outputs it reuses on a successful run.
 
-The table describes the local executor. Ray shell, script and inline `run`
-tasks honor the after-failure policy and verify outputs after success, then
-stage/commit them unless the policy is `never`. Ray does not apply the table's
-before-execution cleanup; commands still write to their final paths. A hard kill
+The table describes local execution and Ray shell, script and inline `run`
+tasks. Ray also verifies outputs after success, then stages/commits them unless
+the policy is `never`. Commands still write to their final paths. A hard kill
 can leave partial final files because no cleanup runs (see
 [Ray output finalization](../concepts/ray-integration.md#output-finalization)).
 Ray call-mode applies finalization only to files its wrapper materializes;
