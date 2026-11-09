@@ -159,7 +159,8 @@ bump and a `CHANGELOG.md` entry:
   resource bundles resolved across the include graph.
 - Root-level `[env]` and rule-level `env` tables — declared job environment
   variables, merged and interpolated before execution.
-- `clean_outputs` (`always`, `on-failure`, `never`) — local-executor output cleanup policy.
+- `clean_outputs` (`always`, `on-failure`, `never`) — output cleanup policy for
+  local execution and Ray shell, script and inline `run` tasks.
 - `cache_platform` (`exact`, `any`) — per-rule cross-platform cache reuse policy.
 - Any TOML field not in the list above is **experimental** and may be
   removed without a deprecation window.

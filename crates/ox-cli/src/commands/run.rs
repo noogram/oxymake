@@ -2820,7 +2820,20 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
                             if let Some(status) = records.poll(&job).await {
                                 return Ok(status);
                             }
-                            executor.poll_status(&JobId::from(job.as_str())).await
+                            use ox_core::traits::executor::JobStatus;
+                            let status = executor.poll_status(&JobId::from(job.as_str())).await;
+                            if matches!(status, Ok(JobStatus::Completed | JobStatus::Failed(_) | JobStatus::Cancelled)) {
+                                // A record may have arrived during the driver-status request.
+                                if let Some(status) = records.poll(&job).await {
+                                    return Ok(status);
+                                }
+                                if matches!(status, Ok(JobStatus::Failed(_)))
+                                    && let Some(failure) = records.dependency_failure(&job)
+                                {
+                                    return Ok(failure);
+                                }
+                            }
+                            status
                         }
                     }, |line| eprintln!("{line}")).await;
                     // The controller drops an in-flight poll on the first signal.
