@@ -35,10 +35,12 @@ pub enum ExecLocalError {
     OutputPath(#[from] ox_core::output_path::OutputPathError),
 
     /// A declared output file was not produced by a successful job.
-    #[error("output not produced: {path}")]
+    #[error("output not produced: {path}{kept}")]
     OutputMissing {
         /// The path that was expected but not found after job exit 0.
         path: String,
+        /// Diagnostic naming preexisting outputs retained unchanged.
+        kept: String,
     },
 
     /// Atomic rename of an output file failed during finalization.

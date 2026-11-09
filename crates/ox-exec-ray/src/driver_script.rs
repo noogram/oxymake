@@ -144,18 +144,32 @@ def _remove_output(path):
         pass  # Match local best-effort remove_file cleanup.
 
 
-def _cleanup_outputs(outputs, clean_outputs):
+def _output_identity(path):
+    try:
+        stat = os.stat(path)
+        return stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns
+    except OSError:
+        return None
+
+
+def _cleanup_outputs(outputs, clean_outputs, before=None):
+    kept = []
     for path, temporary in outputs:
         if clean_outputs != 'never':
-            _remove_output(path)
+            previous = before.get(path) if before is not None else None
+            if previous is not None and previous == _output_identity(path):
+                kept.append(path)
+            else:
+                _remove_output(path)
         _remove_output(temporary)
+    return ('; kept, unchanged by this attempt: ' + ', '.join(kept)) if kept else ''
 
 
-def _finalize_outputs(outputs, clean_outputs):
+def _finalize_outputs(outputs, clean_outputs, before=None):
     for path, _ in outputs:
         if not os.path.exists(path):
-            _cleanup_outputs(outputs, clean_outputs)
-            raise RuntimeError(f'OutputMissing: {path}')
+            kept = _cleanup_outputs(outputs, clean_outputs, before)
+            raise RuntimeError(f'OutputMissing: {path}{kept}')
     if clean_outputs == 'never':
         for _, temporary in outputs:
             _remove_output(temporary)
@@ -194,6 +208,7 @@ def _run_measured(job_id, args, shell, work_dir, env_vars, outputs, clean_output
         _remove_output(temporary)
         if clean_outputs == 'always':
             _remove_output(path)
+    before = {path: _output_identity(path) for path, _ in outputs}
     start = time.time()
     record = {'job_id': job_id, 'started_at': start, 'node_id': _node_id(),
               'hostname': socket.gethostname()}
@@ -216,13 +231,13 @@ def _run_measured(job_id, args, shell, work_dir, env_vars, outputs, clean_output
             err.seek(max(0, err.tell() - 8192))
             stderr = err.read().decode(errors='replace')
     except Exception as e:
-        _cleanup_outputs(outputs, clean_outputs)
+        kept = _cleanup_outputs(outputs, clean_outputs, before)
         end = time.time()
         record.update(status='failed', exit_code=None, ended_at=end,
                       wall_time_ms=int((end - start) * 1000), cpu_time_ms=None,
-                      peak_rss_bytes=None, error=str(e)[-500:])
+                      peak_rss_bytes=None, error=(str(e) + kept)[-500:])
         _write_record(record)
-        raise
+        raise RuntimeError(str(e) + kept) from e
     end = time.time()
     elapsed = end - start
     record.update(
@@ -235,13 +250,13 @@ def _run_measured(job_id, args, shell, work_dir, env_vars, outputs, clean_output
         peak_rss_bytes=None if usage is None else usage.ru_maxrss * (1 if sys.platform == 'darwin' else 1024),
     )
     if child.returncode != 0:
-        _cleanup_outputs(outputs, clean_outputs)
-        msg = stderr[-2000:] if stderr else '(no stderr)'
+        kept = _cleanup_outputs(outputs, clean_outputs, before)
+        msg = (stderr[-2000:] if stderr else '(no stderr)') + kept
         record['error'] = msg[-500:]
         _write_record(record)
         raise RuntimeError(f'Job {job_id} failed (exit {child.returncode}, {elapsed:.1f}s): {msg}')
     try:
-        _finalize_outputs(outputs, clean_outputs)
+        _finalize_outputs(outputs, clean_outputs, before)
     except Exception as e:
         record.update(status='failed', error=str(e)[-500:])
         _write_record(record)
@@ -1074,6 +1089,90 @@ os.replace = _fail_replace
                     "updated\n"
                 );
                 assert!(!dir.path().join("out.oxytmp").exists());
+            }
+        }
+    }
+
+    #[test]
+    fn ray_on_failure_cleans_only_outputs_changed_by_attempt() {
+        for execution_mode in ["shell", "script", "run"] {
+            for case in [
+                "unchanged",
+                "created",
+                "rewritten",
+                "retimed",
+                "replaced",
+                "missing",
+            ] {
+                let dir = tempfile::tempdir().unwrap();
+                let out = dir.path().join("out");
+                if case != "created" {
+                    std::fs::write(&out, "existing").unwrap();
+                }
+                let before = std::fs::metadata(&out).ok().map(|m| m.modified().unwrap());
+                let command = match case {
+                    "unchanged" => "test ! -e out || exit 1",
+                    "created" | "rewritten" => "echo changed-and-longer > out; exit 1",
+                    "retimed" => {
+                        r#"python3 -c 'import os; t=os.stat("out").st_mtime_ns; os.utime("out", ns=(t+1,t+1))'; exit 1"#
+                    }
+                    "replaced" => "cp -pf out replacement; mv -f replacement out; exit 1",
+                    "missing" => "true",
+                    _ => unreachable!(),
+                };
+                let mut outputs = vec![ResolvedOutput {
+                    reference: OutputRef::File("out".into()),
+                    name: None,
+                    lifecycle: OutputLifecycle::Permanent,
+                    materialize: MaterializePolicy::Always,
+                    format: None,
+                }];
+                if case == "missing" {
+                    outputs.push(ResolvedOutput {
+                        reference: OutputRef::File("missing".into()),
+                        ..outputs[0].clone()
+                    });
+                }
+                let mut job = shell_job("produce", command, vec![], outputs);
+                job.clean_outputs = CleanOutputs::OnFailure;
+                if execution_mode == "script" {
+                    let path = dir.path().join("recipe.sh");
+                    std::fs::write(&path, command).unwrap();
+                    job.execution = ExecutionBlock::Script {
+                        path,
+                        lang: Some("bash".into()),
+                    };
+                } else if execution_mode == "run" {
+                    job.execution = ExecutionBlock::Run {
+                        code: command.into(),
+                        lang: "bash".into(),
+                    };
+                }
+                let graph = JobGraph::build(vec![job]).unwrap();
+                let ctx = ExecContext {
+                    project_dir: dir.path().into(),
+                    ..ctx()
+                };
+                let source = generate_driver(&graph, &ctx, dir.path(), &no_skip()).unwrap();
+                assert_eq!(run_with_stub(dir.path(), source, None), 1);
+                let kept = matches!(case, "unchanged" | "missing");
+                assert_eq!(out.exists(), kept, "{execution_mode}, {case}");
+                if kept {
+                    assert_eq!(std::fs::read_to_string(&out).unwrap(), "existing");
+                    assert_eq!(
+                        std::fs::metadata(&out).unwrap().modified().unwrap(),
+                        before.unwrap()
+                    );
+                    let record = crate::task_record::read_all(&dir.path().join("tasks"))
+                        .pop()
+                        .unwrap();
+                    let message = record.error.unwrap();
+                    assert!(
+                        message.contains("kept, unchanged by this attempt:"),
+                        "{message}"
+                    );
+                    assert!(message.contains(out.to_str().unwrap()), "{message}");
+                }
             }
         }
     }

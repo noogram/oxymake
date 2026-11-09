@@ -753,9 +753,14 @@ outputs remain available to the command. After a zero exit, Ray verifies every
 declared file exists, stages all files to sibling `.oxytmp` paths, then renames
 them back, as the local executor does. Each rename is atomic; the set of outputs
 is not a filesystem transaction.
-A missing output fails the task with `OutputMissing`. A nonzero exit or missing
-output removes declared files and engine scratch, unless `clean_outputs =
-"never"` preserves the final files. With `never`, successful files are verified
+A missing output fails the task with `OutputMissing`. Just after pre-cleanup,
+Ray records each present output's device, inode, size and nanosecond mtime.
+A nonzero exit or missing output removes only declared files that were absent
+before the attempt or whose identity changed, and clears engine scratch.
+Unchanged preexisting outputs are kept and named in the failure diagnostic
+(`kept, unchanged by this attempt: …`). This metadata comparison cannot detect
+a content rewrite that restores every identity field. `clean_outputs =
+"never"` preserves all final files. With `never`, successful files are verified
 and left in place without staging. Per-task records report finalization errors
 as failures even when the command exited zero. Call-mode files that the wrapper materializes also participate; outputs
 kept only in the object store have no file finalization.
