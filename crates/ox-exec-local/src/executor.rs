@@ -45,6 +45,8 @@ struct AtomicOutputState {
     output_files: Vec<PathBuf>,
     /// Policy carried from the job to failure and validation cleanup.
     clean_outputs: CleanOutputs,
+    /// Identities after pre-cleanup, before the attempt writes any outputs.
+    output_identities: Vec<Option<FileIdentity>>,
     /// Exclusive locks over every output path, held from `prepare_workspace`
     /// (before any output is touched) until `finalize_workspace` returns, so
     /// no second session can write any of the same paths. `None` when the
@@ -52,6 +54,68 @@ struct AtomicOutputState {
     /// the session's descriptors; the job child holds inherited duplicates
     /// (see `execute`) so the kernel keeps each `flock` until it exits too.
     output_locks: Option<crate::lock::OutputLocks>,
+}
+
+/// Metadata identity, with nanosecond modification-time precision.
+#[derive(Debug, PartialEq, Eq)]
+struct FileIdentity {
+    #[cfg(unix)]
+    device: u64,
+    #[cfg(unix)]
+    inode: u64,
+    size: u64,
+    modified: std::time::SystemTime,
+}
+
+impl FileIdentity {
+    fn read(path: &std::path::Path) -> Option<Self> {
+        #[cfg(unix)]
+        use std::os::unix::fs::MetadataExt;
+        let metadata = std::fs::metadata(path).ok()?;
+        Some(Self {
+            #[cfg(unix)]
+            device: metadata.dev(),
+            #[cfg(unix)]
+            inode: metadata.ino(),
+            size: metadata.len(),
+            modified: metadata.modified().ok()?,
+        })
+    }
+}
+
+impl AtomicOutputState {
+    fn unchanged(&self, index: usize, path: &std::path::Path) -> bool {
+        self.output_identities
+            .get(index)
+            .is_some_and(|before| before.is_some() && *before == FileIdentity::read(path))
+    }
+
+    fn kept_message(&self) -> String {
+        if self.clean_outputs == CleanOutputs::Never {
+            return String::new();
+        }
+        let kept: Vec<_> = self
+            .output_files
+            .iter()
+            .enumerate()
+            .filter(|(index, path)| self.unchanged(*index, path))
+            .map(|(_, path)| path.display().to_string())
+            .collect();
+        if kept.is_empty() {
+            String::new()
+        } else {
+            format!("; kept, unchanged by this attempt: {}", kept.join(", "))
+        }
+    }
+
+    async fn cleanup_failure(&self) {
+        for (index, path) in self.output_files.iter().enumerate() {
+            if self.clean_outputs != CleanOutputs::Never && !self.unchanged(index, path) {
+                let _ = tokio::fs::remove_file(path).await;
+            }
+            let _ = tokio::fs::remove_file(temp_path(path)).await;
+        }
+    }
 }
 
 /// Local executor that runs jobs as subprocesses on the current machine.
@@ -880,6 +944,7 @@ impl Executor for LocalExecutor {
         }
 
         let state = AtomicOutputState {
+            output_identities: output_files.iter().map(|p| FileIdentity::read(p)).collect(),
             output_files,
             clean_outputs: job.clean_outputs,
             output_locks,
@@ -1183,7 +1248,22 @@ impl Executor for LocalExecutor {
 
         // On failure, capture the last 20 lines of the log as stderr_tail.
         let stderr_tail = if result.exit_code != 0 {
-            read_log_tail(&log_path, 20).await
+            let mut tail = read_log_tail(&log_path, 20).await.unwrap_or_default();
+            if let Some(state) = workspace.state::<AtomicOutputState>() {
+                let kept = state.kept_message();
+                if !kept.is_empty() {
+                    use tokio::io::AsyncWriteExt;
+                    if let Ok(mut log) = tokio::fs::OpenOptions::new()
+                        .append(true)
+                        .open(&log_path)
+                        .await
+                    {
+                        let _ = log.write_all(format!("\n{kept}\n").as_bytes()).await;
+                    }
+                    tail.push_str(&kept);
+                }
+            }
+            (!tail.is_empty()).then_some(tail)
         } else {
             None
         };
@@ -1202,8 +1282,9 @@ impl Executor for LocalExecutor {
     /// Finalize the workspace after execution.
     ///
     /// Implements the atomic write protocol:
-    /// - **On failure** (exit != 0): delete declared outputs unless the
-    ///   script owns them (`clean_outputs = "never"`). Always clear staging.
+    /// - **On failure** (exit != 0): delete outputs created or changed by the
+    ///   attempt unless the script owns them (`clean_outputs = "never"`).
+    ///   Always clear staging.
     /// - **On success** (exit == 0): verify all outputs exist. Script-owned
     ///   outputs stay in place; for the other policies, then
     ///   atomically commit them via a two-phase rename:
@@ -1233,27 +1314,20 @@ impl Executor for LocalExecutor {
         }
 
         if result.exit_code != 0 {
-            // Failure: honor script ownership while always clearing engine scratch.
-            for path in &state.output_files {
-                if state.clean_outputs != CleanOutputs::Never {
-                    let _ = tokio::fs::remove_file(path).await;
-                }
-                let _ = tokio::fs::remove_file(temp_path(path)).await;
-            }
+            state.cleanup_failure().await;
             return Ok(());
         }
 
         // Success: verify all outputs exist.
         for path in &state.output_files {
             if !path.exists() {
-                // Clean up any outputs that WERE produced.
+                let kept = state.kept_message();
                 if state.clean_outputs != CleanOutputs::Never {
-                    for p in &state.output_files {
-                        let _ = tokio::fs::remove_file(p).await;
-                    }
+                    state.cleanup_failure().await;
                 }
                 return Err(ExecLocalError::OutputMissing {
                     path: path.display().to_string(),
+                    kept,
                 });
             }
         }
@@ -1876,7 +1950,7 @@ mod tests {
         let result = exec.execute(&job, &ws, &ctx).await.unwrap();
         assert_eq!(result.exit_code, if fail { 7 } else { 0 });
         exec.finalize_workspace(ws, &result).await.unwrap();
-        assert_eq!(out.exists(), !fail || policy == CleanOutputs::Never);
+        assert_eq!(out.exists(), !fail || policy != CleanOutputs::Always);
         if out.exists() {
             assert_eq!(
                 std::fs::read_to_string(&out).unwrap(),
@@ -1906,6 +1980,88 @@ mod tests {
             ox_core::model::CleanOutputs::Never,
         ] {
             check_clean_outputs(policy, true).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn on_failure_cleans_only_outputs_changed_by_attempt() {
+        for case in [
+            "unchanged",
+            "created",
+            "rewritten",
+            "retimed",
+            "replaced",
+            "missing",
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let out = dir.path().join("out");
+            if case != "created" {
+                std::fs::write(&out, "existing").unwrap();
+            }
+            let before = std::fs::metadata(&out).ok().map(|m| m.modified().unwrap());
+            let command = match case {
+                "unchanged" => "test ! -e out || exit 1",
+                "created" | "rewritten" => "echo changed-and-longer > out; exit 1",
+                "retimed" => {
+                    r#"python3 -c 'import os; t=os.stat("out").st_mtime_ns; os.utime("out", ns=(t+1,t+1))'; exit 1"#
+                }
+                "replaced" => "cp -pf out replacement; mv -f replacement out; exit 1",
+                "missing" => "true",
+                _ => unreachable!(),
+            };
+            let mut outputs = vec![ResolvedOutput {
+                reference: OutputRef::File(out.clone()),
+                name: None,
+                format: None,
+                lifecycle: Default::default(),
+                materialize: Default::default(),
+            }];
+            if case == "missing" {
+                outputs.push(ResolvedOutput {
+                    reference: OutputRef::File(dir.path().join("missing")),
+                    ..outputs[0].clone()
+                });
+            }
+            let mut job = run_job("", vec![], outputs);
+            job.clean_outputs = CleanOutputs::OnFailure;
+            job.execution = ExecutionBlock::Shell {
+                command: command.into(),
+            };
+            let ctx = ExecContext {
+                global_job_limit: 1,
+                run_id: "targeted-cleanup".into(),
+                log_dir: dir.path().join("logs"),
+                project_dir: dir.path().into(),
+                trusted_dirs: vec![dir.path().into()],
+                input_data: Default::default(),
+                memory_map: None,
+            };
+            let exec = LocalExecutor::new();
+            let mut ws = exec.prepare_workspace(&job, &ctx).await.unwrap();
+            ws.work_dir = dir.path().into();
+            let result = exec.execute(&job, &ws, &ctx).await.unwrap();
+            assert_eq!(result.exit_code, if case == "missing" { 0 } else { 1 });
+            let finalized = exec.finalize_workspace(ws, &result).await;
+            let message = if case == "missing" {
+                finalized.unwrap_err().to_string()
+            } else {
+                finalized.unwrap();
+                result.stderr_tail.unwrap_or_default()
+            };
+            let kept = matches!(case, "unchanged" | "missing");
+            assert_eq!(out.exists(), kept, "{case}");
+            if kept {
+                assert_eq!(std::fs::read_to_string(&out).unwrap(), "existing");
+                assert_eq!(
+                    std::fs::metadata(&out).unwrap().modified().unwrap(),
+                    before.unwrap()
+                );
+                assert!(
+                    message.contains("kept, unchanged by this attempt:"),
+                    "{case}: {message}"
+                );
+                assert!(message.contains(out.to_str().unwrap()), "{message}");
+            }
         }
     }
 
@@ -1941,6 +2097,7 @@ mod tests {
                 output_files,
                 clean_outputs: CleanOutputs::default(),
                 output_locks: None,
+                output_identities: vec![],
             },
         )
     }
@@ -1956,6 +2113,7 @@ mod tests {
                 output_files: vec![out.clone(), dir.path().join("missing")],
                 clean_outputs: ox_core::model::CleanOutputs::Never,
                 output_locks: None,
+                output_identities: vec![],
             },
         );
         let error = LocalExecutor::new()

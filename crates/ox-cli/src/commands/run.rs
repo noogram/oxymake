@@ -355,6 +355,86 @@ fn execution_source(job: &ConcreteJob) -> String {
     serde_json::to_string(&job.execution).unwrap_or_else(|_| job.execution.to_string())
 }
 
+/// Explicit reruns also force their consumers, as in the scheduler selection.
+fn forced_jobs(job_graph: &JobGraph, patterns: &[String]) -> HashSet<JobId> {
+    let mut force_rerun: HashSet<JobId> = HashSet::new();
+    if !patterns.is_empty() {
+        for pattern in patterns {
+            let is_regex = pattern.starts_with('/') && pattern.ends_with('/');
+            for job_id in job_graph.job_ids() {
+                if let Some(job) = job_graph.get_job(job_id) {
+                    let matches = if is_regex {
+                        let re_str = &pattern[1..pattern.len() - 1];
+                        regex::Regex::new(re_str)
+                            .map(|re| re.is_match(job.rule.as_str()))
+                            .unwrap_or(false)
+                    } else {
+                        job.rule.as_str() == pattern
+                    };
+                    if matches && !force_rerun.contains(job_id) {
+                        // Force the matched job and all downstream.
+                        let closure = downstream_closure(job_graph, job_id);
+                        for id in closure {
+                            force_rerun.insert(id);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    force_rerun
+}
+
+/// Report only planned jobs with files present and no entry for this computation.
+fn warn_uncached_outputs(
+    job_graph: &JobGraph,
+    skipped: &HashSet<JobId>,
+    forced: &HashSet<JobId>,
+    mut store: Option<&mut CacheStore>,
+) {
+    let mut ids = Vec::new();
+    for id in job_graph.job_ids() {
+        if skipped.contains(id) || forced.contains(id) {
+            continue;
+        }
+        let Some(job) = job_graph.get_job(id) else {
+            continue;
+        };
+        let paths = output_file_paths(job);
+        if paths.is_empty()
+            || !paths
+                .iter()
+                .all(|p| ox_core::output_visibility::output_exists(p))
+        {
+            continue;
+        }
+        let has_entry =
+            job_cache_key_with_components(job, store.as_deref_mut()).is_some_and(|key| {
+                store
+                    .as_ref()
+                    .is_some_and(|s| s.get(&key.cache_key).is_some())
+            });
+        if !has_entry {
+            ids.push(id.as_str().to_string());
+        }
+    }
+    if ids.is_empty() {
+        return;
+    }
+    ids.sort();
+    let count = ids.len();
+    let suffix = if count > 10 {
+        format!(", ... ({} more)", count - 10)
+    } else {
+        String::new()
+    };
+    ids.truncate(10);
+    eprintln!(
+        "warning: {count} job(s) have all declared outputs present but no cache entry; they will be rebuilt: {}{suffix}",
+        ids.join(", ")
+    );
+}
+
 /// Collect the file-system paths from a job's outputs (only File outputs).
 pub(super) fn output_file_paths(job: &ConcreteJob) -> Vec<PathBuf> {
     job.outputs
@@ -1471,7 +1551,38 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
 
     let job_count = job_graph.job_count();
 
+    let force_rerun = forced_jobs(&job_graph, &args.forcerun);
+
     if args.dry_run {
+        if !args.no_cache {
+            let validation =
+                common::resolve_cache_validation(args.cache_validation.as_deref(), &workflow)?;
+            let validation = if args.cache_remote.is_some() {
+                CacheValidation::ContentHash
+            } else {
+                validation
+            };
+            // Do not restore artifacts for a dry run. Existing
+            // entries still distinguish an uncached output from a stale one.
+            let cache_dir = Path::new(".oxymake");
+            let mut store = if cache_dir.join("cache/cache.db").exists()
+                || cache_dir.join("cache/manifest.json").exists()
+            {
+                CacheStore::open_with(cache_dir, validation).ok()
+            } else {
+                None
+            };
+            let execution = super::execution_plan::determine_execution(
+                &job_graph,
+                true,
+                validation,
+                store.as_mut(),
+                None,
+            );
+            let mut skipped = execution.skip_jobs;
+            skipped.extend(selective_skip.iter().cloned());
+            warn_uncached_outputs(&job_graph, &skipped, &force_rerun, store.as_mut());
+        }
         let effective_count = job_count - selective_skip.len();
         if args.json {
             // Emit NDJSON: one summary line, then one line per job.
@@ -1738,34 +1849,9 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
     // -----------------------------------------------------------------------
     // --forcerun: remove matching jobs (and downstream) from skip set
     // -----------------------------------------------------------------------
-    let mut force_rerun: HashSet<JobId> = HashSet::new();
-    if !args.forcerun.is_empty() {
-        for pattern in &args.forcerun {
-            let is_regex = pattern.starts_with('/') && pattern.ends_with('/');
-            for job_id in job_graph.job_ids() {
-                if let Some(job) = job_graph.get_job(job_id) {
-                    let matches = if is_regex {
-                        let re_str = &pattern[1..pattern.len() - 1];
-                        regex::Regex::new(re_str)
-                            .map(|re| re.is_match(job.rule.as_str()))
-                            .unwrap_or(false)
-                    } else {
-                        job.rule.as_str() == pattern
-                    };
-                    if matches && !force_rerun.contains(job_id) {
-                        // Force the matched job and all downstream.
-                        let closure = downstream_closure(&job_graph, job_id);
-                        for id in closure {
-                            force_rerun.insert(id);
-                        }
-                    }
-                }
-            }
-        }
-        // Remove forced jobs from skip_jobs so they re-execute.
-        for job_id in &force_rerun {
-            skip_jobs.remove(job_id);
-        }
+    // Remove forced jobs from skip_jobs so they re-execute.
+    for job_id in &force_rerun {
+        skip_jobs.remove(job_id);
     }
 
     // Merge selective_skip (--until / --omit-from) into skip_jobs.
@@ -1775,6 +1861,10 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
 
     if let Some(spinner) = prescan_spinner {
         spinner.finish_and_clear();
+    }
+
+    if !args.no_cache {
+        warn_uncached_outputs(&job_graph, &skip_jobs, &force_rerun, cache_store.as_mut());
     }
 
     timer.mark("cache_prescan");

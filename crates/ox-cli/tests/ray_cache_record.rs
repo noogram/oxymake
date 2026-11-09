@@ -581,6 +581,10 @@ shell = "cat {{input}} > {{output}}"
             std::fs::read_to_string(project.path().join("out.txt")).unwrap(),
             "complete\n"
         );
+        let previous_mtime = std::fs::metadata(project.path().join("out.txt"))
+            .unwrap()
+            .modified()
+            .unwrap();
         // Clear only cache metadata/state. Keep the output from the first run.
         std::fs::remove_dir_all(project.path().join(".oxymake")).unwrap();
         let succeeds = policy == "always";
@@ -599,11 +603,24 @@ shell = "cat {{input}} > {{output}}"
             succeeds,
             "{policy}: {stderr}"
         );
-        assert_eq!(
-            project.path().join("out.txt").exists(),
-            policy != "on-failure",
-            "{policy}"
+        assert!(project.path().join("out.txt").exists(), "{policy}");
+        assert!(
+            stderr.contains("1 job(s) have all declared outputs present but no cache entry"),
+            "{stderr}"
         );
+        if !succeeds {
+            assert_eq!(
+                std::fs::read_to_string(project.path().join("out.txt")).unwrap(),
+                "complete\n"
+            );
+            assert_eq!(
+                std::fs::metadata(project.path().join("out.txt"))
+                    .unwrap()
+                    .modified()
+                    .unwrap(),
+                previous_mtime
+            );
+        }
         assert_eq!(
             std::fs::read_to_string(project.path().join("attempts"))
                 .unwrap()

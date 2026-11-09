@@ -182,9 +182,25 @@ history record the executor selected for each executed job.
 
 | Value | Before execution | After failure |
 |-------|------------------|---------------|
-| `"always"` (default) | Delete existing declared outputs | Delete partial outputs |
-| `"on-failure"` | Keep existing declared outputs | Delete partial and existing outputs |
+| `"always"` (default) | Delete existing declared outputs | Delete outputs created or changed by the attempt |
+| `"on-failure"` | Keep existing declared outputs | Delete only outputs created or changed by the attempt |
 | `"never"` | Keep existing declared outputs | Keep all declared outputs |
+
+After pre-execution cleanup, local and Ray shell, script and inline `run`
+tasks record each present file's device, inode, size and nanosecond mtime.
+On failure (including a missing output after a zero exit), an unchanged
+preexisting file is kept and named in the failure diagnostic as
+`kept, unchanged by this attempt: …`. A new or changed output is removed.
+This metadata comparison does not detect a content rewrite that restores all
+four identity fields. `never` continues to keep all declared outputs.
+
+Before submission, `ox run` warns on stderr when jobs to execute have all
+declared file outputs present but no cache entry for their computation:
+`warning: N job(s) have all declared outputs present but no cache entry; they will be rebuilt`.
+The line lists up to ten job ids. This applies to every executor and
+`--dry-run`; explicitly forced jobs (`--forcerun`, including its downstream
+jobs, or `--no-cache`) and selectively excluded jobs are omitted. The warning
+does not stop execution or adopt the files into the cache.
 
 Three values express three distinct lifecycles; a boolean cannot represent
 all of them. The default preserves the existing guarantee that stale outputs

@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Before dispatch, `ox run` warns when planned jobs have all declared file
+  outputs present but no cache entry, listing up to ten job ids. This also
+  applies to `--dry-run` and every executor; explicitly forced jobs are
+  excluded (#65).
+
+### Changed
+
+- After a local or Ray shell, script or inline `run` task fails,
+  `clean_outputs = "on-failure"` (and failure cleanup under `always`) removes
+  only outputs created or changed by that attempt, comparing device, inode,
+  size and nanosecond mtime after pre-cleanup. Unchanged preexisting outputs
+  are retained and named in the failure diagnostic, including missing-output
+  failures. The unstable library error `ExecLocalError::OutputMissing` now
+  includes a `kept` diagnostic field. `never` is unchanged (#65).
+
 ### Fixed
 
 - Ray shell, script and inline `run` tasks now clear stale `.oxytmp` files

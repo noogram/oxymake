@@ -363,10 +363,11 @@ impl fmt::Display for MaterializePolicy {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum CleanOutputs {
-    /// Remove outputs before execution and after failure (the default).
+    /// Remove outputs before execution; remove created or changed outputs after failure (the default).
     #[default]
     Always,
-    /// Keep existing outputs before execution; remove them after failure.
+    /// Keep existing outputs before execution; after failure remove only outputs
+    /// absent before the attempt or changed in device, inode, size or nanosecond mtime.
     OnFailure,
     /// The script owns output validity; retain outputs even after failure.
     Never,
