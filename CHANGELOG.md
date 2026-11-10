@@ -33,6 +33,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Remote restoration checks input provenance and retains the local rule's
+  reproducibility class, preserving `cache-export` refusals (#66).
+
 - Ray shell, script and inline `run` tasks now clear stale `.oxytmp` files
   before execution and remove existing declared outputs with
   `clean_outputs = "always"`, matching the local executor. `on-failure` and

@@ -196,9 +196,11 @@ impl RemoteSession {
             let Some(entry) = self.read(key).await else {
                 return false;
             };
-            let result = entry.result;
+            let mut result = entry.result;
             let defect = if result.provenance.job_spec_hash != components.job_spec_hash {
                 Some("has a different job specification")
+            } else if result.provenance.input_hashes != components.input_hashes {
+                Some("has different input provenance")
             } else if result.platform_scope != scope {
                 Some("has a different platform scope")
             } else if scope == PlatformScope::Exact && result.origin_platform != current_platform()
@@ -233,6 +235,8 @@ impl RemoteSession {
                 self.warn("has an invalid output hash");
                 return false;
             };
+            // Reproducibility is the reader's policy, not a producer grant.
+            result.provenance.reproducibility = components.reproducibility;
             // Fetches are completed before the local row is created below.
             if !self.restore_files(outputs, &hashes).await {
                 return false;
@@ -361,6 +365,7 @@ mod tests {
                 cache_key: ContentHash::from(blake3::hash(b"key")),
                 input_hashes: vec![],
                 job_spec_hash: "spec".into(),
+                reproducibility: ReproducibilityClass::Deterministic,
                 params_hash: None,
                 env_hash: None,
             };

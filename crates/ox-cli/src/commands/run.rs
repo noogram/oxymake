@@ -466,6 +466,8 @@ pub(super) struct CacheKeyComponents {
     pub(super) input_hashes: Vec<(String, String)>,
     /// BLAKE3 hash of the job specification (rule source + params + env).
     pub(super) job_spec_hash: String,
+    /// Local rule policy; it does not enter the computation key.
+    pub(super) reproducibility: ox_core::model::ReproducibilityClass,
     /// Hash of the resolved wildcard bindings, `None` when the job has none.
     pub(super) params_hash: Option<String>,
     /// Content hash of the environment spec, `None` when undeclared.
@@ -632,6 +634,7 @@ pub(super) fn job_cache_key_with_components(
             .map(|(p, h)| (p, h.to_string()))
             .collect(),
         job_spec_hash,
+        reproducibility: job.reproducibility,
         params_hash,
         env_hash,
     })

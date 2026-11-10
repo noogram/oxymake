@@ -84,6 +84,7 @@ fn malformed_or_incompatible_entries_miss_with_one_warning_per_defect() {
         "format_version",
         "cache_key",
         "job_spec_hash",
+        "input_hashes",
         "platform_scope",
         "origin_platform",
         "paths",
@@ -105,6 +106,10 @@ fn malformed_or_incompatible_entries_miss_with_one_warning_per_defect() {
             "format_version" => entry["format_version"] = 99.into(),
             "cache_key" => entry["cache_key"] = "0".repeat(64).into(),
             "job_spec_hash" => entry["provenance"]["job_spec_hash"] = "other".into(),
+            "input_hashes" => {
+                entry["provenance"]["input_hashes"] =
+                    serde_json::json!([["fabricated", "0".repeat(64)]])
+            }
             "platform_scope" => entry["platform_scope"] = "any".into(),
             "origin_platform" => entry["origin_platform"] = "other/arch".into(),
             "paths" => entry["outputs"][0]["path"] = "../escape".into(),
@@ -360,4 +365,34 @@ fn remote_entries_cover_every_locally_cached_reproducibility_class() {
         assert!(!b.join("ran.log").exists(), "{class}");
         assert_eq!(entries(&remote)[0]["provenance"]["reproducibility"], class);
     }
+}
+
+#[test]
+fn restored_provenance_keeps_local_non_reproducible_export_refusal() {
+    let temp = tempfile::tempdir().unwrap();
+    let remote = temp.path().join("remote");
+    let writer = temp.path().join("writer");
+    let reader = temp.path().join("reader");
+    checkout(&writer);
+    checkout(&reader);
+    run(&writer, &remote, &[]);
+    fs::write(
+        reader.join("Oxymakefile.toml"),
+        WORKFLOW.replace(
+            "[rule.produce]",
+            "[rule.produce]\nreproducibility = \"non_reproducible\"",
+        ),
+    )
+    .unwrap();
+    run(&reader, &remote, &[]);
+    assert!(!reader.join("ran.log").exists(), "unit should restore");
+    assert_eq!(restored_count(&reader), 1);
+    Command::cargo_bin("ox")
+        .unwrap()
+        .current_dir(&reader)
+        .args(["cache-export", "b"])
+        .timeout(Duration::from_secs(30))
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("refusing non-reproducible"));
 }
