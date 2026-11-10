@@ -49,6 +49,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- After an upstream job rebuilds an input, downstream cache keys and
+  provenance now use its new content hash. Previously, a hash memoized
+  before execution could associate the new outputs with the old key in
+  both the local cache and published remote entries. For affected runs,
+  discard both local and remote cache entries before reuse.
 - Ray `--follow` now names the failed dependency for a task that could not
   run, instead of attributing the shared driver's error trace to that task.
   Per-task records take precedence when the driver reaches a terminal state (#65).
