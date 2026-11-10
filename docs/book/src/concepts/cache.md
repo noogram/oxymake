@@ -197,7 +197,9 @@ recorded in
 Restoration checks the entry's job specification, platform scope, input
 provenance and declared output paths. It verifies fetched blobs by BLAKE3 before installing any of a
 unit's outputs, then validates all outputs by content. Missing, corrupt,
-incompatible or oversized entries produce a cache miss and re-execution.
+incompatible, oversized or non-regular entries produce a cache miss and
+re-execution. Symlinked entries and entry-tree directories are rejected before
+opening the entry, with a warning.
 `ox run --dry-run` does not read remote entries or fetch outputs. With
 `--cache-remote`, its header and uncached-output warning explain that listed
 jobs may be restored instead of executed during a real run. Its JSON summary

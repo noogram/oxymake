@@ -103,8 +103,33 @@ impl RemoteCache for DirectoryCache {
     > {
         Box::pin(async move {
             let path = self.entry_path(key);
-            if !output_exists(&path) {
-                return Ok(None);
+            let entries = self.root.join("entries");
+            let prefix = path.parent().expect("entry prefix");
+            for directory in [entries.as_path(), prefix] {
+                match tokio::fs::symlink_metadata(directory).await {
+                    Ok(metadata) if metadata.file_type().is_dir() => (),
+                    Ok(_) => {
+                        return Err(RemoteCacheError::transport_msg(
+                            "remote entry parent is not a regular directory",
+                        ));
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+                    Err(error) => return Err(error.into()),
+                }
+            }
+            // Revalidate a cached negative lookup only after checking that the
+            // entry-tree directories are not symlinks. Never open a FIFO or a
+            // symlinked entry; the caller warns and treats this refusal as a miss.
+            let _ = std::fs::read_dir(prefix).map(|mut entries| entries.next());
+            match tokio::fs::symlink_metadata(&path).await {
+                Ok(metadata) if metadata.file_type().is_file() => (),
+                Ok(_) => {
+                    return Err(RemoteCacheError::transport_msg(
+                        "remote entry is not a regular file",
+                    ));
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+                Err(error) => return Err(error.into()),
             }
             let file = tokio::fs::File::open(&path).await?;
             if file.metadata().await?.len() > MAX_ENTRY_BYTES {
@@ -234,6 +259,37 @@ impl RemoteCache for DirectoryCache {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn entry_reads_reject_symlinks_and_non_regular_paths() {
+        use std::os::unix::fs::symlink;
+        for defect in ["entry", "prefix", "tree", "directory"] {
+            let dir = TempDir::new().unwrap();
+            let cache = DirectoryCache::new(dir.path());
+            let key = content_key(b"computation");
+            cache.store_entry(&key, b"entry bytes").await.unwrap();
+            let entry = cache.entry_path(&key);
+            let outside = dir.path().join("outside");
+            let source = match defect {
+                "entry" | "directory" => entry.clone(),
+                "prefix" => entry.parent().unwrap().to_path_buf(),
+                "tree" => dir.path().join("entries"),
+                _ => unreachable!(),
+            };
+            std::fs::rename(&source, &outside).unwrap();
+            if defect == "directory" {
+                std::fs::create_dir(&source).unwrap();
+            } else {
+                symlink(&outside, &source).unwrap();
+            }
+            let error = cache.fetch_entry(&key).await.expect_err(defect);
+            assert!(
+                error.to_string().contains("not a regular"),
+                "{defect}: {error}"
+            );
+        }
+    }
 
     #[tokio::test]
     async fn entry_roundtrip() {
