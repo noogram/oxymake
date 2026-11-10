@@ -200,31 +200,37 @@ fn recall_removes_every_historical_key_even_with_missing_raw_inputs() {
     assert!(a.join("first").exists());
 }
 #[test]
-fn recall_explicitly_removes_and_reports_newer_version() {
-    let tmp = tempfile::tempdir().unwrap();
-    let a = tmp.path().join("a");
-    let remote = tmp.path().join("remote");
-    checkout(&a);
-    ox(&a, &["run", "first"], &remote);
-    let path = entry_for(&remote, "first");
-    fs::write(
-        &path,
-        br#"{"kind":"oxymake.remote-cache-entry","format_version":99}"#,
-    )
-    .unwrap();
-    let dry = ox(&a, &["invalidate", "--rule", "first", "--dry-run"], &remote);
-    assert!(String::from_utf8_lossy(&dry.stdout).contains("newer format version 99"));
-    assert!(path.exists());
-    let out = ox(
-        &a,
-        &["invalidate", "--rule", "first", "--json", "--keep-outputs"],
-        &remote,
-    );
-    let report: Value = serde_json::from_slice(&out.stdout).unwrap();
-    assert_eq!(report["remote_entries"][0]["format_version"], 99);
-    assert_eq!(report["remote_entries"][0]["newer_version"], true);
-    assert!(!path.exists());
-    assert!(a.join("first").exists());
+fn recall_reports_current_and_newer_versions_at_the_metadata_size_limit() {
+    for (version, newer) in [(1, false), (99, true)] {
+        let tmp = tempfile::tempdir().unwrap();
+        let a = tmp.path().join("a");
+        let remote = tmp.path().join("remote");
+        checkout(&a);
+        ox(&a, &["run", "first"], &remote);
+        let path = entry_for(&remote, "first");
+        let mut document = serde_json::json!({"kind": "oxymake.remote-cache-entry", "format_version": version, "padding": ""});
+        let overhead = serde_json::to_vec(&document).unwrap().len();
+        document["padding"] = "x".repeat(1024 * 1024 - overhead).into();
+        let bytes = serde_json::to_vec(&document).unwrap();
+        assert_eq!(bytes.len(), 1024 * 1024);
+        fs::write(&path, bytes).unwrap();
+        let dry = ox(&a, &["invalidate", "--rule", "first", "--dry-run"], &remote);
+        assert_eq!(
+            String::from_utf8_lossy(&dry.stdout).contains("newer format version"),
+            newer
+        );
+        assert!(path.exists());
+        let out = ox(
+            &a,
+            &["invalidate", "--rule", "first", "--json", "--keep-outputs"],
+            &remote,
+        );
+        let report: Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(report["remote_entries"][0]["format_version"], version);
+        assert_eq!(report["remote_entries"][0]["newer_version"], newer);
+        assert!(!path.exists());
+        assert!(a.join("first").exists());
+    }
 }
 #[test]
 fn recall_cascade_applies_only_to_rule_without_local_rows() {
