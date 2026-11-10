@@ -170,6 +170,27 @@ impl CacheStore {
         Self::open_with(oxymake_dir, CacheValidation::default())
     }
 
+    /// Open an existing SQLite cache for diagnostics without creating or
+    /// migrating it. Input hashes may be memoized in memory, but SQLite rejects
+    /// writes, including lookup self-healing and persistent hash updates.
+    pub fn open_read_only(
+        oxymake_dir: &Path,
+        validation: CacheValidation,
+    ) -> Result<Self, CacheError> {
+        let cache_dir = oxymake_dir.join("cache");
+        let conn = Connection::open_with_flags(
+            cache_dir.join("cache.db"),
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )
+        .map_err(|e| CacheError::Manifest(format!("sqlite read-only open: {e}")))?;
+        Ok(Self {
+            conn,
+            cache_dir,
+            validation,
+            input_memo: HashMap::new(),
+        })
+    }
+
     /// Open or create the cache store with a specific validation strategy.
     pub fn open_with(oxymake_dir: &Path, validation: CacheValidation) -> Result<Self, CacheError> {
         let cache_dir = oxymake_dir.join("cache");
@@ -1197,6 +1218,20 @@ mod tests {
             )
             .unwrap();
         assert_eq!(markers, (0, 1));
+    }
+
+    #[test]
+    fn read_only_open_neither_creates_nor_migrates_legacy_cache() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache_root = dir.path().join(".oxymake");
+        assert!(CacheStore::open_read_only(&cache_root, CacheValidation::ContentHash).is_err());
+        assert!(!cache_root.exists());
+        std::fs::create_dir_all(cache_root.join("cache")).unwrap();
+        let manifest = cache_root.join("cache/manifest.json");
+        std::fs::write(&manifest, "{}").unwrap();
+        assert!(CacheStore::open_read_only(&cache_root, CacheValidation::ContentHash).is_err());
+        assert_eq!(std::fs::read_to_string(manifest).unwrap(), "{}");
+        assert!(!cache_root.join("cache/cache.db").exists());
     }
 
     /// Two sessions opening the manifest of a fresh cache directory at the

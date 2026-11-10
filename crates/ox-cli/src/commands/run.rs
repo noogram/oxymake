@@ -1568,7 +1568,7 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
             let mut store = if cache_dir.join("cache/cache.db").exists()
                 || cache_dir.join("cache/manifest.json").exists()
             {
-                CacheStore::open_with(cache_dir, validation).ok()
+                CacheStore::open_read_only(cache_dir, validation).ok()
             } else {
                 None
             };

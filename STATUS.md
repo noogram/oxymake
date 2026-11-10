@@ -374,6 +374,8 @@ unsupported versions miss with a warning. `CacheEntry::restored` and
 unstable Rust APIs; the latter clears cached input hashes after an output
 restore that retains its existing row. The local cache adds its
 marker through an additive migration, independently of `state.db`.
+`CacheStore::open_read_only` is an unstable Rust API for diagnostics over an
+existing SQLite cache; it neither creates nor migrates the cache.
 
 The resolver Rust API is also **unstable**. `ox_core::resolver::resolve` permits
 existing files as source fallbacks only for a missing input of their own producer;

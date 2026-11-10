@@ -121,10 +121,10 @@ fn invalidated_cache_entry_warns_before_rebuild() {
     assert_eq!(cache_entries(), 1);
     assert!(!run(&dir, &["--dry-run"]).contains("outputs present but no cache entry"));
     fs::write(dir.path().join("out"), "changed outside the workflow").unwrap();
-    // Cache validation self-heals by removing the mismatching entry. At
-    // warning time this computation really does have no cache entry.
-    assert!(run(&dir, &["--dry-run"]).contains(WARNING));
-    assert_eq!(cache_entries(), 0);
+    // A dry run retains the row, so this is stale, not unrecorded. The real
+    // run still invalidates the mismatch before warning and rebuilding.
+    assert!(!run(&dir, &["--dry-run"]).contains(WARNING));
+    assert_eq!(cache_entries(), 1);
     assert!(run(&dir, &[]).contains(WARNING));
     assert!(!run(&dir, &[]).contains("outputs present but no cache entry"));
 }
