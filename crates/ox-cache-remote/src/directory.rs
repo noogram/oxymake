@@ -91,6 +91,23 @@ async fn blake3_hex(path: &Path) -> std::io::Result<String> {
     Ok(blake3::hash(&bytes).to_hex().to_string())
 }
 
+/// Bound the stream independently of metadata, which can become stale before reading.
+async fn read_entry_bytes(
+    reader: impl tokio::io::AsyncRead + Unpin,
+) -> Result<Vec<u8>, RemoteCacheError> {
+    let mut bytes = Vec::new();
+    reader
+        .take(MAX_ENTRY_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .await?;
+    if bytes.len() as u64 > MAX_ENTRY_BYTES {
+        return Err(RemoteCacheError::transport_msg(
+            "remote entry exceeds 1 MiB",
+        ));
+    }
+    Ok(bytes)
+}
+
 impl RemoteCache for DirectoryCache {
     #[allow(clippy::type_complexity)] // Object-safe async entry transport.
     fn fetch_entry<'a>(
@@ -137,17 +154,7 @@ impl RemoteCache for DirectoryCache {
                     "remote entry exceeds 1 MiB",
                 ));
             }
-            // Bound the read as well: the file may have changed since metadata.
-            let mut bytes = Vec::new();
-            file.take(MAX_ENTRY_BYTES + 1)
-                .read_to_end(&mut bytes)
-                .await?;
-            if bytes.len() as u64 > MAX_ENTRY_BYTES {
-                return Err(RemoteCacheError::transport_msg(
-                    "remote entry exceeds 1 MiB",
-                ));
-            }
-            Ok(Some(bytes))
+            read_entry_bytes(file).await.map(Some)
         })
     }
 
@@ -300,6 +307,87 @@ mod tests {
         assert!(cache.fetch_entry(&key).await.unwrap().is_none());
         cache.store_entry(&key, bytes).await.unwrap();
         assert_eq!(cache.fetch_entry(&key).await.unwrap().unwrap(), bytes);
+    }
+
+    #[tokio::test]
+    async fn entry_size_limit_accepts_exactly_one_mib_and_refuses_larger_writes() {
+        let dir = TempDir::new().unwrap();
+        let cache = DirectoryCache::new(dir.path());
+        let key = content_key(b"computation");
+        let bytes = vec![b'x'; 1024 * 1024];
+        cache.store_entry(&key, &bytes).await.unwrap();
+        assert_eq!(cache.fetch_entry(&key).await.unwrap().unwrap(), bytes);
+
+        let oversized = vec![b'y'; 1024 * 1024 + 1];
+        assert!(cache.store_entry(&key, &oversized).await.is_err());
+        assert_eq!(cache.fetch_entry(&key).await.unwrap().unwrap(), bytes);
+        assert_eq!(
+            std::fs::read_dir(cache.entry_path(&key).parent().unwrap())
+                .unwrap()
+                .count(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn missing_entry_tree_prefix_and_file_are_misses() {
+        let dir = TempDir::new().unwrap();
+        let cache = DirectoryCache::new(dir.path());
+        let key = content_key(b"computation");
+        assert!(cache.fetch_entry(&key).await.unwrap().is_none());
+        std::fs::create_dir(dir.path().join("entries")).unwrap();
+        assert!(cache.fetch_entry(&key).await.unwrap().is_none());
+        std::fs::create_dir(cache.entry_path(&key).parent().unwrap()).unwrap();
+        assert!(cache.fetch_entry(&key).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn unreadable_entry_tree_is_an_error_instead_of_a_miss() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path().join("not-a-directory");
+        std::fs::write(&root, b"file").unwrap();
+        let cache = DirectoryCache::new(root);
+        assert!(
+            cache
+                .fetch_entry(&content_key(b"computation"))
+                .await
+                .is_err()
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn inaccessible_entry_is_an_error_instead_of_a_miss() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = TempDir::new().unwrap();
+        let cache = DirectoryCache::new(dir.path());
+        let key = content_key(b"computation");
+        cache.store_entry(&key, b"entry").await.unwrap();
+        let entry = cache.entry_path(&key);
+        let prefix = entry.parent().unwrap();
+        let permissions = std::fs::metadata(prefix).unwrap().permissions();
+        std::fs::set_permissions(prefix, std::fs::Permissions::from_mode(0)).unwrap();
+        let denied = std::fs::symlink_metadata(&entry)
+            .is_err_and(|e| e.kind() == std::io::ErrorKind::PermissionDenied);
+        let result = cache.fetch_entry(&key).await;
+        std::fs::set_permissions(prefix, permissions).unwrap();
+        if !denied {
+            eprintln!("permission-denial witness unavailable for a privileged user");
+            return;
+        }
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn entry_read_refuses_growth_beyond_the_metadata_limit() {
+        // The stream can outgrow an earlier successful metadata check. Exercise
+        // the same bounded read without depending on a filesystem write race.
+        let bytes = vec![b'x'; 1024 * 1024 + 1];
+        assert!(read_entry_bytes(bytes.as_slice()).await.is_err());
+        assert_eq!(
+            read_entry_bytes(&bytes[..1024 * 1024]).await.unwrap(),
+            &bytes[..1024 * 1024]
+        );
     }
 
     // Run this same test executable as two independent publishers. Each signals

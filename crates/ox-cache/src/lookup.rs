@@ -1320,6 +1320,76 @@ mod tests {
     }
 
     #[test]
+    fn adopted_and_restored_records_preserve_origin_and_distinct_markers() {
+        for adopted in [true, false] {
+            let dir = tempfile::tempdir().unwrap();
+            let state = dir.path().join(".oxymake");
+            let output = dir.path().join("out");
+            std::fs::write(&output, b"verified bytes").unwrap();
+            let key = ch("foreign-result");
+            let provenance = ox_core::model::ArtifactProvenance {
+                input_hashes: vec![(ch("input").to_string(), "source".into())],
+                job_spec_hash: ch("spec").to_string(),
+                reproducibility: ox_core::model::ReproducibilityClass::SeedDeterministic,
+            };
+            let mut store = make_store(&state);
+            if adopted {
+                store
+                    .record_adopted(
+                        key.clone(),
+                        &[&output],
+                        &provenance,
+                        "other/arch",
+                        PlatformScope::Any,
+                    )
+                    .unwrap();
+            } else {
+                store
+                    .record_restored(
+                        key.clone(),
+                        &[&output],
+                        &provenance,
+                        "other/arch",
+                        PlatformScope::Any,
+                    )
+                    .unwrap();
+            }
+            drop(store);
+            let mut store = make_store(&state);
+            let entry = store.get(&key).expect("record must persist across reopen");
+            assert_eq!(entry.adopted, adopted);
+            assert_eq!(entry.restored, !adopted);
+            assert_eq!(entry.platform.as_deref(), Some("other/arch"));
+            assert_eq!(entry.platform_scope, Some(PlatformScope::Any));
+            assert_eq!(entry.provenance.as_ref(), Some(&provenance));
+            let path = output.to_string_lossy().to_string();
+            assert_eq!(
+                entry.output_hashes[&path],
+                ContentHash::from(blake3::hash(b"verified bytes"))
+            );
+            assert_eq!(
+                entry.output_mtimes[&path],
+                hash::file_meta(&output).unwrap()
+            );
+            assert!(store.is_cached(&key, &[&output]).unwrap());
+
+            // A later local execution no longer carries either transfer marker.
+            store
+                .record(
+                    key.clone(),
+                    &[&output],
+                    Some(&provenance),
+                    PlatformScope::Any,
+                )
+                .unwrap();
+            let local = store.get(&key).unwrap();
+            assert!(!local.adopted);
+            assert!(!local.restored);
+            assert_eq!(local.platform, Some(crate::key::current_platform()));
+        }
+    }
+
+    #[test]
     fn record_and_is_cached() {
         let dir = tempfile::tempdir().unwrap();
         let oxdir = dir.path().join(".oxymake");

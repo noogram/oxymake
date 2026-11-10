@@ -3418,6 +3418,33 @@ mod cache_key_tests {
         }
     }
 
+    #[test]
+    fn forced_jobs_requires_both_regex_delimiters() {
+        let first = make_job(ExecutionBlock::Shell {
+            command: "true".into(),
+        });
+        let mut second = first.clone();
+        second.id = JobId("job-2".into());
+        second.rule = RuleName("contest".into());
+        let first_id = first.id.clone();
+        let second_id = second.id.clone();
+        let graph = JobGraph::build(vec![first, second]).unwrap();
+        assert_eq!(
+            forced_jobs(&graph, &["test".into()]),
+            HashSet::from([first_id.clone()])
+        );
+        assert_eq!(
+            forced_jobs(&graph, &["/test/".into()]),
+            HashSet::from([first_id, second_id])
+        );
+        for pattern in ["/test", "test/"] {
+            assert!(
+                forced_jobs(&graph, &[pattern.into()]).is_empty(),
+                "{pattern}"
+            );
+        }
+    }
+
     #[tokio::test]
     async fn scheduler_never_restores_jobs_excluded_from_remote_lookup() {
         let dir = tempfile::tempdir().unwrap();

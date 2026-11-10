@@ -459,6 +459,56 @@ shell = "printf downstream-ran >> executions.log; cat product.txt > final.txt"
 }
 
 #[test]
+fn adoption_accepts_a_foreign_origin_only_with_any_platform_scope() {
+    for scope in ["any", "exact"] {
+        let producer = TempDir::new().unwrap();
+        let consumer = TempDir::new().unwrap();
+        let manifest = producer.path().join("manifest.json");
+        let workflow = format!(
+            "ox_version=\"0.1\"\n[rule.produce]\noutput=[\"out\"]\nshell=\"echo bytes > out\"\ncache_platform=\"{scope}\"\n"
+        );
+        for root in [producer.path(), consumer.path()] {
+            fs::write(root.join("Oxymakefile.toml"), &workflow).unwrap();
+        }
+        ox().args(["run", "out"])
+            .current_dir(producer.path())
+            .assert()
+            .success();
+        ox().args(["cache-export", "out", "--output"])
+            .arg(&manifest)
+            .current_dir(producer.path())
+            .assert()
+            .success();
+        let mut value: serde_json::Value =
+            serde_json::from_slice(&fs::read(&manifest).unwrap()).unwrap();
+        value["entries"][0]["origin_platform"] = "other/arch".into();
+        fs::write(&manifest, serde_json::to_vec(&value).unwrap()).unwrap();
+        fs::copy(producer.path().join("out"), consumer.path().join("out")).unwrap();
+        let imported = ox()
+            .arg("cache-import")
+            .arg(&manifest)
+            .current_dir(consumer.path())
+            .timeout(std::time::Duration::from_secs(30))
+            .assert();
+        if scope == "any" {
+            imported.success();
+            let db = rusqlite::Connection::open(consumer.path().join(".oxymake/cache/cache.db"))
+                .unwrap();
+            let attribution: (String, i64) = db
+                .query_row("SELECT platform, adopted FROM cache_entries", [], |row| {
+                    Ok((row.get(0)?, row.get(1)?))
+                })
+                .unwrap();
+            assert_eq!(attribution, ("other/arch".into(), 1));
+        } else {
+            imported
+                .failure()
+                .stderr(predicates::str::contains("exact platform scope"));
+        }
+    }
+}
+
+#[test]
 fn unsupported_future_adoption_manifest_reports_version_before_body_schema() {
     let dir = TempDir::new().unwrap();
     let manifest = dir.path().join("future.json");

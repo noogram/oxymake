@@ -131,37 +131,34 @@ fn invalidated_cache_entry_warns_before_rebuild() {
 
 #[test]
 fn warning_counts_only_complete_file_outputs_and_truncates_ids() {
-    let dir = TempDir::new().unwrap();
-    let mut source = String::from("ox_version = \"0.1\"\n[rule.all]\ninput = [");
-    for i in 0..12 {
-        source.push_str(&format!("\"out{i:02}\","));
+    for (count, suffix) in [(10, ""), (12, ", ... (2 more)")] {
+        let dir = TempDir::new().unwrap();
+        let mut source = String::from("ox_version = \"0.1\"\n[rule.all]\ninput = [");
+        for i in 0..count {
+            source.push_str(&format!("\"out{i:02}\","));
+        }
+        source.push_str("\"missing\"]\n");
+        for i in 0..count {
+            source.push_str(&format!(
+                "[rule.job{i:02}]\noutput = [\"out{i:02}\"]\nshell = \"true\"\n"
+            ));
+            fs::write(dir.path().join(format!("out{i:02}")), "existing").unwrap();
+        }
+        source
+            .push_str("[rule.incomplete]\noutput = [\"present\", \"missing\"]\nshell = \"true\"\n");
+        fs::write(dir.path().join("present"), "existing").unwrap();
+        fs::write(dir.path().join("Oxymakefile.toml"), source).unwrap();
+        let stderr = run(&dir, &["--dry-run"]);
+        let warning = stderr
+            .lines()
+            .find(|l| l.contains("outputs present but no cache entry"))
+            .expect(&stderr);
+        let names = "job00, job01, job02, job03, job04, job05, job06, job07, job08, job09";
+        assert_eq!(
+            warning,
+            format!(
+                "warning: {count} job(s) have all declared outputs present but no cache entry; they will be rebuilt: {names}{suffix}"
+            )
+        );
     }
-    source.push_str("\"missing\"]\n");
-    for i in 0..12 {
-        source.push_str(&format!(
-            "[rule.job{i:02}]\noutput = [\"out{i:02}\"]\nshell = \"true\"\n"
-        ));
-        fs::write(dir.path().join(format!("out{i:02}")), "existing").unwrap();
-    }
-    source.push_str("[rule.incomplete]\noutput = [\"present\", \"missing\"]\nshell = \"true\"\n");
-    fs::write(dir.path().join("present"), "existing").unwrap();
-    fs::write(dir.path().join("Oxymakefile.toml"), source).unwrap();
-    let stderr = run(&dir, &["--dry-run"]);
-    let warning = stderr
-        .lines()
-        .find(|l| l.contains("outputs present but no cache entry"))
-        .expect(&stderr);
-    assert!(warning.contains("12 job(s)"), "{warning}");
-    assert!(
-        warning.contains("job00") && warning.contains("job09"),
-        "{warning}"
-    );
-    assert!(
-        !warning.contains("job10") && !warning.contains("job11"),
-        "{warning}"
-    );
-    assert!(
-        !warning.contains("incomplete") && !warning.contains("all,"),
-        "{warning}"
-    );
 }

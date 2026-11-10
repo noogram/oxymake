@@ -395,15 +395,7 @@ fn cmd_invalidate_remote(args: InvalidateArgs) -> Result<()> {
             if !regular_entry_path(&entry.path) {
                 continue;
             }
-            match std::fs::remove_file(&entry.path) {
-                Ok(()) => (),
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => (),
-                Err(e) => {
-                    return Err(e).with_context(|| {
-                        format!("cannot remove remote entry {}", entry.path.display())
-                    });
-                }
-            }
+            remove_remote_entry(&entry.path)?;
         }
     }
     let removed = if args.dry_run {
@@ -472,6 +464,15 @@ fn cmd_invalidate_remote(args: InvalidateArgs) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// A concurrent recall can remove the entry after its metadata was checked.
+fn remove_remote_entry(path: &Path) -> Result<()> {
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e).with_context(|| format!("cannot remove remote entry {}", path.display())),
+    }
 }
 
 // Keep the established local-only reporting and mutation contract.
@@ -589,6 +590,23 @@ fn cmd_invalidate_local(args: InvalidateArgs) -> Result<()> {
 #[cfg(test)]
 mod review_tests {
     use super::*;
+
+    #[test]
+    fn remote_entry_removal_is_idempotent_and_reports_other_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let entry = dir.path().join("entry.json");
+        std::fs::write(&entry, b"entry").unwrap();
+        remove_remote_entry(&entry).unwrap();
+        assert!(!entry.exists());
+        remove_remote_entry(&entry).unwrap();
+
+        let directory = dir.path().join("directory.json");
+        std::fs::create_dir(&directory).unwrap();
+        std::fs::write(directory.join("keep"), b"keep").unwrap();
+        let error = remove_remote_entry(&directory).unwrap_err();
+        assert!(error.to_string().contains("cannot remove remote entry"));
+        assert_eq!(std::fs::read(directory.join("keep")).unwrap(), b"keep");
+    }
 
     #[test]
     fn selected_jobs_are_keyed_once_across_all_targets() {
