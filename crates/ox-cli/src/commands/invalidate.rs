@@ -14,7 +14,6 @@ use ox_cache::CacheStore;
 use ox_core::dag::RuleGraph;
 use ox_core::model::{ContentHash, RuleName};
 use ox_core::resolver::ResolveRequest;
-use ox_core::wildcard::{CompiledPattern, Pattern};
 
 use super::common;
 
@@ -121,14 +120,25 @@ fn remote_entries(root: &Path, keys: &BTreeSet<String>) -> Vec<RemoteEntry> {
 }
 
 /// Expand selected rules independently of the presence of their output files.
-fn selected_paths(args: &InvalidateArgs, cache: Option<&CacheStore>) -> Result<BTreeSet<PathBuf>> {
+fn selected_paths(
+    args: &InvalidateArgs,
+    cache: Option<&CacheStore>,
+    current_remote_keys: bool,
+) -> Result<BTreeSet<PathBuf>> {
+    // Remote recall never adds files or rows to local invalidation. In an
+    // empty cache, main's local invalidation deletes nothing.
+    if !current_remote_keys && args.cache_remote.is_some() && cache.is_none_or(CacheStore::is_empty)
+    {
+        return Ok(BTreeSet::new());
+    }
     let mut paths: BTreeSet<PathBuf> = args.outputs.iter().map(PathBuf::from).collect();
-    if args.all {
+    if args.all && !current_remote_keys {
         if let Some(cache) = cache {
             paths.extend(cache.all_output_paths());
         }
+        return Ok(paths);
     }
-    if args.rule.is_none() && args.cache_remote.is_none() {
+    if args.rule.is_none() && !(args.all && current_remote_keys) {
         return Ok(paths);
     }
     let workflow = common::load_workflow(Path::new(&args.file))?;
@@ -159,21 +169,8 @@ fn selected_paths(args: &InvalidateArgs, cache: Option<&CacheStore>) -> Result<B
         rules.extend(workflow.rules.iter().map(|r| r.name.clone()));
     }
     if args.cascade {
-        // Explicit outputs select their producer, then the same downstream
-        // rule closure used by --rule. Do not include upstream dependencies.
-        for rule in &workflow.rules {
-            for output in &rule.outputs {
-                let expanded = ox_format::targets::substitute_config_refs(
-                    output.pattern.as_str(),
-                    &config.scalars,
-                );
-                let pattern =
-                    CompiledPattern::new(Pattern::parse(&expanded)?, &rule.wildcard_constraints)?;
-                if args.outputs.iter().any(|p| pattern.resolve(p).is_some()) {
-                    rules.insert(rule.name.clone());
-                }
-            }
-        }
+        // As in local invalidation, cascade applies to --rule only. An
+        // explicit --output never expands its producer's wildcard siblings.
         let graph =
             RuleGraph::build(workflow.rules.clone()).context("failed to build RuleGraph")?;
         let mut pending: Vec<_> = rules.iter().cloned().collect();
@@ -256,7 +253,7 @@ pub fn cmd_invalidate(args: InvalidateArgs) -> Result<()> {
     } else {
         None
     };
-    let paths = selected_paths(&args, cache.as_ref())?;
+    let paths = selected_paths(&args, cache.as_ref(), false)?;
     let refs: Vec<_> = paths.iter().map(|p| p.as_path()).collect();
     let local_keys = cache
         .as_ref()
@@ -265,7 +262,8 @@ pub fn cmd_invalidate(args: InvalidateArgs) -> Result<()> {
         .unwrap_or_default();
     let mut keys: BTreeSet<String> = local_keys.iter().map(ContentHash::to_string).collect();
     let remote = if let Some(root) = &args.cache_remote {
-        keys.extend(current_keys(&args, &paths, cache.as_ref())?);
+        let current_paths = selected_paths(&args, cache.as_ref(), true)?;
+        keys.extend(current_keys(&args, &current_paths, cache.as_ref())?);
         remote_entries(root, &keys)
     } else {
         Vec::new()

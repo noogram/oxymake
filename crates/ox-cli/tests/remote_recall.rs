@@ -227,7 +227,7 @@ fn recall_explicitly_removes_and_reports_newer_version() {
     assert!(a.join("first").exists());
 }
 #[test]
-fn recall_cascade_works_from_output_or_rule_without_local_rows() {
+fn recall_cascade_applies_only_to_rule_without_local_rows() {
     for select in [["--output", "first"], ["--rule", "/^first$/"]] {
         let tmp = tempfile::tempdir().unwrap();
         let a = tmp.path().join("a");
@@ -242,7 +242,10 @@ fn recall_cascade_works_from_output_or_rule_without_local_rows() {
             &["invalidate", select[0], select[1], "--cascade"],
             &remote,
         );
-        assert!(snapshot(&remote.join("entries")).is_empty());
+        assert_eq!(
+            snapshot(&remote.join("entries")).len(),
+            if select[0] == "--rule" { 0 } else { 1 }
+        );
     }
 }
 #[test]
