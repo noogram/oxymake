@@ -219,15 +219,28 @@ fn current_keys(
             &|path| cache.is_none_or(|cache| cache.entry_for_output(path).is_none()),
         ) {
             Ok(result) => {
+                let mut selected = false;
                 for job in result.jobs {
                     if super::run::output_file_paths(&job)
                         .iter()
                         .any(|p| paths.contains(p))
                     {
+                        selected = true;
                         if let Some(key) = super::run::job_cache_key_with_components(&job, None) {
                             keys.insert(key.cache_key.to_string());
+                        } else {
+                            eprintln!(
+                                "warning: cannot calculate current remote key for job {}; required input content is unavailable",
+                                job.id.as_str()
+                            );
                         }
                     }
+                }
+                if !selected {
+                    eprintln!(
+                        "warning: cannot calculate current remote key for {}; no producer job was resolved",
+                        path.display()
+                    );
                 }
             }
             // Missing inputs prevent current-key computation, but must not
@@ -245,6 +258,10 @@ pub fn cmd_invalidate(args: InvalidateArgs) -> Result<()> {
     if args.cache_remote.is_none() {
         return cmd_invalidate_local(args);
     }
+    anyhow::ensure!(
+        args.cache_remote.as_ref().is_some_and(|root| root.is_dir()),
+        "--cache-remote must name an existing directory"
+    );
     if !args.all && args.rule.is_none() && args.outputs.is_empty() {
         bail!("specify --rule <name>, --output <path>, or --all");
     }
@@ -312,7 +329,7 @@ pub fn cmd_invalidate(args: InvalidateArgs) -> Result<()> {
             serde_json::json!({
                 "invalidated_entries": removed, "output_paths": output_paths,
                 "deleted_files": deleted, "dry_run": args.dry_run,
-                "remote_entries": remote,
+                "remote_entries_found": remote.len(), "remote_entries": remote,
             })
         );
     } else {
@@ -332,6 +349,9 @@ pub fn cmd_invalidate(args: InvalidateArgs) -> Result<()> {
             }
         } else if deleted > 0 {
             println!("Deleted {deleted} output file(s).");
+        }
+        if remote.is_empty() {
+            println!("No remote entries found for the selected keys.");
         }
         for entry in &remote {
             let action = if args.dry_run {

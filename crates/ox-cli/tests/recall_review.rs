@@ -196,3 +196,62 @@ fn local_no_match_no_paths_and_dry_run_messages_are_preserved() {
     let out = success(&root, &["invalidate", "--rule", "empty"], None);
     assert_eq!(out.stdout, b"No output paths found to invalidate.\n");
 }
+
+#[test]
+fn remote_preflight_rejects_missing_and_non_directory_paths_before_mutation() {
+    for is_file in [false, true] {
+        let (_tmp, root, remote) = setup();
+        success(&root, &["run", "aligned/A.txt"], Some(&remote));
+        let entry = entries(&remote).pop().unwrap();
+        let bytes = fs::read(&entry).unwrap();
+        let bad = remote.join("invalid-root");
+        if is_file {
+            fs::write(&bad, "not a directory").unwrap();
+        }
+        let out = invoke(&root, &["invalidate", "--all"], Some(&bad));
+        assert!(!out.status.success());
+        assert!(String::from_utf8_lossy(&out.stderr).contains("existing directory"));
+        assert_eq!(rows(&root), 1);
+        assert_eq!(fs::read_to_string(root.join("aligned/A.txt")).unwrap(), "A");
+        assert_eq!(fs::read(entry).unwrap(), bytes);
+    }
+    let (_tmp, root, remote) = setup();
+    let out = invoke(
+        &root,
+        &["invalidate", "--rule", "align"],
+        Some(&remote.join("absent")),
+    );
+    assert!(!out.status.success());
+    assert!(!root.join(".oxymake").exists());
+}
+#[test]
+fn remote_recall_reports_missing_keys_and_no_entry_matches() {
+    let (_tmp, root, remote) = setup();
+    // These jobs resolve, but their script bytes are absent, so no key exists.
+    fs::write(root.join("Oxymakefile.toml"), "ox_version = \"0.1\"\n[rule.one]\noutput=[\"one\"]\nscript=\"missing.py\"\n[rule.two]\noutput=[\"two\"]\nscript=\"missing.py\"\n").unwrap();
+    let out = success(&root, &["invalidate", "--all"], Some(&remote));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    for job in ["one", "two"] {
+        assert!(
+            stderr
+                .lines()
+                .any(|l| l.contains("cannot calculate current remote key") && l.contains(job)),
+            "{stderr}"
+        );
+    }
+    assert!(String::from_utf8_lossy(&out.stdout).contains("No remote entries found"));
+    let out = success(&root, &["invalidate", "--all", "--json"], Some(&remote));
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(json["remote_entries_found"], 0);
+    // Missing raw inputs with present, unrecorded outputs can resolve as leaves.
+    fs::write(root.join("Oxymakefile.toml"), WILDCARDS).unwrap();
+    fs::remove_file(root.join("raw/A.txt")).unwrap();
+    fs::create_dir(root.join("aligned")).unwrap();
+    fs::write(root.join("aligned/A.txt"), "existing").unwrap();
+    let out = success(
+        &root,
+        &["invalidate", "--output", "aligned/A.txt"],
+        Some(&remote),
+    );
+    assert!(String::from_utf8_lossy(&out.stderr).contains("cannot calculate current remote key"));
+}
