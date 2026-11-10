@@ -4,9 +4,8 @@
 //! Primarily useful for testing and for single-machine shared caches
 //! (e.g., a team NFS mount).
 //!
-//! This backend is a blob transport, not a complete portable cache. The
-//! SQLite index that maps computation keys to output paths and blob hashes
-//! remains local to each checkout; it is not stored or synchronized here.
+//! Computation entries live under `entries/<prefix>/<key>.json`, independently
+//! of content-addressed blobs. Callers publish an entry after all its blobs.
 //!
 //! ## Layout
 //!
@@ -21,8 +20,14 @@
 //! The two-character prefix subdirectory prevents a single directory from
 //! accumulating millions of entries (a common filesystem performance issue).
 
+use ox_core::output_visibility::output_exists;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
+use std::sync::atomic::{AtomicU64, Ordering};
+use tokio::io::AsyncReadExt;
+
+static STAGING_COUNTER: AtomicU64 = AtomicU64::new(0);
+const MAX_ENTRY_BYTES: u64 = 1024 * 1024;
 
 use ox_core::model::ContentHash;
 use ox_core::traits::remote_cache::{RemoteCache, RemoteCacheError};
@@ -31,11 +36,12 @@ use ox_core::traits::remote_cache::{RemoteCache, RemoteCacheError};
 ///
 /// Artifacts are stored under a two-level directory structure:
 /// `<root>/<first-2-hex-chars>/<full-hash>`.
-/// The directory contains blobs only; callers still need their local cache
-/// index to know which blobs belong to a computation.
+/// Computation metadata is stored separately under `entries/`. Writers of
+/// this directory are trusted producers for runs using its entries.
 #[derive(Debug, Clone)]
 pub struct DirectoryCache {
     root: PathBuf,
+    run_id: String,
 }
 
 impl DirectoryCache {
@@ -44,7 +50,31 @@ impl DirectoryCache {
     /// The directory is created (including parents) on the first `store` call
     /// if it does not already exist.
     pub fn new(root: impl Into<PathBuf>) -> Self {
-        Self { root: root.into() }
+        Self::with_run_id(root, format!("run-{}", uuid::Uuid::new_v4()))
+    }
+
+    /// Use the publishing invocation's ADR-020 identity for staging files.
+    pub fn with_run_id(root: impl Into<PathBuf>, run_id: impl Into<String>) -> Self {
+        Self {
+            root: root.into(),
+            run_id: run_id.into(),
+        }
+    }
+
+    fn entry_path(&self, key: &ContentHash) -> PathBuf {
+        self.root
+            .join("entries")
+            .join(&key.as_str()[..2])
+            .join(format!("{}.json", key.as_str()))
+    }
+
+    fn staging_path(&self, dest: &Path) -> PathBuf {
+        dest.with_file_name(format!(
+            "{}.tmp.{}.{}",
+            dest.file_name().unwrap().to_string_lossy(),
+            self.run_id,
+            STAGING_COUNTER.fetch_add(1, Ordering::Relaxed)
+        ))
     }
 
     /// Return the filesystem path for a given content hash.
@@ -62,6 +92,66 @@ async fn blake3_hex(path: &Path) -> std::io::Result<String> {
 }
 
 impl RemoteCache for DirectoryCache {
+    #[allow(clippy::type_complexity)] // Object-safe async entry transport.
+    fn fetch_entry<'a>(
+        &'a self,
+        key: &'a ContentHash,
+    ) -> Pin<
+        Box<
+            dyn std::future::Future<Output = Result<Option<Vec<u8>>, RemoteCacheError>> + Send + 'a,
+        >,
+    > {
+        Box::pin(async move {
+            let path = self.entry_path(key);
+            if !output_exists(&path) {
+                return Ok(None);
+            }
+            let file = tokio::fs::File::open(&path).await?;
+            if file.metadata().await?.len() > MAX_ENTRY_BYTES {
+                return Err(RemoteCacheError::transport_msg(
+                    "remote entry exceeds 1 MiB",
+                ));
+            }
+            // Bound the read as well: the file may have changed since metadata.
+            let mut bytes = Vec::new();
+            file.take(MAX_ENTRY_BYTES + 1)
+                .read_to_end(&mut bytes)
+                .await?;
+            if bytes.len() as u64 > MAX_ENTRY_BYTES {
+                return Err(RemoteCacheError::transport_msg(
+                    "remote entry exceeds 1 MiB",
+                ));
+            }
+            Ok(Some(bytes))
+        })
+    }
+
+    fn store_entry<'a>(
+        &'a self,
+        key: &'a ContentHash,
+        bytes: &'a [u8],
+    ) -> Pin<Box<dyn std::future::Future<Output = Result<(), RemoteCacheError>> + Send + 'a>> {
+        Box::pin(async move {
+            if bytes.len() as u64 > MAX_ENTRY_BYTES {
+                return Err(RemoteCacheError::transport_msg(
+                    "remote entry exceeds 1 MiB",
+                ));
+            }
+            let dest = self.entry_path(key);
+            tokio::fs::create_dir_all(dest.parent().unwrap()).await?;
+            let staging = self.staging_path(&dest);
+            let result = async {
+                tokio::fs::write(&staging, bytes).await?;
+                tokio::fs::rename(&staging, &dest).await
+            }
+            .await;
+            if result.is_err() {
+                let _ = tokio::fs::remove_file(&staging).await;
+            }
+            result.map_err(Into::into)
+        })
+    }
+
     fn fetch<'a>(
         &'a self,
         key: &'a ContentHash,
@@ -70,7 +160,7 @@ impl RemoteCache for DirectoryCache {
     {
         Box::pin(async move {
             let src = self.artifact_path(key);
-            if !src.exists() {
+            if !output_exists(&src) {
                 return Ok(false);
             }
             if let Some(parent) = dest.parent() {
@@ -115,17 +205,11 @@ impl RemoteCache for DirectoryCache {
             // a crash mid-copy must never leave a partial artifact at
             // the final path, and concurrent writers must not clobber
             // each other's staging files.
-            let unique = format!(
-                "{}.tmp.{}.{}",
-                key.as_str(),
-                std::process::id(),
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.subsec_nanos())
-                    .unwrap_or(0),
-            );
-            let staging = dest.with_file_name(unique);
-            tokio::fs::copy(source, &staging).await?;
+            let staging = self.staging_path(&dest);
+            if let Err(e) = tokio::fs::copy(source, &staging).await {
+                let _ = tokio::fs::remove_file(&staging).await;
+                return Err(e.into());
+            }
             if let Err(e) = tokio::fs::rename(&staging, &dest).await {
                 let _ = tokio::fs::remove_file(&staging).await;
                 return Err(e.into());
@@ -141,7 +225,7 @@ impl RemoteCache for DirectoryCache {
     {
         Box::pin(async move {
             let path = self.artifact_path(key);
-            Ok(path.exists())
+            Ok(output_exists(&path))
         })
     }
 }
@@ -150,6 +234,48 @@ impl RemoteCache for DirectoryCache {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    #[tokio::test]
+    async fn entry_roundtrip_and_concurrent_publishers_leave_no_staging() {
+        let dir = TempDir::new().unwrap();
+        let a = DirectoryCache::new(dir.path());
+        let b = DirectoryCache::new(dir.path());
+        let key = content_key(b"computation");
+        let first = br#"{"outputs": [1]}"#;
+        let second = br#"{"outputs": [2]}"#;
+        assert!(a.fetch_entry(&key).await.unwrap().is_none());
+        a.store_entry(&key, first).await.unwrap();
+        assert_eq!(a.fetch_entry(&key).await.unwrap().unwrap(), first);
+        let (x, y) = tokio::join!(a.store_entry(&key, first), b.store_entry(&key, second));
+        x.unwrap();
+        y.unwrap();
+        let bytes = a.fetch_entry(&key).await.unwrap().unwrap();
+        assert!(bytes == first || bytes == second);
+        let parent = dir.path().join("entries").join(&key.as_str()[..2]);
+        let names: Vec<_> = std::fs::read_dir(parent)
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(
+            names,
+            vec![std::ffi::OsString::from(format!("{}.json", key.as_str()))]
+        );
+    }
+
+    #[tokio::test]
+    async fn oversize_entry_is_refused() {
+        let dir = TempDir::new().unwrap();
+        let cache = DirectoryCache::new(dir.path());
+        let key = content_key(b"computation");
+        let parent = dir.path().join("entries").join(&key.as_str()[..2]);
+        std::fs::create_dir_all(&parent).unwrap();
+        std::fs::write(
+            parent.join(format!("{}.json", key.as_str())),
+            vec![0; 1024 * 1024 + 1],
+        )
+        .unwrap();
+        assert!(cache.fetch_entry(&key).await.is_err());
+    }
 
     fn test_hash(s: &str) -> ContentHash {
         // Deterministic valid hash from a label: hex-encode the bytes and

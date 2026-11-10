@@ -268,9 +268,12 @@ fn remote_blobs(remote: &Path) -> BTreeSet<Vec<u8>> {
     let mut blobs = BTreeSet::new();
     let mut dirs = vec![remote.to_path_buf()];
     while let Some(dir) = dirs.pop() {
-        for entry in std::fs::read_dir(dir).into_iter().flatten() {
+        for entry in std::fs::read_dir(&dir).into_iter().flatten() {
             let path = entry.unwrap().path();
             if path.is_dir() {
+                if dir == remote && path.file_name().is_some_and(|name| name == "entries") {
+                    continue;
+                }
                 dirs.push(path);
             } else {
                 blobs.insert(std::fs::read(path).unwrap());
@@ -311,18 +314,62 @@ async fn killed_ray_driver_leaves_its_completed_units_cached_locally_and_remotel
         String::from_utf8_lossy(&first.stderr)
     );
 
-    // Resubmission: the two completed units are cache hits, the other two run.
-    let second = follow_run(project.path(), remote.path(), &TARGETS, None, "SUCCEEDED").await;
-    let stderr = String::from_utf8_lossy(&second.stderr);
-    assert!(second.status.success(), "{stderr}");
+    // A second checkout restores the completed units from the remote entry.
+    let fresh = tempfile::tempdir().unwrap();
+    std::fs::create_dir(fresh.path().join("in")).unwrap();
+    std::fs::write(fresh.path().join("in/s1.txt"), "a\n").unwrap();
+    std::fs::write(fresh.path().join("in/s2.txt"), "b\n").unwrap();
+    std::fs::write(fresh.path().join("Oxymakefile.toml"), WORKFLOW).unwrap();
+    let restored = follow_run(fresh.path(), remote.path(), &TARGETS, None, "SUCCEEDED").await;
+    let stderr = String::from_utf8_lossy(&restored.stderr);
+    assert!(restored.status.success(), "{stderr}");
     assert!(
         stderr.contains("DAG submitted to Ray: 2 active jobs (2 cached, 4 total"),
         "{stderr}"
     );
+    let fresh_ran = ran(fresh.path());
+    assert_eq!(fresh_ran.len(), 2, "{fresh_ran:?}");
+    let completed: BTreeSet<String> = completed.into_iter().collect();
+    let expected_to_run: BTreeSet<String> =
+        ["mid/s1.txt", "mid/s2.txt", "final/s1.txt", "final/s2.txt"]
+            .into_iter()
+            .filter(|output| !completed.contains(*output))
+            .map(str::to_string)
+            .collect();
+    assert_eq!(
+        fresh_ran.into_iter().collect::<BTreeSet<_>>(),
+        expected_to_run
+    );
+    for (output, content) in [
+        ("mid/s1.txt", "a\n"),
+        ("mid/s2.txt", "b\n"),
+        ("final/s1.txt", "A\n"),
+        ("final/s2.txt", "B\n"),
+    ] {
+        assert_eq!(
+            std::fs::read_to_string(fresh.path().join(output)).unwrap(),
+            content
+        );
+    }
+
+    // A same-checkout rerun now skips all four units from local cache state.
+    let second = std::process::Command::new(assert_cmd::cargo::cargo_bin("ox"))
+        .current_dir(project.path())
+        .args(["run", "--executor", "ray", "--follow", "--cache-remote"])
+        .arg(remote.path())
+        .args(TARGETS)
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&second.stderr);
+    assert!(second.status.success(), "{stderr}");
     let all = ran(project.path());
-    assert_eq!(all.len(), 4, "each unit runs exactly once: {all:?}");
+    assert_eq!(
+        all.len(),
+        2,
+        "each completed unit runs exactly once: {all:?}"
+    );
     let distinct: BTreeSet<&String> = all.iter().collect();
-    assert_eq!(distinct.len(), 4, "a cached unit ran again: {all:?}");
+    assert_eq!(distinct.len(), 2, "a cached unit ran again: {all:?}");
     for (output, content) in [
         ("mid/s1.txt", "a\n"),
         ("mid/s2.txt", "b\n"),
@@ -337,7 +384,7 @@ async fn killed_ray_driver_leaves_its_completed_units_cached_locally_and_remotel
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn absolute_output_outside_project_is_cached_and_remote_blobs_need_local_metadata() {
+async fn absolute_output_outside_project_restores_from_entries() {
     let project = tempfile::tempdir().unwrap();
     let outputs = tempfile::tempdir().unwrap();
     let remote = tempfile::tempdir().unwrap();
@@ -442,22 +489,38 @@ shell = "echo ran >> ran.log && echo result > {{output}}"
     );
     assert_eq!(ran(project.path()).len(), 1, "cached unit ran again");
 
-    // Fresh local state with the same output and remote bytes still executes:
-    // the remote store carries blobs, not the computation's cache entry.
+    // Fresh local state restores the output from the remote computation entry.
     let old_state = tempfile::tempdir().unwrap();
+    std::fs::remove_file(&output).unwrap();
     std::fs::rename(
         project.path().join(".oxymake"),
         old_state.path().join("state"),
     )
     .unwrap();
-    let third = follow_run(project.path(), remote.path(), &[target], None, "SUCCEEDED").await;
-    let stderr = String::from_utf8_lossy(&third.stderr);
-    assert!(third.status.success(), "{stderr}");
-    assert!(
-        stderr.contains("DAG submitted to Ray: 1 active jobs (0 cached, 1 total"),
-        "{stderr}"
-    );
-    assert_eq!(ran(project.path()).len(), 2);
+    let restored = std::process::Command::new(assert_cmd::cargo::cargo_bin("ox"))
+        .current_dir(project.path())
+        .args([
+            "run",
+            target,
+            "--executor",
+            "ray",
+            "--follow",
+            "--cache-remote",
+        ])
+        .arg(remote.path())
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&restored.stderr);
+    assert!(restored.status.success(), "{stderr}");
+    assert_eq!(std::fs::read(&output).unwrap(), b"result\n");
+    assert_eq!(ran(project.path()).len(), 1, "restored unit ran again");
+    let db = rusqlite::Connection::open(project.path().join(".oxymake/cache/cache.db")).unwrap();
+    let markers: (i64, i64) = db
+        .query_row("SELECT restored, adopted FROM cache_entries", [], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })
+        .unwrap();
+    assert_eq!(markers, (1, 0));
 }
 
 /// One unit writing a relative output.
@@ -588,9 +651,10 @@ shell = "cat {{input}} > {{output}}"
         // Clear only cache metadata/state. Keep the output from the first run.
         std::fs::remove_dir_all(project.path().join(".oxymake")).unwrap();
         let succeeds = policy == "always";
+        let empty_remote = tempfile::tempdir().unwrap();
         let second = follow_run(
             project.path(),
-            remote.path(),
+            empty_remote.path(),
             &["final.txt"],
             None,
             if succeeds { "SUCCEEDED" } else { "FAILED" },

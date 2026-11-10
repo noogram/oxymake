@@ -58,8 +58,8 @@ ox run --no-cache               # Ignore the cache, re-run everything
   propagation is not supported; labels still enter the local journal and
   history for SLURM runs.
 - `--no-cache` -- Ignore cached outputs and re-execute
-- `--cache-remote DIR` -- Share output blobs through a directory blob store
-  (forces `hash` validation; see below)
+- `--cache-remote DIR` -- Share output blobs and computation entries through a
+  directory cache (forces `hash` validation; see below)
 - `--executor EXEC` -- Choose executor: `local` (default), `slurm`, `ray`.
   A SLURM graph with an active rule declaring `executor = "local"` uses
   scheduler dispatch and waits for completion, including without `--follow`.
@@ -130,18 +130,20 @@ executed by one session and the others wait for its result (see
 [`ox gate`](#ox-gate) for the behaviour and `OX_SESSION_LEASE_SECS` for the
 lease after which a dead session's jobs are taken over).
 
-**`--cache-remote <dir>`** stores each job's output blobs in the given
-directory (content-addressed, BLAKE3-verified on restore) and restores
-missing outputs from it. Validation is always promoted to `hash` when the
-flag is set. The directory is a *blob transport*, not a complete portable
-cache: the local SQLite index under `.oxymake/cache/` that maps computation
-keys to output paths and hashes does not travel with the blobs, so a fresh
-checkout pointing at the same directory re-executes unless that local index
-is transferred too. A remote computation-key manifest that removes this
-requirement is future work. With `--executor ray`, completed tasks are
-recorded and their blobs stored only under `--follow`, as each task's record
-is read (see [Ray integration](../concepts/ray-integration.md#per-task-records)).
-See [Caching](../concepts/cache.md).
+**`--cache-remote <dir>`** stores each recorded unit's output blobs and then
+its computation entry in the given directory. A fresh checkout with the same
+workflow and raw inputs restores and skips recorded units without copying a
+local index, including units recorded before an interruption. Destinations
+come from the local job's declared outputs; fetched blobs and restored
+outputs are BLAKE3-verified. Validation is always promoted to `hash`.
+Writers of the directory are trusted to supply results for computation keys;
+restrict write access using filesystem permissions. Invalid or unsupported
+entries are misses, with a warning. `--dry-run` reads no entries and fetches
+no blobs. `ox invalidate` still removes local rows only.
+With `--executor ray`, publication happens only under `--follow`, as completed
+task records are read, not during `ox status` reconciliation. See
+[Ray integration](../concepts/ray-integration.md#per-task-records) and
+[Caching](../concepts/cache.md).
 
 **Local interruption.** The first Ctrl+C (or `SIGTERM`, which is what
 [`ox cancel`](#ox-cancel) sends) starts a graceful shutdown: the session is

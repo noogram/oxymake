@@ -9,11 +9,12 @@ use std::sync::Arc;
 use anyhow::{Context, Result, bail};
 use tokio::sync::Mutex;
 
+use super::remote_cache::{CacheOutput, CacheResult, RemoteSession, normalized_output};
 use ox_cache::{
     CacheHitStatus, CacheKeySpec, CacheStore, CacheValidation, compute_cache_key, current_platform,
     env_spec_content_hash, hash_file, workflow_relative_path,
 };
-use ox_cache_remote::{DirectoryCache, RemoteCache};
+use ox_cache_remote::DirectoryCache;
 use ox_core::dag::RuleGraph;
 use ox_core::disk_writer::spawn_disk_writer_with_roots;
 use ox_core::event::EventBus;
@@ -459,12 +460,16 @@ pub(super) fn input_file_paths(job: &ConcreteJob) -> Vec<PathBuf> {
 /// Components of a cache key computation, preserving intermediate hashes
 /// for provenance tracking (Stage 2).
 pub(super) struct CacheKeyComponents {
+    /// Invocation selection identity; it does not enter the computation key.
+    pub(super) job_id: JobId,
     /// The final cache key (BLAKE3 of all components).
     pub(super) cache_key: ContentHash,
     /// Content hashes of each input file, paired with their path.
     pub(super) input_hashes: Vec<(String, String)>,
     /// BLAKE3 hash of the job specification (rule source + params + env).
     pub(super) job_spec_hash: String,
+    /// Local rule policy; it does not enter the computation key.
+    pub(super) reproducibility: ox_core::model::ReproducibilityClass,
     /// Hash of the resolved wildcard bindings, `None` when the job has none.
     pub(super) params_hash: Option<String>,
     /// Content hash of the environment spec, `None` when undeclared.
@@ -625,12 +630,14 @@ pub(super) fn job_cache_key_with_components(
     });
 
     Some(CacheKeyComponents {
+        job_id: job.id.clone(),
         cache_key,
         input_hashes: input_pairs
             .into_iter()
             .map(|(p, h)| (p, h.to_string()))
             .collect(),
         job_spec_hash,
+        reproducibility: job.reproducibility,
         params_hash,
         env_hash,
     })
@@ -654,7 +661,7 @@ fn job_cache_key(job: &ConcreteJob, store: Option<&mut CacheStore>) -> Option<Co
 /// `CacheStore` (which is needed for `record` and `save`).
 struct SchedulerCache {
     store: Mutex<CacheStore>,
-    remote: Option<Arc<dyn RemoteCache>>,
+    remote: Option<Arc<RemoteSession>>,
     /// What each job was keyed on, collected as the cache layer computes
     /// it, so the run can write it into the audit trail afterwards (#12).
     /// Keyed by `JobId`; a job the cache layer never keyed is absent.
@@ -692,45 +699,8 @@ pub(super) fn job_provenance(
     }
 }
 
-/// Restore all outputs for a known local cache entry from a shared artifact
-/// directory, then validate their hashes through `CacheStore`.
-pub(super) async fn restore_remote_outputs(
-    remote: &dyn RemoteCache,
-    store: &mut CacheStore,
-    cache_key: &ContentHash,
-    outputs: &[PathBuf],
-) -> bool {
-    let output_refs: Vec<&Path> = outputs.iter().map(|p| p.as_path()).collect();
-    if store.is_cached(cache_key, &output_refs).unwrap_or(false) {
-        return true;
-    }
-    let Some(entry) = store.get(cache_key) else {
-        return false;
-    };
-
-    for output in outputs {
-        let output_name = output.to_string_lossy();
-        let Some(hash) = entry.output_hashes.get(output_name.as_ref()) else {
-            return false;
-        };
-        match remote.fetch(hash, output).await {
-            Ok(true) => {}
-            Ok(false) => return false,
-            Err(e) => {
-                eprintln!(
-                    "warning: remote cache fetch for {} failed: {e}",
-                    output.display()
-                );
-                return false;
-            }
-        }
-    }
-
-    store.is_cached(cache_key, &output_refs).unwrap_or(false)
-}
-
 impl SchedulerCache {
-    fn new(store: CacheStore, remote: Option<Arc<dyn RemoteCache>>) -> Self {
+    fn new(store: CacheStore, remote: Option<Arc<RemoteSession>>) -> Self {
         Self {
             store: Mutex::new(store),
             remote,
@@ -920,7 +890,14 @@ impl CacheCheck for SchedulerCache {
             };
             let cache_key = components.cache_key.clone();
             if let Some(remote) = &self.remote {
-                if restore_remote_outputs(remote.as_ref(), &mut store, &cache_key, &output_paths)
+                if remote
+                    .restore(
+                        &mut store,
+                        &components,
+                        &output_paths,
+                        job.platform_scope,
+                        &std::env::current_dir().unwrap_or_default(),
+                    )
                     .await
                 {
                     let entry = store.get(&cache_key);
@@ -1036,19 +1013,33 @@ impl CacheCheck for SchedulerCache {
             let prov = job_provenance(job, &components, entry.as_ref().map(|e| &e.output_hashes));
             self.note_provenance(job, prov).await;
 
-            if let Some(remote) = &self.remote {
-                for output in &output_paths {
-                    let Some(hash) = entry.as_ref().and_then(|entry| {
-                        entry.output_hashes.get(output.to_string_lossy().as_ref())
-                    }) else {
-                        continue;
-                    };
-                    if let Err(e) = remote.store(hash, output).await {
-                        eprintln!(
-                            "warning: remote cache store for {} failed: {e}",
-                            output.display()
-                        );
-                    }
+            if let (Some(remote), Some(entry)) = (&self.remote, entry) {
+                let root = std::env::current_dir().unwrap_or_default();
+                let outputs = output_paths
+                    .iter()
+                    .map(|path| {
+                        entry
+                            .output_hashes
+                            .get(path.to_string_lossy().as_ref())
+                            .map(|hash| CacheOutput {
+                                path: normalized_output(path, &root),
+                                content_hash: hash.to_string(),
+                            })
+                    })
+                    .collect::<Option<Vec<_>>>();
+                if let Some(outputs) = outputs {
+                    remote
+                        .publish(
+                            &cache_key,
+                            CacheResult {
+                                outputs,
+                                provenance,
+                                origin_platform: current_platform(),
+                                platform_scope: job.platform_scope,
+                            },
+                            &output_paths,
+                        )
+                        .await;
                 }
             }
         })
@@ -1777,10 +1768,14 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
     // A shared cache has no meaningful mtime relationship with this
     // workspace. DirectoryCache verifies each fetched artifact by content, so
     // retain that guarantee when validating the restored outputs locally.
-    let remote_cache: Option<Arc<dyn RemoteCache>> = args
-        .cache_remote
-        .as_ref()
-        .map(|dir| Arc::new(DirectoryCache::new(dir)) as Arc<dyn RemoteCache>);
+    let invocation_id = mint_run_id();
+    let remote_cache: Option<Arc<RemoteSession>> = args.cache_remote.as_ref().map(|dir| {
+        Arc::new(RemoteSession::new(
+            Arc::new(DirectoryCache::with_run_id(dir, invocation_id.clone())),
+            invocation_id.clone(),
+            force_rerun.union(&selective_skip).cloned().collect(),
+        ))
+    });
     let cache_validation = if remote_cache.is_some() {
         CacheValidation::ContentHash
     } else {
@@ -1895,7 +1890,7 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
         // Recording costs one transaction plus one write per job, paid
         // only on the warm path it documents.
         std::fs::create_dir_all(&oxymake_dir).ok();
-        let run_id = mint_run_id();
+        let run_id = invocation_id.clone();
         // The fast path is still a run: persist the same ordered contract as
         // a scheduled invocation rather than returning before reporters exist.
         // Its sinks are created before the run is recorded, like the
@@ -2065,7 +2060,7 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
 
     let ctx = ExecContext {
         global_job_limit: args.jobs,
-        run_id: mint_run_id(),
+        run_id: invocation_id,
         log_dir: PathBuf::from(".oxymake/logs"),
         project_dir,
         trusted_dirs,
@@ -3339,6 +3334,40 @@ mod cache_key_tests {
             clean_outputs: Default::default(),
             platform_scope: Default::default(),
             reproducibility: Default::default(),
+        }
+    }
+
+    #[tokio::test]
+    async fn scheduler_never_restores_jobs_excluded_from_remote_lookup() {
+        let dir = tempfile::tempdir().unwrap();
+        let output = dir.path().join("out");
+        let mut job = make_job(ExecutionBlock::Shell {
+            command: "produce".into(),
+        });
+        job.outputs.push(ox_core::model::ResolvedOutput {
+            reference: OutputRef::File(output.clone()),
+            name: None,
+            format: None,
+            lifecycle: Default::default(),
+            materialize: Default::default(),
+        });
+        let remote = Arc::new(RemoteSession::new(
+            Arc::new(DirectoryCache::new(dir.path().join("remote"))),
+            "run-test".into(),
+            HashSet::from([job.id.clone()]),
+        ));
+        let open = |name| {
+            CacheStore::open_with(&dir.path().join(name), CacheValidation::ContentHash).unwrap()
+        };
+        let writer = SchedulerCache::new(open("writer"), Some(remote.clone()));
+        std::fs::write(&output, "published").unwrap();
+        writer.record(&job).await;
+        std::fs::remove_file(&output).unwrap();
+        let reader = SchedulerCache::new(open("reader"), Some(remote));
+        // Cover a legacy local-row lookup as well as a fresh remote-entry lookup.
+        for cache in [&writer, &reader] {
+            assert!(cache.check_with_reason(&job).await.is_err());
+            assert!(!output.exists(), "scheduler restored an ineligible job");
         }
     }
 

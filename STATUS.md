@@ -361,6 +361,14 @@ exists and has been used in anger.
 - Add new traits.
 - Reorganize the module path of a trait.
 
+`RemoteCache::fetch_entry` and `store_entry` are unstable Rust methods with
+miss/no-op defaults for backends without computation entries. Directory cache
+entries (`kind = "oxymake.remote-cache-entry"`, `format_version = 1`) are an
+unstable, independently versioned format: unknown fields are ignored and
+unsupported versions miss with a warning. `CacheEntry::restored` and
+`CacheStore::record_restored` are unstable Rust APIs; the local cache adds its
+marker through an additive migration, independently of `state.db`.
+
 The resolver Rust API is also **unstable**. `ox_core::resolver::resolve` permits
 existing files as source fallbacks only for a missing input of their own producer;
 fixed inputs of wildcard producers and failures deeper in the graph remain errors.

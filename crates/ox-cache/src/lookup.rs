@@ -44,6 +44,9 @@ pub struct CacheEntry {
     /// Whether this entry was explicitly adopted through `ox cache-import`.
     #[serde(default)]
     pub adopted: bool,
+    /// Whether this entry was restored through a remote computation entry.
+    #[serde(default)]
+    pub restored: bool,
 }
 
 type CacheEntryRow = (
@@ -53,6 +56,7 @@ type CacheEntryRow = (
     Option<String>,
     Option<String>,
     Option<String>,
+    i64,
     i64,
 );
 
@@ -131,6 +135,7 @@ fn migrate_cache_entry_schema(conn: &mut Connection) -> Result<(), CacheError> {
         ("platform", "TEXT"),
         ("platform_scope", "TEXT"),
         ("adopted", "INTEGER NOT NULL DEFAULT 0"),
+        ("restored", "INTEGER NOT NULL DEFAULT 0"),
     ] {
         let exists: bool = tx
             .query_row(
@@ -606,6 +611,7 @@ impl CacheStore {
             &platform,
             platform_scope,
             false,
+            false,
         )
     }
 
@@ -632,9 +638,36 @@ impl CacheStore {
             origin_platform,
             platform_scope,
             true,
+            false,
         )
     }
 
+    /// Record outputs verified against a remote entry, preserving its origin.
+    /// This is distinct from explicit adoption through `ox cache-import`.
+    pub fn record_restored(
+        &mut self,
+        cache_key: ContentHash,
+        outputs: &[&Path],
+        provenance: &ox_core::model::ArtifactProvenance,
+        origin_platform: &str,
+        platform_scope: PlatformScope,
+    ) -> Result<(), CacheError> {
+        let outputs = outputs
+            .iter()
+            .map(|path| Ok((*path, hash::hash_file(path)?)))
+            .collect::<Result<Vec<_>, CacheError>>()?;
+        self.record_with_platform(
+            cache_key,
+            &outputs,
+            Some(provenance),
+            origin_platform,
+            platform_scope,
+            false,
+            true,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
     fn record_with_platform(
         &mut self,
         cache_key: ContentHash,
@@ -643,6 +676,7 @@ impl CacheStore {
         platform: &str,
         platform_scope: PlatformScope,
         adopted: bool,
+        restored: bool,
     ) -> Result<(), CacheError> {
         let completed_at = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -666,8 +700,8 @@ impl CacheStore {
         tx.execute(
             "INSERT OR REPLACE INTO cache_entries
                 (cache_key, completed_at, reproducibility_class, input_hashes_json, job_spec_hash,
-                 platform, platform_scope, adopted)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                 platform, platform_scope, adopted, restored)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             params![
                 cache_key.as_str(),
                 completed_at as i64,
@@ -677,6 +711,7 @@ impl CacheStore {
                 platform,
                 platform_scope.to_string(),
                 adopted,
+                restored,
             ],
         )
         .map_err(|e| CacheError::Manifest(format!("sqlite insert: {e}")))?;
@@ -853,7 +888,7 @@ impl CacheStore {
             .conn
             .query_row(
                 "SELECT completed_at, reproducibility_class, input_hashes_json, job_spec_hash,
-                        platform, platform_scope, adopted
+                        platform, platform_scope, adopted, restored
                  FROM cache_entries WHERE cache_key = ?1",
                 params![cache_key.as_str()],
                 |row| {
@@ -865,6 +900,7 @@ impl CacheStore {
                         row.get(4)?,
                         row.get(5)?,
                         row.get(6)?,
+                        row.get(7)?,
                     ))
                 },
             )
@@ -878,6 +914,7 @@ impl CacheStore {
             platform,
             platform_scope,
             adopted,
+            restored,
         ) = row_data;
 
         let provenance = match (repro_class, job_spec_hash) {
@@ -940,6 +977,7 @@ impl CacheStore {
                 _ => None,
             }),
             adopted: adopted != 0,
+            restored: restored != 0,
         })
     }
 
@@ -1054,6 +1092,26 @@ mod tests {
 
     fn make_store(dir: &Path) -> CacheStore {
         CacheStore::open(dir).unwrap()
+    }
+
+    #[test]
+    fn legacy_cache_gains_restored_marker_without_rewriting_adoption() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_dir = dir.path().join("cache");
+        std::fs::create_dir_all(&db_dir).unwrap();
+        let conn = Connection::open(db_dir.join("cache.db")).unwrap();
+        conn.execute_batch("CREATE TABLE cache_entries (cache_key TEXT PRIMARY KEY, completed_at INTEGER NOT NULL, reproducibility_class TEXT, input_hashes_json TEXT, job_spec_hash TEXT, platform TEXT, platform_scope TEXT, adopted INTEGER NOT NULL DEFAULT 0); INSERT INTO cache_entries (cache_key, completed_at, adopted) VALUES ('old', 1, 1);").unwrap();
+        drop(conn);
+        let store = CacheStore::open(dir.path()).unwrap();
+        let markers: (i64, i64) = store
+            .conn
+            .query_row(
+                "SELECT restored, adopted FROM cache_entries WHERE cache_key = 'old'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(markers, (0, 1));
     }
 
     /// Two sessions opening the manifest of a fresh cache directory at the
@@ -1735,6 +1793,7 @@ mod tests {
                 platform: None,
                 platform_scope: None,
                 adopted: false,
+                restored: false,
             },
         );
 

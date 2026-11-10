@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `--cache-remote` publishes one computation entry per recorded unit after
+  its blobs. Fresh local state with the same workflow and raw inputs can
+  restore and skip completed units, including after an interrupted run;
+  Ray publishes while `--follow` reads task records. Restored outputs are
+  hash-verified, and remote writers are trusted producers. Local cache rows
+  distinguish remote restoration from explicit `cache-import` adoption (#66).
+
 - Before dispatch, `ox run` warns when planned jobs have all declared file
   outputs present but no cache entry, listing up to ten job ids. This also
   applies to `--dry-run` and every executor; explicitly forced jobs are
@@ -25,6 +32,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   includes a `kept` diagnostic field. `never` is unchanged (#65).
 
 ### Fixed
+
+- Remote output matching compares normalized path sets, accepting equivalent
+  spellings and repeated names while refusing conflicting hashes (#66).
+
+- Blob-fetch failures backed by a local cache row again name the declared
+  output instead of reporting a remote-entry defect (#66).
+
+- Forced jobs and jobs excluded by `--until` or `--omit-from` no longer
+  restore remote outputs during planning or scheduler cache checks (#66).
+
+- Older remote-cache producers recognize unsupported entry versions before
+  parsing their body and leave newer entries unchanged when publishing (#66).
+
+- Remote restoration checks input provenance and retains the local rule's
+  reproducibility class, preserving `cache-export` refusals (#66).
 
 - Ray shell, script and inline `run` tasks now clear stale `.oxytmp` files
   before execution and remove existing declared outputs with
