@@ -67,6 +67,45 @@ fn entries(remote: &Path) -> Vec<PathBuf> {
         .collect()
 }
 #[test]
+fn remote_rule_regex_requires_both_delimiters() {
+    for filter in ["/align", "align/", "/"] {
+        let (_tmp, root, remote) = setup();
+        let output = invoke(&root, &["invalidate", "--rule", filter], Some(&remote));
+        assert!(
+            !output.status.success(),
+            "partial delimiter matched: {filter}"
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("no rules match"), "{filter}: {stderr}");
+        assert!(!root.join(".oxymake").exists());
+    }
+}
+
+#[test]
+fn explicit_output_cascade_recalls_stored_keys_with_conflicting_current_rules() {
+    let (_tmp, root, remote) = setup();
+    success(&root, &["run", "aligned/A.txt"], Some(&remote));
+    let entry = entries(&remote).pop().unwrap();
+    fs::write(root.join("Oxymakefile.toml"), format!("{WILDCARDS}\n[rule.conflict]\ninput=[\"raw/{{sample}}.txt\"]\noutput=[\"aligned/{{sample}}.txt\"]\nshell=\"true\"\n")).unwrap();
+    // --cascade applies to rule selection. An explicit output must still be
+    // recalled from stored keys when edits make the current graph ambiguous.
+    success(
+        &root,
+        &[
+            "invalidate",
+            "--output",
+            "aligned/A.txt",
+            "--cascade",
+            "--keep-outputs",
+        ],
+        Some(&remote),
+    );
+    assert!(!entry.exists());
+    assert_eq!(rows(&root), 0);
+    assert_eq!(fs::read_to_string(root.join("aligned/A.txt")).unwrap(), "A");
+}
+
+#[test]
 fn remote_output_cascade_preserves_local_selection_and_other_wildcard_entries() {
     for use_remote in [false, true] {
         let (_tmp, root, remote) = setup();
