@@ -199,58 +199,72 @@ fn current_keys(
     paths: &BTreeSet<PathBuf>,
     cache: Option<&CacheStore>,
 ) -> Result<BTreeSet<String>> {
+    current_keys_with(args, paths, cache, |job| {
+        super::run::job_cache_key_with_components(job, None).map(|key| key.cache_key)
+    })
+}
+
+fn current_keys_with(
+    args: &InvalidateArgs,
+    paths: &BTreeSet<PathBuf>,
+    cache: Option<&CacheStore>,
+    mut key_for: impl FnMut(&ox_core::model::ConcreteJob) -> Option<ContentHash>,
+) -> Result<BTreeSet<String>> {
     let file = Path::new(&args.file);
     let workflow = common::load_workflow(file)?;
     let config = common::workflow_config(&workflow);
     // Honour adopted inputs just as a cache-enabled run does. With no cache
     // there are no adopted rows, and discovery must not create dry-run state.
     let existing_files = common::discover_source_files(file, &workflow, &config, cache.is_some());
+    let request = ResolveRequest {
+        targets: paths
+            .iter()
+            .map(|p| p.to_string_lossy().into_owned())
+            .collect(),
+        config,
+        existing_files,
+    };
     let mut keys = BTreeSet::new();
-    for path in paths {
-        let request = ResolveRequest {
-            targets: vec![path.to_string_lossy().into_owned()],
-            config: config.clone(),
-            existing_files: existing_files.clone(),
-        };
-        // Use the same source-fallback policy as normal resolution, without
-        // opening (and potentially creating) a cache during a dry-run.
-        match ox_core::resolver::resolve_with_source_fallback_at(
-            &workflow.rules,
-            &request,
-            ox_api::resolution::workflow_directory(file),
-            &|path| cache.is_none_or(|cache| cache.entry_for_output(path).is_none()),
-        ) {
-            Ok(result) => {
-                let mut selected = false;
-                for job in result.jobs {
-                    if super::run::output_file_paths(&job)
-                        .iter()
-                        .any(|p| paths.contains(p))
-                    {
-                        selected = true;
-                        if let Some(key) = super::run::job_cache_key_with_components(&job, None) {
-                            keys.insert(key.cache_key.to_string());
-                        } else {
-                            eprintln!(
-                                "warning: cannot calculate current remote key for job {}; required input content is unavailable",
-                                job.id.as_str()
-                            );
-                        }
-                    }
+    // Resolve the complete selection once; a dependency may occur under many
+    // targets but its computation key must only be calculated once.
+    match ox_core::resolver::resolve_with_source_fallback_at(
+        &workflow.rules,
+        &request,
+        ox_api::resolution::workflow_directory(file),
+        &|path| cache.is_none_or(|cache| cache.entry_for_output(path).is_none()),
+    ) {
+        Ok(result) => {
+            let mut seen = HashSet::new();
+            let mut resolved_paths = BTreeSet::new();
+            for job in result.jobs {
+                let outputs = super::run::output_file_paths(&job);
+                if !outputs.iter().any(|p| paths.contains(p)) || !seen.insert(job.id.clone()) {
+                    continue;
                 }
-                if !selected {
+                resolved_paths.extend(outputs);
+                if let Some(key) = key_for(&job) {
+                    keys.insert(key.to_string());
+                } else {
                     eprintln!(
-                        "warning: cannot calculate current remote key for {}; no producer job was resolved",
-                        path.display()
+                        "warning: cannot calculate current remote key for job {}; required input content is unavailable",
+                        job.id.as_str()
                     );
                 }
             }
-            // Missing inputs prevent current-key computation, but must not
-            // prevent recalling keys already recorded locally.
-            Err(_) => eprintln!(
-                "warning: cannot calculate current remote key for {}; stored local keys are still selected",
-                path.display()
-            ),
+            for path in paths.difference(&resolved_paths) {
+                eprintln!(
+                    "warning: cannot calculate current remote key for {}; no producer job was resolved",
+                    path.display()
+                );
+            }
+        }
+        Err(error) => {
+            for path in paths {
+                eprintln!(
+                    "warning: cannot calculate current remote key for {}: {error}; stored local keys are still selected",
+                    path.display()
+                );
+            }
         }
     }
     Ok(keys)
@@ -493,4 +507,58 @@ fn cmd_invalidate_local(args: InvalidateArgs) -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod review_tests {
+    use super::*;
+
+    #[test]
+    fn selected_jobs_are_keyed_once_across_all_targets() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = dir.path().join("first");
+        let second = dir.path().join("second");
+        std::fs::write(&first, "first").unwrap();
+        let file = dir.path().join("Oxymakefile.toml");
+        std::fs::write(
+            &file,
+            format!(
+                r#"ox_version="0.1"
+[rule.first]
+output=["{}"]
+shell="true"
+[rule.second]
+input=["{}"]
+output=["{}"]
+shell="true"
+"#,
+                first.display(),
+                first.display(),
+                second.display()
+            ),
+        )
+        .unwrap();
+        let args = InvalidateArgs {
+            rule: None,
+            outputs: vec![],
+            cascade: false,
+            all: true,
+            dry_run: true,
+            keep_outputs: true,
+            cache_remote: Some(dir.path().into()),
+            json: false,
+            file: file.to_string_lossy().into_owned(),
+        };
+        let paths = BTreeSet::from([first, second]);
+        let mut counts = std::collections::BTreeMap::new();
+        current_keys_with(&args, &paths, None, |job| {
+            *counts.entry(job.id.as_str().to_owned()).or_insert(0) += 1;
+            Some(ContentHash::from(blake3::hash(job.id.as_str().as_bytes())))
+        })
+        .unwrap();
+        assert_eq!(
+            counts,
+            std::collections::BTreeMap::from([("first".into(), 1), ("second".into(), 1)])
+        );
+    }
 }
