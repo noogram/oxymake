@@ -428,3 +428,69 @@ fn newer_entry_shape_warns_as_unsupported_and_survives_execution_publication() {
         "v1 producer replaced a future entry"
     );
 }
+
+#[test]
+fn forced_job_never_restores_outputs_before_its_recipe() {
+    let workflow = r#"ox_version = "0.1"
+[rule.produce]
+output = ["b"]
+clean_outputs = "never"
+shell = "if test -f b; then cat b > observed; else echo absent > observed; fi; echo produced > b"
+"#;
+    for existing in [false, true] {
+        let temp = tempfile::tempdir().unwrap();
+        let remote = temp.path().join("remote");
+        let writer = temp.path().join("writer");
+        let reader = temp.path().join("reader");
+        for root in [&writer, &reader] {
+            checkout(root);
+            fs::write(root.join("Oxymakefile.toml"), workflow).unwrap();
+        }
+        run(&writer, &remote, &[]);
+        if existing {
+            fs::write(reader.join("b"), "reader value\n").unwrap();
+        }
+        run(&reader, &remote, &["--forcerun", "produce"]);
+        assert_eq!(
+            fs::read_to_string(reader.join("observed")).unwrap(),
+            if existing {
+                "reader value\n"
+            } else {
+                "absent\n"
+            }
+        );
+        assert_eq!(restored_count(&reader), 0);
+    }
+}
+
+#[test]
+fn selective_execution_never_restores_excluded_outputs() {
+    for selection in [["--until", "first"], ["--omit-from", "middle"]] {
+        let temp = tempfile::tempdir().unwrap();
+        let remote = temp.path().join("remote");
+        let writer = temp.path().join("writer");
+        let reader = temp.path().join("reader");
+        chain_checkout(&writer, true);
+        chain_checkout(&reader, true);
+        assert!(chain_run(&writer, &remote).status.success());
+        Command::cargo_bin("ox")
+            .unwrap()
+            .current_dir(&reader)
+            .args(["run", "last", "--cache-remote"])
+            .arg(&remote)
+            .args(selection)
+            .timeout(Duration::from_secs(30))
+            .assert()
+            .success();
+        assert!(reader.join("first").exists());
+        assert!(
+            !reader.join("middle").exists(),
+            "excluded middle was restored: {selection:?}"
+        );
+        assert!(
+            !reader.join("last").exists(),
+            "excluded last was restored: {selection:?}"
+        );
+        assert_eq!(restored_count(&reader), 1);
+    }
+}

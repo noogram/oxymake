@@ -9,7 +9,7 @@ use std::sync::{
 
 use ox_cache::{CacheStore, current_platform, hash_file};
 use ox_cache_remote::RemoteCache;
-use ox_core::model::{ArtifactProvenance, ContentHash, PlatformScope};
+use ox_core::model::{ArtifactProvenance, ContentHash, JobId, PlatformScope};
 use serde::{Deserialize, Serialize};
 
 pub(super) const ENTRY_KIND: &str = "oxymake.remote-cache-entry";
@@ -55,14 +55,20 @@ pub(super) struct RemoteSession {
     backend: Arc<dyn RemoteCache>,
     run_id: String,
     warnings: Mutex<HashSet<&'static str>>,
+    restore_exclusions: HashSet<JobId>,
 }
 
 impl RemoteSession {
-    pub fn new(backend: Arc<dyn RemoteCache>, run_id: String) -> Self {
+    pub fn new(
+        backend: Arc<dyn RemoteCache>,
+        run_id: String,
+        restore_exclusions: HashSet<JobId>,
+    ) -> Self {
         Self {
             backend,
             run_id,
             warnings: Mutex::new(HashSet::new()),
+            restore_exclusions,
         }
     }
 
@@ -195,6 +201,10 @@ impl RemoteSession {
         scope: PlatformScope,
         root: &Path,
     ) -> bool {
+        // Selection is known before either pre-scan or scheduler lookup.
+        if self.restore_exclusions.contains(&components.job_id) {
+            return false;
+        }
         let key = &components.cache_key;
         let refs: Vec<_> = outputs.iter().map(PathBuf::as_path).collect();
         if store.is_cached(key, &refs).unwrap_or(false) {
@@ -385,6 +395,7 @@ mod tests {
                 platform_scope: PlatformScope::Exact,
             };
             let components = CacheKeyComponents {
+                job_id: JobId("test".into()),
                 cache_key: ContentHash::from(blake3::hash(b"key")),
                 input_hashes: vec![],
                 job_spec_hash: "spec".into(),
@@ -398,6 +409,7 @@ mod tests {
                     "run-00000000-0000-4000-8000-000000000001",
                 )),
                 "run-00000000-0000-4000-8000-000000000001".into(),
+                HashSet::new(),
             );
             Self {
                 _dir: dir,

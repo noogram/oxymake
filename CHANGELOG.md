@@ -33,6 +33,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Forced jobs and jobs excluded by `--until` or `--omit-from` no longer
+  restore remote outputs during planning or scheduler cache checks (#66).
+
 - Older remote-cache producers recognize unsupported entry versions before
   parsing their body and leave newer entries unchanged when publishing (#66).
 

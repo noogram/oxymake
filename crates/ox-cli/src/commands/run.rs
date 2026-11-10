@@ -460,6 +460,8 @@ pub(super) fn input_file_paths(job: &ConcreteJob) -> Vec<PathBuf> {
 /// Components of a cache key computation, preserving intermediate hashes
 /// for provenance tracking (Stage 2).
 pub(super) struct CacheKeyComponents {
+    /// Invocation selection identity; it does not enter the computation key.
+    pub(super) job_id: JobId,
     /// The final cache key (BLAKE3 of all components).
     pub(super) cache_key: ContentHash,
     /// Content hashes of each input file, paired with their path.
@@ -628,6 +630,7 @@ pub(super) fn job_cache_key_with_components(
     });
 
     Some(CacheKeyComponents {
+        job_id: job.id.clone(),
         cache_key,
         input_hashes: input_pairs
             .into_iter()
@@ -1770,6 +1773,7 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
         Arc::new(RemoteSession::new(
             Arc::new(DirectoryCache::with_run_id(dir, invocation_id.clone())),
             invocation_id.clone(),
+            force_rerun.union(&selective_skip).cloned().collect(),
         ))
     });
     let cache_validation = if remote_cache.is_some() {
@@ -3330,6 +3334,40 @@ mod cache_key_tests {
             clean_outputs: Default::default(),
             platform_scope: Default::default(),
             reproducibility: Default::default(),
+        }
+    }
+
+    #[tokio::test]
+    async fn scheduler_never_restores_jobs_excluded_from_remote_lookup() {
+        let dir = tempfile::tempdir().unwrap();
+        let output = dir.path().join("out");
+        let mut job = make_job(ExecutionBlock::Shell {
+            command: "produce".into(),
+        });
+        job.outputs.push(ox_core::model::ResolvedOutput {
+            reference: OutputRef::File(output.clone()),
+            name: None,
+            format: None,
+            lifecycle: Default::default(),
+            materialize: Default::default(),
+        });
+        let remote = Arc::new(RemoteSession::new(
+            Arc::new(DirectoryCache::new(dir.path().join("remote"))),
+            "run-test".into(),
+            HashSet::from([job.id.clone()]),
+        ));
+        let open = |name| {
+            CacheStore::open_with(&dir.path().join(name), CacheValidation::ContentHash).unwrap()
+        };
+        let writer = SchedulerCache::new(open("writer"), Some(remote.clone()));
+        std::fs::write(&output, "published").unwrap();
+        writer.record(&job).await;
+        std::fs::remove_file(&output).unwrap();
+        let reader = SchedulerCache::new(open("reader"), Some(remote));
+        // Cover a legacy local-row lookup as well as a fresh remote-entry lookup.
+        for cache in [&writer, &reader] {
+            assert!(cache.check_with_reason(&job).await.is_err());
+            assert!(!output.exists(), "scheduler restored an ineligible job");
         }
     }
 
