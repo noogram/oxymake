@@ -11,6 +11,7 @@ description = "Remote cache backends (S3, GCS, local directory) for sharing buil
 [dependencies]
 ox-core = { path = "../ox-core" }
 blake3.workspace = true
+uuid.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["fs", "io-util"] }
 

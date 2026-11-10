@@ -26,6 +26,25 @@ use crate::model::ContentHash;
 /// Cache keys are content hashes (blake3). Each key maps to a single artifact
 /// file. Multi-file outputs are stored as one entry per file.
 pub trait RemoteCache: Send + Sync {
+    /// Fetch the entry for a computation key. Backends without entry support miss.
+    /// Entries larger than 1 MiB must be refused before allocation.
+    fn fetch_entry<'a>(
+        &'a self,
+        _key: &'a ContentHash,
+    ) -> Pin<Box<dyn Future<Output = Result<Option<Vec<u8>>, RemoteCacheError>> + Send + 'a>> {
+        Box::pin(async { Ok(None) })
+    }
+
+    /// Atomically publish a computation entry after its output blobs.
+    /// Backends without entry support leave publication to the local cache.
+    fn store_entry<'a>(
+        &'a self,
+        _key: &'a ContentHash,
+        _bytes: &'a [u8],
+    ) -> Pin<Box<dyn Future<Output = Result<(), RemoteCacheError>> + Send + 'a>> {
+        Box::pin(async { Ok(()) })
+    }
+
     /// Fetch a cached artifact by its content hash.
     ///
     /// If the artifact exists in the remote cache, downloads it to `dest`
