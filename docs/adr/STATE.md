@@ -27,6 +27,6 @@ Status is the first non-empty line under each ADR's `## Status` section, verbati
 | ADR-019 | Cross-Machine Continuation — Adoption Is the Primitive, `cache_platform` Is the Flag | Accepted (operator arbitration 2026-09-10 on delib-20260910-b20f: adoption-primitive framing kept, provenance columns block the release, issue #12 stays decoupled). | ADR-001, ADR-022 | — | blake3, cache_validation, mtime, state_db |
 | ADR-020 | UUIDv4 Run Identity and Exact Selection | Accepted | ADR-022 | — | ray |
 | ADR-021 | One Output-Path Policy for Every Executor, Checked Before Dispatch | Accepted | ADR-022 | — | executor, ray, slurm |
-| ADR-022 | Remote Cache Entries — One Record per Computation Key, Published After Its Blobs | Proposed | — | — | blake3, ray, sqlite |
+| ADR-022 | Remote Cache Entries — One Record per Computation Key, Published After Its Blobs | Accepted (2026-11-10) | — | — | blake3, ray, sqlite |
 
 *22 ADRs scanned. Regenerate after every ADR edit.*

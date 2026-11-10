@@ -63,11 +63,11 @@ the corpus by concern without changing the URL of any ADR.
 | 015 | Named Invariants and TLA+ Scope                  | architecture-note   | STM    | Accepted                               |
 | 016 | Metrics as Single Source of Truth                | decision            | EXT    | Accepted                               |
 | 017 | Artifact Residence Topology (Topology B)         | decision            | EXT    | Accepted                               |
-| 018 | Differentiation After the CWL Review             | decision            | CAS    | Proposed                               |
-| 019 | Cross-Machine Continuation                       | decision            | CAS    | Proposed                               |
+| 018 | Differentiation After the CWL Review             | decision            | CAS    | Accepted                               |
+| 019 | Cross-Machine Continuation                       | decision            | CAS    | Accepted                               |
 | 020 | UUIDv4 Run Identity and Exact Selection          | decision            | COOP   | Accepted                               |
 | 021 | One Output-Path Policy for Every Executor        | decision            | EXT    | Accepted                               |
-| 022 | Remote Cache Entries per Computation Key         | decision            | CAS    | Proposed                               |
+| 022 | Remote Cache Entries per Computation Key         | decision            | CAS    | Accepted                               |
 
 † ADR-011's filename retains the historical `three-layer` slug (renaming
 breaks the URL, per the flat 3-digit no-rename rule above); its title was
