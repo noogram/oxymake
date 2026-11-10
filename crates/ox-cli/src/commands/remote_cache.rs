@@ -298,6 +298,13 @@ impl RemoteSession {
         if !self.restore_files(outputs, &hashes, false).await {
             return false;
         }
+        // A legacy local-row restore does not record a new row. Planning may
+        // already have memoized these outputs as downstream inputs, so discard
+        // those hashes before the scheduler keys their consumers.
+        if let Err(e) = store.invalidate_input_hashes(&refs) {
+            eprintln!("warning: remote cache input hash invalidation failed: {e}");
+            return false;
+        }
         store.is_cached(key, &refs).unwrap_or(false)
     }
 

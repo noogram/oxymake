@@ -761,6 +761,27 @@ impl CacheStore {
         self.validation
     }
 
+    /// Forget memoized and persisted input hashes after files are restored.
+    ///
+    /// Call this after replacing outputs without recording a new cache row.
+    /// The next consumer then hashes the installed bytes, even if the restore
+    /// preserved file metadata. Cache entries and their provenance are retained.
+    pub fn invalidate_input_hashes(&mut self, paths: &[&Path]) -> Result<(), CacheError> {
+        for path in paths {
+            let path = std::fs::canonicalize(path)?;
+            self.input_memo.remove(&path);
+            self.conn
+                .execute(
+                    "DELETE FROM input_file_hashes WHERE path = ?1",
+                    params![path.to_string_lossy()],
+                )
+                .map_err(|e| {
+                    CacheError::Manifest(format!("sqlite input hash invalidation: {e}"))
+                })?;
+        }
+        Ok(())
+    }
+
     /// Hash an input file with mtime-based fast path.
     ///
     /// Returns the BLAKE3 content hash of `path`, but avoids re-reading the
@@ -2231,6 +2252,35 @@ mod tests {
     }
 
     // -- Input file hash caching tests ----------------------------------------
+
+    #[test]
+    fn restored_input_invalidation_clears_alias_memo_and_persistent_hash() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache_dir = dir.path().join(".oxymake");
+        let path = dir.path().join("out");
+        std::fs::create_dir(dir.path().join("child")).unwrap();
+        let alias = dir.path().join("child/../out");
+        std::fs::write(&path, "before").unwrap();
+        let modified = std::fs::metadata(&path).unwrap().modified().unwrap();
+        let mut store = make_store(&cache_dir);
+        let old = store.hash_input_cached(&alias).unwrap();
+        std::fs::write(&path, "after!").unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(modified)
+            .unwrap();
+        store.invalidate_input_hashes(&[&path]).unwrap();
+        let expected = hash::hash_file(&path).unwrap();
+        assert_ne!(old, expected);
+        // An independently opened store must not reuse the persisted old hash.
+        assert_eq!(
+            make_store(&cache_dir).hash_input_cached(&alias).unwrap(),
+            expected
+        );
+        assert_eq!(store.hash_input_cached(&alias).unwrap(), expected);
+    }
 
     #[test]
     fn recording_output_refreshes_memoized_input_aliases_and_persisted_hash() {

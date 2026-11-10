@@ -59,6 +59,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Restoring outputs from an existing local cache row now discards memoized
+  input hashes before downstream jobs are keyed. This prevents publishing a
+  remote entry for bytes those jobs did not consume. Discard local and remote
+  entries from affected runs before reuse.
 - After an upstream job rebuilds an input, downstream cache keys and
   provenance now use its new content hash. Previously, a hash memoized
   before execution could associate the new outputs with the old key in
