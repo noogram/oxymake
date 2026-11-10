@@ -255,3 +255,45 @@ fn remote_recall_reports_missing_keys_and_no_entry_matches() {
     );
     assert!(String::from_utf8_lossy(&out.stderr).contains("cannot calculate current remote key"));
 }
+
+#[test]
+fn remote_recall_uses_the_workflow_directory_and_honours_adopted_inputs() {
+    let (tmp, root, remote) = setup();
+    success(&root, &["run", "summ/A.txt"], Some(&remote));
+    let db = rusqlite::Connection::open(root.join(".oxymake/cache/cache.db")).unwrap();
+    db.execute("UPDATE cache_entries SET adopted=1 WHERE cache_key IN (SELECT cache_key FROM output_records WHERE path='aligned/A.txt')", []).unwrap();
+    db.execute("DELETE FROM cache_entries WHERE cache_key IN (SELECT cache_key FROM output_records WHERE path='summ/A.txt')", []).unwrap();
+    db.execute("DELETE FROM output_records WHERE path='summ/A.txt'", [])
+        .unwrap();
+    fs::remove_file(root.join("raw/A.txt")).unwrap();
+    let target_entry = entries(&remote)
+        .into_iter()
+        .find(|p| {
+            let entry: serde_json::Value = serde_json::from_slice(&fs::read(p).unwrap()).unwrap();
+            entry["outputs"][0]["path"] == "summ/A.txt"
+        })
+        .unwrap();
+    let file = root.join("Oxymakefile.toml");
+    let out = success(
+        tmp.path(),
+        &[
+            "invalidate",
+            "--output",
+            "summ/A.txt",
+            "--keep-outputs",
+            "-f",
+            file.to_str().unwrap(),
+        ],
+        Some(&remote),
+    );
+    assert!(
+        !target_entry.exists(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(rows(&root), 1, "adopted producer row must remain");
+    assert!(
+        !tmp.path().join(".oxymake").exists(),
+        "opened cache in invocation directory"
+    );
+}

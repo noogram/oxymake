@@ -501,7 +501,11 @@ Select outputs with repeatable `--output PATH`, rules with `--rule NAME`
 `--cache-remote DIR` additionally removes `entries/<prefix>/<key>.json` for
 all invalidated local keys, including historical keys, and for the selected
 jobs' current keys when their inputs are available. It works with fresh local
-state. Missing inputs prevent current-key computation; recorded local keys can
+state. Current keys use the workflow's default configuration: `ox invalidate`
+accepts neither `--set` nor `--profile`. Entries from runs using these overrides
+are recalled through recorded local rows only. With `-f`, remote recall reads
+`.oxymake` and declared paths relative to the workflow directory.
+Missing inputs prevent current-key computation; recorded local keys can
 still be recalled. `--all` selects keys from this workflow and its local cache;
 it never clears the shared remote directory. Blobs are always retained.
 Newer entry versions are removed too, and their version is reported when it

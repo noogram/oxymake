@@ -202,7 +202,9 @@ fn current_keys(
     let file = Path::new(&args.file);
     let workflow = common::load_workflow(file)?;
     let config = common::workflow_config(&workflow);
-    let existing_files = common::discover_source_files(file, &workflow, &config, false);
+    // Honour adopted inputs just as a cache-enabled run does. With no cache
+    // there are no adopted rows, and discovery must not create dry-run state.
+    let existing_files = common::discover_source_files(file, &workflow, &config, cache.is_some());
     let mut keys = BTreeSet::new();
     for path in paths {
         let request = ResolveRequest {
@@ -262,6 +264,22 @@ pub fn cmd_invalidate(args: InvalidateArgs) -> Result<()> {
         args.cache_remote.as_ref().is_some_and(|root| root.is_dir()),
         "--cache-remote must name an existing directory"
     );
+    let original_dir = std::env::current_dir()?;
+    let file = std::path::absolute(&args.file)?;
+    let root = ox_api::resolution::workflow_directory(&file);
+    let mut args = args;
+    args.file = file.to_string_lossy().into_owned();
+    args.cache_remote = args.cache_remote.map(std::path::absolute).transpose()?;
+    // Cache, declared paths, and key inputs all use the chosen workflow's
+    // directory. Restore the caller's directory even when recall fails.
+    std::env::set_current_dir(root)?;
+    let result = cmd_invalidate_remote(args);
+    let restored =
+        std::env::set_current_dir(original_dir).context("cannot restore invocation directory");
+    result.and(restored)
+}
+
+fn cmd_invalidate_remote(args: InvalidateArgs) -> Result<()> {
     if !args.all && args.rule.is_none() && args.outputs.is_empty() {
         bail!("specify --rule <name>, --output <path>, or --all");
     }

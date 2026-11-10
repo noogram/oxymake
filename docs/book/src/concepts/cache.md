@@ -232,7 +232,11 @@ provenance, take the reproducibility class from the local rule, and leave
 results too, use `ox invalidate --rule NAME --cache-remote DIR` (or select with
 `--output`, `--all`, and `--cascade`). It removes entries addressed by the
 invalidated local keys and the selected jobs' calculable current keys, even
-with fresh local state. Inputs must be present to calculate a current key;
+with fresh local state. Current-key recall uses the workflow's default
+configuration; `ox invalidate` has no `--set` or `--profile` flags. Entries from
+runs using those overrides are recalled through local rows only. With `-f`,
+remote recall uses `.oxymake` in the workflow directory and honours verified
+adopted inputs. Inputs must be present to calculate a current key;
 historical keys require a local record. `--all` does not clear unrelated
 entries in the shared directory, and no blobs are removed. Unsupported newer
 entry versions are also removed by this explicit recall. Review entry paths
