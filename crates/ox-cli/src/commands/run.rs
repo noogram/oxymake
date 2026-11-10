@@ -1775,7 +1775,6 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
     let remote_cache: Option<Arc<RemoteSession>> = args.cache_remote.as_ref().map(|dir| {
         Arc::new(RemoteSession::new(
             Arc::new(DirectoryCache::with_run_id(dir, invocation_id.clone())),
-            invocation_id.clone(),
             force_rerun.union(&selective_skip).cloned().collect(),
         ))
     });
@@ -3356,7 +3355,6 @@ mod cache_key_tests {
         });
         let remote = Arc::new(RemoteSession::new(
             Arc::new(DirectoryCache::new(dir.path().join("remote"))),
-            "run-test".into(),
             HashSet::from([job.id.clone()]),
         ));
         let open = |name| {
