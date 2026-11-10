@@ -59,11 +59,7 @@ pub(super) struct RemoteSession {
 }
 
 impl RemoteSession {
-    pub fn new(
-        backend: Arc<dyn RemoteCache>,
-        _run_id: String,
-        restore_exclusions: HashSet<JobId>,
-    ) -> Self {
+    pub fn new(backend: Arc<dyn RemoteCache>, restore_exclusions: HashSet<JobId>) -> Self {
         Self {
             backend,
             warnings: Mutex::new(HashSet::new()),
@@ -552,7 +548,6 @@ mod tests {
                     &remote,
                     "run-00000000-0000-4000-8000-000000000001",
                 )),
-                "run-00000000-0000-4000-8000-000000000001".into(),
                 HashSet::new(),
             );
             Self {
