@@ -494,11 +494,13 @@ ox invalidate --all --cache-remote shared --dry-run --json
 ```
 
 Select outputs with repeatable `--output PATH`, rules with `--rule NAME`
-(or `/regex/`), or all local cache entries and workflow outputs with `--all`.
-`--cascade` also selects downstream rules. By default output files are deleted;
+(or `/regex/`), or all local cache entries with `--all`.
+`--cascade` expands a `--rule` selection to downstream rules; it does not
+expand an explicit `--output` selection. By default output files are deleted;
 `--keep-outputs` preserves them while removing cache metadata.
 
-`--cache-remote DIR` additionally removes `entries/<prefix>/<key>.json` for
+`--cache-remote DIR` must name an existing directory; an invalid path fails
+before any rows or files are changed. It additionally removes `entries/<prefix>/<key>.json` for
 all invalidated local keys, including historical keys, and for the selected
 jobs' current keys when their inputs are available. It works with fresh local
 state. Current keys use the workflow's default configuration: `ox invalidate`
@@ -506,15 +508,19 @@ accepts neither `--set` nor `--profile`. Entries from runs using these overrides
 are recalled through recorded local rows only. With `-f`, remote recall reads
 `.oxymake` and declared paths relative to the workflow directory.
 Missing inputs prevent current-key computation; recorded local keys can
-still be recalled. `--all` selects keys from this workflow and its local cache;
-it never clears the shared remote directory. Blobs are always retained.
+still be recalled. `--all` also considers current keys for all workflow jobs,
+while local rows and file deletion keep their normal selection. It never clears
+the shared remote directory. Blobs are always retained. Symlinked entry-tree
+directories and entries that are not regular files are skipped with a warning.
 Newer entry versions are removed too, and their version is reported when it
 can be read. No additional confirmation is required.
 
 `--dry-run` lists the entries and outputs without removing any rows or files.
 `--json` includes `remote_entries` with each entry's key, path,
 `format_version` (null when unreadable) and `newer_version`, alongside
-`invalidated_entries`, `output_paths`, `deleted_files` and `dry_run`. In a
+`remote_entries_found`, `invalidated_entries`, `output_paths`, `deleted_files`
+and `dry_run`. Missing current keys produce warnings; no matching remote
+entries are reported explicitly. In a
 dry-run, `invalidated_entries` is the number of local rows that would be
 removed and `deleted_files` is zero.
 

@@ -232,7 +232,7 @@ provenance, take the reproducibility class from the local rule, and leave
 `ox invalidate` removes local rows and, by default, output files. Without
 `--cache-remote`, a later run can restore the result again. To recall remote
 results too, use `ox invalidate --rule NAME --cache-remote DIR` (or select with
-`--output`, `--all`, and `--cascade`). It removes entries addressed by the
+`--output` or `--all`, and use `--cascade` with `--rule`). It removes entries addressed by the
 invalidated local keys and the selected jobs' calculable current keys, even
 with fresh local state. Current-key recall uses the workflow's default
 configuration; `ox invalidate` has no `--set` or `--profile` flags. Entries from
@@ -243,7 +243,8 @@ historical keys require a local record. `--all` does not clear unrelated
 entries in the shared directory, and no blobs are removed. Unsupported newer
 entry versions are also removed by this explicit recall. Review entry paths
 with `--dry-run`; add `--json` for a structured list. `--keep-outputs` preserves
-local output files.
+local output files. Recall does not reach checkouts that already hold a local
+row for the key, and a concurrent run may publish the entry again.
 
 ## Cache and Materialization
 
