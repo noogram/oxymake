@@ -89,6 +89,39 @@ struct RemoteEntry {
     newer_version: bool,
 }
 
+fn regular_entry_path(path: &Path) -> bool {
+    let prefix = path.parent().expect("entry prefix");
+    let entries = prefix.parent().expect("entry tree");
+    for parent in [entries, prefix] {
+        match std::fs::symlink_metadata(parent) {
+            Ok(metadata) if metadata.file_type().is_dir() => (),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return false,
+            _ => {
+                eprintln!(
+                    "warning: skipping remote entry {}: parent {} is not a regular directory",
+                    path.display(),
+                    parent.display()
+                );
+                return false;
+            }
+        }
+    }
+    // Revalidate a network filesystem's cached negative lookup only after
+    // confirming that neither entry-tree directory is a symlink.
+    let _ = std::fs::read_dir(prefix).map(|mut entries| entries.next());
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_file() => true,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
+        _ => {
+            eprintln!(
+                "warning: skipping remote entry {}: not a regular file",
+                path.display()
+            );
+            false
+        }
+    }
+}
+
 fn remote_entries(root: &Path, keys: &BTreeSet<String>) -> Vec<RemoteEntry> {
     let mut entries = Vec::new();
     for key in keys {
@@ -96,7 +129,7 @@ fn remote_entries(root: &Path, keys: &BTreeSet<String>) -> Vec<RemoteEntry> {
             .join("entries")
             .join(&key[..2])
             .join(format!("{key}.json"));
-        if !ox_core::output_visibility::output_exists(&path) {
+        if !regular_entry_path(&path) {
             continue;
         }
         // Read only bounded diagnostic metadata; recall never depends on parsing.
@@ -325,6 +358,9 @@ fn cmd_invalidate_remote(args: InvalidateArgs) -> Result<()> {
         // Recall before deleting inputs/outputs needed to compute current keys.
         // A deletion error is actionable, never reported as a successful recall.
         for entry in &remote {
+            if !regular_entry_path(&entry.path) {
+                continue;
+            }
             match std::fs::remove_file(&entry.path) {
                 Ok(()) => (),
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => (),
