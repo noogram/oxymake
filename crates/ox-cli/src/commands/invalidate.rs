@@ -340,9 +340,15 @@ fn cmd_invalidate_remote(args: InvalidateArgs) -> Result<()> {
     };
     let paths = selected_paths(&args, cache.as_ref(), false)?;
     let refs: Vec<_> = paths.iter().map(|p| p.as_path()).collect();
+    let mut invalid_keys = 0;
     let local_keys = cache
         .as_ref()
-        .map(|cache| cache.invalidation_keys(if args.all { None } else { Some(&refs) }))
+        .map(|cache| {
+            cache.invalidation_keys(if args.all { None } else { Some(&refs) }, |key| {
+                invalid_keys += 1;
+                eprintln!("warning: skipping invalid stored cache key {key:?} for remote recall");
+            })
+        })
         .transpose()?
         .unwrap_or_default();
     let mut keys: BTreeSet<String> = local_keys.iter().map(ContentHash::to_string).collect();
@@ -373,17 +379,19 @@ fn cmd_invalidate_remote(args: InvalidateArgs) -> Result<()> {
         }
     }
     let removed = if args.dry_run {
-        local_keys.len()
+        local_keys.len() + invalid_keys
+    } else if let Some(cache) = cache.as_mut() {
+        let count = if args.all {
+            let count = cache.len();
+            cache.clear();
+            count
+        } else {
+            cache.invalidate(&refs)
+        };
+        cache.save().context("failed to save cache manifest")?;
+        count
     } else {
-        if let Some(cache) = cache.as_mut() {
-            if args.all {
-                cache.clear();
-            } else {
-                cache.invalidate(&refs);
-            }
-            cache.save().context("failed to save cache manifest")?;
-        }
-        local_keys.len()
+        0
     };
     let output_paths: Vec<_> = paths.iter().cloned().collect();
     let deleted = if args.dry_run || args.keep_outputs {

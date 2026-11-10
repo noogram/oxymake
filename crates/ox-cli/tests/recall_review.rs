@@ -297,3 +297,21 @@ fn remote_recall_uses_the_workflow_directory_and_honours_adopted_inputs() {
         "opened cache in invocation directory"
     );
 }
+
+#[test]
+fn non_hex_local_record_warns_without_aborting_other_recalls() {
+    let (_tmp, root, remote) = setup();
+    success(&root, &["run", "aligned/A.txt"], Some(&remote));
+    let db = rusqlite::Connection::open(root.join(".oxymake/cache/cache.db")).unwrap();
+    db.execute(
+        "INSERT INTO cache_entries (cache_key, completed_at) VALUES ('legacy-key', 0)",
+        [],
+    )
+    .unwrap();
+    let out = success(&root, &["invalidate", "--all", "--json"], Some(&remote));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("invalid stored cache key"));
+    let report: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(report["invalidated_entries"], 2);
+    assert_eq!(rows(&root), 0);
+    assert!(entries(&remote).is_empty());
+}

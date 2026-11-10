@@ -850,10 +850,12 @@ impl CacheStore {
     /// Collect every key that invalidation would remove, without mutating state.
     ///
     /// `None` selects all local entries. A path selection includes historical
-    /// keys for each output, not only its most recent record.
+    /// keys for each output, not only its most recent record. Invalid stored
+    /// keys are skipped and passed to `warn_invalid` for caller diagnostics.
     pub fn invalidation_keys(
         &self,
         outputs: Option<&[&Path]>,
+        mut warn_invalid: impl FnMut(&str),
     ) -> Result<Vec<ContentHash>, CacheError> {
         let query = || -> rusqlite::Result<Vec<String>> {
             if let Some(outputs) = outputs {
@@ -876,11 +878,17 @@ impl CacheStore {
                     .collect()
             }
         };
-        query()
+        Ok(query()
             .map_err(|e| CacheError::Manifest(e.to_string()))?
             .into_iter()
-            .map(|key| ContentHash::from_hex(key).map_err(|e| CacheError::Manifest(e.to_string())))
-            .collect()
+            .filter_map(|key| match ContentHash::from_hex(key.clone()) {
+                Ok(hash) => Some(hash),
+                Err(_) => {
+                    warn_invalid(&key);
+                    None
+                }
+            })
+            .collect())
     }
 
     /// Return all distinct output paths stored in the cache.
@@ -1445,12 +1453,51 @@ mod tests {
         }
         let mut expected = vec![ch("old"), ch("new")];
         expected.sort_by(|a, b| a.as_str().cmp(b.as_str()));
-        assert_eq!(store.invalidation_keys(Some(&[&a, &a])).unwrap(), expected);
-        assert_eq!(store.invalidation_keys(None).unwrap().len(), 3);
-        assert!(store.invalidation_keys(Some(&[])).unwrap().is_empty());
+        assert_eq!(
+            store.invalidation_keys(Some(&[&a, &a]), |_| {}).unwrap(),
+            expected
+        );
+        assert_eq!(store.invalidation_keys(None, |_| {}).unwrap().len(), 3);
+        assert!(
+            store
+                .invalidation_keys(Some(&[]), |_| {})
+                .unwrap()
+                .is_empty()
+        );
         assert_eq!(store.len(), 3);
         assert_eq!(store.invalidate(&[&a]), expected.len());
-        assert_eq!(store.invalidation_keys(None).unwrap(), vec![ch("other")]);
+        assert_eq!(
+            store.invalidation_keys(None, |_| {}).unwrap(),
+            vec![ch("other")]
+        );
+    }
+
+    #[test]
+    fn invalidation_keys_skip_non_hex_records() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = make_store(&dir.path().join(".oxymake"));
+        store
+            .conn
+            .execute(
+                "INSERT INTO cache_entries (cache_key, completed_at) VALUES ('legacy-key', 0)",
+                [],
+            )
+            .unwrap();
+        store
+            .conn
+            .execute(
+                "INSERT INTO cache_entries (cache_key, completed_at) VALUES (?1, 0)",
+                [ch("valid").as_str()],
+            )
+            .unwrap();
+        let mut warned = Vec::new();
+        assert_eq!(
+            store
+                .invalidation_keys(None, |key| warned.push(key.to_owned()))
+                .unwrap(),
+            vec![ch("valid")]
+        );
+        assert_eq!(warned, vec!["legacy-key"]);
     }
 
     #[test]
