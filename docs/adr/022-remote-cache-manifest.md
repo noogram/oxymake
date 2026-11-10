@@ -1,7 +1,7 @@
 # ADR-022: Remote Cache Entries — One Record per Computation Key, Published After Its Blobs
 
 ## Status
-Proposed
+Accepted (2026-11-10)
 
 ## Metadata
 
@@ -382,15 +382,17 @@ Two variants of A were also considered:
   shared, writable file choose where `ox` writes, which ADR-021 exists to
   prevent. Rejected.
 
-## Open questions
+## Questions settled at acceptance
 
-- Should `ox status`, when it reconciles Ray task records after the head has
-  stopped, also record and publish them?
-- Is `restored` the right marker, or should `adopted` become a general origin
-  field (`run`, `import`, `remote`)?
-- Should increment 4 (recall through `ox invalidate`) ship in the same release
-  as increments 1 to 3?
-- Should `non_reproducible` units be excluded from publication, to match
-  `ox cache-export`, instead of following the local cache?
-- Should reading entries require an explicit opt-in beyond `--cache-remote`,
-  given that it extends the trust placed in the remote directory (see above)?
+- `ox status` does not publish entries when it reconciles Ray task records after
+  the head has stopped. Publication happens where the local entry is recorded;
+  a later increment can extend it if a reader needs it.
+- `restored` is a new marker beside `adopted`; `adopted` keeps its meaning of
+  an explicit `ox cache-import`.
+- Recall through `ox invalidate` (increment 4) ships separately, after
+  increments 1 to 3.
+- Entries follow the local cache, including `non_reproducible` units, as
+  described under Reproducibility classes; `ox cache-export` keeps its refusal.
+- Reading entries requires no opt-in beyond `--cache-remote`, which is already
+  marked unstable. The documentation of `--cache-remote` states the trust it
+  grants to writers of the remote directory, as described above.
