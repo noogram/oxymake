@@ -105,8 +105,9 @@ computation key, output paths, content hashes, and validation metadata:
 ```
 
 The outputs themselves remain at their declared workflow paths. Deleting the
-local metadata makes jobs run again unless you use `mtime` validation; it does
-not delete outputs or execution history.
+local metadata makes jobs run again unless `--cache-remote` supplies matching
+entries or you use `mtime` validation. It does not delete outputs or execution
+history.
 
 ## Continuing a DAG on Another Machine
 
@@ -183,10 +184,39 @@ ox run --cache-remote /mnt/team/oxymake-cache
 machine are never trusted. The directory backend stores each output under its
 content hash and verifies the hash after every fetch.
 
-The remote backend transports output bytes, not the local cache metadata needed
-to identify a hit. Copying `.oxymake/` between machines is unsupported; use
-`ox cache-export` and `ox cache-import` to transfer that trust record. S3 and
-GCS URLs are not supported yet.
+Each completed unit also publishes a computation entry under
+`entries/<prefix>/<cache-key>.json`, after all its output blobs have been
+stored. A checkout with fresh local state, the same workflow and raw input
+bytes can therefore restore and skip those units using the shared directory
+alone. Entries are published per unit, so work recorded before a failure or
+interruption remains available. A wiped local state directory with matching
+outputs can recover the index without fetching the blobs again.
+
+Restoration checks the entry's job specification, platform scope and declared
+output paths. It verifies fetched blobs by BLAKE3 before installing any of a
+unit's outputs, then validates all outputs by content. Missing, corrupt,
+incompatible or oversized entries produce a cache miss and re-execution.
+`ox run --dry-run` does not read remote entries or fetch outputs.
+
+Writers of the remote directory are trusted producers: they can choose which
+output hashes satisfy a computation key. Hash verification detects corrupt
+bytes; it does not prove that a writer performed the declared computation.
+Use filesystem permissions to restrict who can write the directory.
+
+Remote lookup still needs the raw inputs to compute a key. If the receiving
+machine lacks those inputs, transfer outputs with
+[`ox cache-export`](../reference/commands/cache-export.md) and
+[`ox cache-import`](../reference/commands/cache-import.md) instead. These
+explicit adoption manifests keep their separate format and validation rules.
+Copying `.oxymake/` between machines is unsupported. S3 and GCS URLs are not
+supported yet.
+
+The local `cache.db` gains an additive, forward-only `restored` column (default
+`0`). Remote restores set it to `1`, preserve the producing platform and
+provenance, and leave `adopted = 0`; `adopted` continues to mark explicit
+`cache-import`. This cache migration is separate from `state.db`'s schema.
+`ox invalidate` removes local rows only: with `--cache-remote`, the next run
+can restore them again. To recall a remote result, remove its entry file.
 
 ## Cache and Materialization
 

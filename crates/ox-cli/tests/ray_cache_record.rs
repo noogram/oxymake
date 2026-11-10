@@ -363,7 +363,11 @@ async fn killed_ray_driver_leaves_its_completed_units_cached_locally_and_remotel
     let stderr = String::from_utf8_lossy(&second.stderr);
     assert!(second.status.success(), "{stderr}");
     let all = ran(project.path());
-    assert_eq!(all.len(), 2, "each completed unit runs exactly once: {all:?}");
+    assert_eq!(
+        all.len(),
+        2,
+        "each completed unit runs exactly once: {all:?}"
+    );
     let distinct: BTreeSet<&String> = all.iter().collect();
     assert_eq!(distinct.len(), 2, "a cached unit ran again: {all:?}");
     for (output, content) in [

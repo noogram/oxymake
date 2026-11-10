@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `--cache-remote` publishes one computation entry per recorded unit after
+  its blobs. Fresh local state with the same workflow and raw inputs can
+  restore and skip completed units, including after an interrupted run;
+  Ray publishes while `--follow` reads task records. Restored outputs are
+  hash-verified, and remote writers are trusted producers. Local cache rows
+  distinguish remote restoration from explicit `cache-import` adoption (#66).
+
 - Before dispatch, `ox run` warns when planned jobs have all declared file
   outputs present but no cache entry, listing up to ten job ids. This also
   applies to `--dry-run` and every executor; explicitly forced jobs are

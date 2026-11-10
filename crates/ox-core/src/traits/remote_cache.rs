@@ -24,7 +24,13 @@ use crate::model::ContentHash;
 /// and shared across async tasks.
 ///
 /// Cache keys are content hashes (blake3). Each key maps to a single artifact
-/// file. Multi-file outputs are stored as one entry per file.
+/// file. Multi-file outputs have one blob per file; computation entries map
+/// a computation key to its output hashes and provenance. Publish entries only
+/// after all their blobs have been stored.
+///
+/// Entry writers are trusted producers for every run using that backend:
+/// verifying blob hashes proves integrity, not that the declared computation
+/// produced those bytes. Access control belongs to the backend.
 pub trait RemoteCache: Send + Sync {
     /// Fetch the entry for a computation key. Backends without entry support miss.
     /// Entries larger than 1 MiB must be refused before allocation.

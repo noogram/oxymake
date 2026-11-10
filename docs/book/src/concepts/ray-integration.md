@@ -371,9 +371,9 @@ is internal and may change; read usage through `ox history` or the event log.
 
 Under `ox run --follow`, a completed task also enters the cache when its record
 is read: its outputs are hashed and recorded under the same computation key a
-local run would use, and their blobs are stored in `--cache-remote` when it is
-set. A resubmission, including one after a killed driver, then skips the units
-that completed. This also applies to declared absolute file outputs outside
+local run would use, and their blobs and computation entries are stored in
+`--cache-remote` when it is set. A resubmission, including one after a killed
+driver, then skips the units that completed. This also applies to declared absolute file outputs outside
 the project directory; declare their directory as an absolute `[config]`
 value, for example:
 
@@ -393,11 +393,13 @@ ox run /absolute/results/result.txt --executor ray --follow \
   --cache-remote /absolute/cache
 ```
 
-A successful task publishes the output blob.
-Repeating the run with the same local cache index skips the unit. With fresh
-local state, the unit executes again even if its output and the remote blob
-still exist: the remote directory carries bytes, not the computation-key
-metadata needed to identify a hit. See [Caching](./cache.md#continuing-a-dag-on-another-machine).
+A successful task publishes its computation entry after its output blobs.
+Repeating the run with fresh local state, the same workflow and raw inputs
+restores and skips the unit from the shared directory, including after a
+killed driver. Publication requires `ox run --follow` to read the completed
+task's record; later reconciliation by `ox status` does not publish entries.
+See [Caching](./cache.md#continuing-a-dag-on-another-machine) for verification
+and the trust granted to writers of the directory.
 
 An output written on a worker node may not yet be visible on the host that
 runs `ox run --follow`. A Linux NFS client caches the absence of a path: once
