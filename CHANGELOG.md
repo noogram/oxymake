@@ -59,6 +59,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Remote restore cleans old staging files only for the output being restored,
+  preserving unrelated siblings and declared workflow data, parameter files,
+  scripts and workflow sources even when their names resemble staging files.
 - `ox run --dry-run` checks cache-entry presence without invalidating cache rows.
   Stale outputs no longer cause a dry run to
   delete the historical keys needed for remote recall.

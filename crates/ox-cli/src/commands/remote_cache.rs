@@ -1,6 +1,6 @@
 //! Computation-entry publication and verified restoration (ADR-022).
 use super::run::CacheKeyComponents;
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Component, Path, PathBuf};
 use std::sync::{
     Arc, Mutex,
@@ -50,12 +50,16 @@ struct EntryHeader {
 /// A newer document must survive publication by an older producer.
 struct NewerEntryVersion;
 
+// One snapshot per parent, indexed by the output basename that owns the suffix.
+type RestoreDebris = HashMap<PathBuf, HashMap<Vec<u8>, Vec<PathBuf>>>;
+
 /// One invocation shares defect warnings between the pre-scan and scheduler.
 pub(super) struct RemoteSession {
     backend: Arc<dyn RemoteCache>,
     warnings: Mutex<HashSet<&'static str>>,
     restore_exclusions: HashSet<JobId>,
-    scanned_restore_parents: Mutex<HashSet<PathBuf>>,
+    restore_debris: Mutex<RestoreDebris>,
+    protected_paths: HashSet<PathBuf>,
 }
 
 impl RemoteSession {
@@ -64,8 +68,22 @@ impl RemoteSession {
             backend,
             warnings: Mutex::new(HashSet::new()),
             restore_exclusions,
-            scanned_restore_parents: Mutex::new(HashSet::new()),
+            restore_debris: Mutex::new(HashMap::new()),
+            protected_paths: HashSet::new(),
         }
+    }
+
+    /// Workflow data can use the staging suffix too, including excluded jobs.
+    pub fn with_protected_paths(
+        mut self,
+        paths: impl IntoIterator<Item = PathBuf>,
+        root: &Path,
+    ) -> Self {
+        self.protected_paths = paths
+            .into_iter()
+            .map(|path| root.join(normalized_output(&path, root)))
+            .collect();
+        self
     }
 
     fn warn(&self, defect: &'static str) {
@@ -319,18 +337,7 @@ impl RemoteSession {
             if hash_file(output).ok().as_ref() == Some(hash) {
                 continue;
             }
-            if let Some(parent) = output.parent() {
-                // Mark before scanning so concurrent restores share the same
-                // one-scan budget, including failed directory reads.
-                if self
-                    .scanned_restore_parents
-                    .lock()
-                    .unwrap()
-                    .insert(parent.to_path_buf())
-                {
-                    cleanup_restore_staging(parent);
-                }
-            }
+            self.cleanup_restore_staging(output, outputs);
             let staging = match reserve_restore_staging(output) {
                 Ok(path) => path,
                 Err(e) => {
@@ -388,6 +395,37 @@ impl RemoteSession {
         }
         true
     }
+
+    fn cleanup_restore_staging(&self, output: &Path, outputs: &[PathBuf]) {
+        let Ok(root) = std::env::current_dir() else {
+            return;
+        };
+        let output = root.join(normalized_output(output, &root));
+        let Some(parent) = output.parent() else {
+            return;
+        };
+        let Some(name) = output.file_name() else {
+            return;
+        };
+        let candidates = self
+            .restore_debris
+            .lock()
+            .unwrap()
+            .entry(parent.to_path_buf())
+            .or_insert_with(|| scan_restore_staging(parent))
+            .remove(name.as_encoded_bytes())
+            .unwrap_or_default();
+        for path in candidates {
+            if !self.protected_paths.contains(&path)
+                && !outputs
+                    .iter()
+                    .any(|output| root.join(normalized_output(output, &root)) == path)
+                && old_restore_file(&path)
+            {
+                let _ = std::fs::remove_file(path);
+            }
+        }
+    }
 }
 
 // A 24-byte suffix leaves 231 bytes for the output on NAME_MAX=255
@@ -440,10 +478,10 @@ fn is_restore_suffix(suffix: &str) -> bool {
         })
 }
 
-fn cleanup_restore_staging(parent: &Path) {
-    use std::time::{Duration, SystemTime};
+fn scan_restore_staging(parent: &Path) -> HashMap<Vec<u8>, Vec<PathBuf>> {
+    let mut debris: HashMap<Vec<u8>, Vec<PathBuf>> = HashMap::new();
     let Ok(entries) = std::fs::read_dir(parent) else {
-        return;
+        return debris;
     };
     for entry in entries.flatten() {
         let file_name = entry.file_name();
@@ -457,21 +495,28 @@ fn cleanup_restore_staging(parent: &Path) {
         if !std::str::from_utf8(&name[offset + marker.len()..]).is_ok_and(is_restore_suffix) {
             continue;
         }
-        let Ok(metadata) = std::fs::symlink_metadata(entry.path()) else {
-            continue;
-        };
-        // One hour is a conservative crash-debris threshold. Fresh staging
-        // belongs to a potentially active restore and must be left alone.
-        if metadata.is_file()
+        if old_restore_file(&entry.path()) {
+            debris
+                .entry(name[..offset].to_vec())
+                .or_default()
+                .push(entry.path());
+        }
+    }
+    debris
+}
+
+fn old_restore_file(path: &Path) -> bool {
+    use std::time::{Duration, SystemTime};
+    // Recheck at deletion time too: a candidate may have become a symlink or
+    // a fresh restore since the parent snapshot was taken.
+    std::fs::symlink_metadata(path).is_ok_and(|metadata| {
+        metadata.is_file()
             && metadata
                 .modified()
                 .ok()
                 .and_then(|mtime| SystemTime::now().duration_since(mtime).ok())
                 .is_some_and(|age| age > Duration::from_secs(3600))
-        {
-            let _ = std::fs::remove_file(entry.path());
-        }
-    }
+    })
 }
 
 /// Lexical ADR-021 normalization; never resolve symlinks on either side.
@@ -612,18 +657,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn restore_removes_only_old_recognized_staging_in_parent() {
+    async fn restore_removes_only_its_own_old_staging_in_parent() {
         use std::time::{Duration, SystemTime};
         let f = Fixture::new();
         f.publish().await;
         let old = [
             "a.remote.0000000100000001",
-            "b.remote.0000000100000001",
-            "nested.remote.name.remote.0000000100000001",
             "a.remote.run-00000000-0000-4000-8000-000000000001.0",
         ];
         let keep = [
             "a.remote.0000000100000002",
+            "b.remote.0000000100000001",
+            "nested.remote.name.remote.0000000100000001",
             "a.remote.notes",
             "a.remote.0000000100000001.extra",
         ];
@@ -655,7 +700,7 @@ mod tests {
         let hash = ContentHash::from_hex(&f.result.outputs[0].content_hash).unwrap();
         assert!(
             f.session
-                .restore_files(&[f.root.join("a")], &[hash], true)
+                .restore_files(&[f.root.join("a")], std::slice::from_ref(&hash), true)
                 .await
         );
         for name in old {
@@ -664,6 +709,14 @@ mod tests {
         for name in keep {
             assert!(f.root.join(name).exists(), "{name}");
         }
+        // A later output uses the original directory snapshot, but only now
+        // removes debris with its own basename.
+        assert!(
+            f.session
+                .restore_files(&[f.root.join("b")], &[hash], true)
+                .await
+        );
+        assert!(!f.root.join("b.remote.0000000100000001").exists());
         assert!(directory.is_dir());
         #[cfg(unix)]
         assert!(symlink.is_symlink());
