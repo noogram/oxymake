@@ -1590,15 +1590,23 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
             );
         }
         let effective_count = job_count - selective_skip.len();
+        let remote_restore_possible = args.cache_remote.is_some()
+            && !args.no_cache
+            && job_graph
+                .job_ids()
+                .into_iter()
+                .any(|id| !force_rerun.contains(id) && !selective_skip.contains(id));
         if args.json {
             // Emit NDJSON: one summary line, then one line per job.
-            let summary = serde_json::json!({
+            let mut summary = serde_json::json!({
                 "event": "dry_run_summary",
-                "remote_entries_checked": false,
-                "remote_restore_possible": args.cache_remote.is_some() && !args.no_cache,
                 "total_jobs": effective_count,
                 "total_targets": targets.len(),
             });
+            if args.cache_remote.is_some() {
+                summary["remote_entries_checked"] = false.into();
+                summary["remote_restore_possible"] = remote_restore_possible.into();
+            }
             println!("{}", ox_report_json::reporter::envelope_line(&summary));
             if let Ok(topo) = job_graph.topological_order() {
                 for job_id in topo {
@@ -1628,7 +1636,7 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
                                 }
                             })
                             .collect();
-                        let job_event = serde_json::json!({
+                        let mut job_event = serde_json::json!({
                             "event": "dry_run_job",
                             "job_id": job_id.as_str(),
                             "rule": job.rule.as_str(),
@@ -1636,17 +1644,21 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
                             "inputs": inputs,
                             "execution": &job.execution,
                         });
+                        if args.cache_remote.is_some() {
+                            job_event["remote_restore_possible"] =
+                                (!args.no_cache && !force_rerun.contains(job_id)).into();
+                        }
                         println!("{}", ox_report_json::reporter::envelope_line(&job_event));
                     }
                 }
             }
         } else {
-            if args.cache_remote.is_some() && !args.no_cache {
+            if remote_restore_possible {
                 println!(
                     "Dry run: remote entries are not read; listed jobs may be restored instead of executed."
                 );
             }
-            let disposition = if args.cache_remote.is_some() && !args.no_cache {
+            let disposition = if remote_restore_possible {
                 "planned"
             } else {
                 "would execute"

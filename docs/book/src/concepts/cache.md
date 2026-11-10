@@ -201,8 +201,10 @@ incompatible or oversized entries produce a cache miss and re-execution.
 `ox run --dry-run` does not read remote entries or fetch outputs. With
 `--cache-remote`, its header and uncached-output warning explain that listed
 jobs may be restored instead of executed during a real run. Its JSON summary
-sets `remote_entries_checked = false` and `remote_restore_possible = true`
-when remote caching is enabled.
+includes `remote_entries_checked = false` only with `--cache-remote`. The
+summary's `remote_restore_possible` is true only when at least one listed job
+can use remote caching; each job event also reports this flag. Forced jobs
+(and their forced consumers) and jobs with caching disabled report false.
 
 A failed fetch leaves declared outputs untouched. The final installation
 renames staged files one by one: if a later rename fails, earlier renames
