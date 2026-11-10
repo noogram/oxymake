@@ -59,6 +59,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Remote restore cleans old staging files only for the output being restored,
+  preserving unrelated siblings and declared workflow data, parameter files,
+  scripts and workflow sources even when their names resemble staging files.
+- `ox run --dry-run` checks cache-entry presence without invalidating cache rows.
+  Stale outputs no longer cause a dry run to
+  delete the historical keys needed for remote recall.
+- Restoring outputs from an existing local cache row now discards memoized
+  input hashes before downstream jobs are keyed. This prevents publishing a
+  remote entry for bytes those jobs did not consume. Discard local and remote
+  entries from affected runs before reuse.
 - After an upstream job rebuilds an input, downstream cache keys and
   provenance now use its new content hash. Previously, a hash memoized
   before execution could associate the new outputs with the old key in

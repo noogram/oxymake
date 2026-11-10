@@ -370,8 +370,12 @@ miss/no-op defaults for backends without computation entries. Directory cache
 entries (`kind = "oxymake.remote-cache-entry"`, `format_version = 1`) are an
 unstable, independently versioned format: unknown fields are ignored and
 unsupported versions miss with a warning. `CacheEntry::restored` and
-`CacheStore::record_restored` are unstable Rust APIs; the local cache adds its
+`CacheStore::record_restored` and `CacheStore::invalidate_input_hashes` are
+unstable Rust APIs; the latter clears cached input hashes after an output
+restore that retains its existing row. The local cache adds its
 marker through an additive migration, independently of `state.db`.
+`CacheStore::open_read_only` is an unstable Rust API for diagnostics over an
+existing SQLite cache; it neither creates nor migrates the cache.
 
 The resolver Rust API is also **unstable**. `ox_core::resolver::resolve` permits
 existing files as source fallbacks only for a missing input of their own producer;

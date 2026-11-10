@@ -1568,7 +1568,7 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
             let mut store = if cache_dir.join("cache/cache.db").exists()
                 || cache_dir.join("cache/manifest.json").exists()
             {
-                CacheStore::open_with(cache_dir, validation).ok()
+                CacheStore::open_read_only(cache_dir, validation).ok()
             } else {
                 None
             };
@@ -1809,10 +1809,47 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
     // retain that guarantee when validating the restored outputs locally.
     let invocation_id = mint_run_id();
     let remote_cache: Option<Arc<RemoteSession>> = args.cache_remote.as_ref().map(|dir| {
-        Arc::new(RemoteSession::new(
-            Arc::new(DirectoryCache::with_run_id(dir, invocation_id.clone())),
-            force_rerun.union(&selective_skip).cloned().collect(),
-        ))
+        Arc::new(
+            RemoteSession::new(
+                Arc::new(DirectoryCache::with_run_id(dir, invocation_id.clone())),
+                force_rerun.union(&selective_skip).cloned().collect(),
+            )
+            .with_protected_paths(
+                job_graph
+                    .job_ids()
+                    .into_iter()
+                    .filter_map(|id| job_graph.get_job(id))
+                    .flat_map(|job| {
+                        let mut paths = input_file_paths(job);
+                        paths.extend(output_file_paths(job));
+                        paths.extend(job.param_files.iter().cloned());
+                        paths.extend(job.shell_executable.iter().map(PathBuf::from));
+                        if let ExecutionBlock::Script { path, .. } = &job.execution {
+                            paths.push(path.clone());
+                        }
+                        if let Some(environment) = &job.environment {
+                            use ox_core::model::EnvSpec;
+                            match environment {
+                                EnvSpec::Uv {
+                                    project,
+                                    requirements,
+                                } => {
+                                    paths.extend(
+                                        project.iter().chain(requirements).map(PathBuf::from),
+                                    );
+                                }
+                                EnvSpec::Conda { env } => paths.push(env.into()),
+                                EnvSpec::Nix { expr } => paths.push(expr.into()),
+                                EnvSpec::Apptainer { image } => paths.push(image.into()),
+                                EnvSpec::System | EnvSpec::Docker { .. } => (),
+                            }
+                        }
+                        paths
+                    })
+                    .chain(std::iter::once(file_path.clone())),
+                &project_dir,
+            ),
+        )
     });
     let cache_validation = if remote_cache.is_some() {
         CacheValidation::ContentHash
