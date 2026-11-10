@@ -395,6 +395,7 @@ fn warn_uncached_outputs(
     skipped: &HashSet<JobId>,
     forced: &HashSet<JobId>,
     mut store: Option<&mut CacheStore>,
+    remote_dry_run: bool,
 ) {
     let mut ids = Vec::new();
     for id in job_graph.job_ids() {
@@ -433,8 +434,13 @@ fn warn_uncached_outputs(
         String::new()
     };
     ids.truncate(10);
+    let disposition = if remote_dry_run {
+        "remote entries are not read in dry-run; these jobs may be restored instead of executed"
+    } else {
+        "they will be rebuilt"
+    };
     eprintln!(
-        "warning: {count} job(s) have all declared outputs present but no cache entry; they will be rebuilt: {}{suffix}",
+        "warning: {count} job(s) have all declared outputs present but no cache entry; {disposition}: {}{suffix}",
         ids.join(", ")
     );
 }
@@ -1575,16 +1581,32 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
             );
             let mut skipped = execution.skip_jobs;
             skipped.extend(selective_skip.iter().cloned());
-            warn_uncached_outputs(&job_graph, &skipped, &force_rerun, store.as_mut());
+            warn_uncached_outputs(
+                &job_graph,
+                &skipped,
+                &force_rerun,
+                store.as_mut(),
+                args.cache_remote.is_some(),
+            );
         }
         let effective_count = job_count - selective_skip.len();
+        let remote_restore_possible = args.cache_remote.is_some()
+            && !args.no_cache
+            && job_graph
+                .job_ids()
+                .into_iter()
+                .any(|id| !force_rerun.contains(id) && !selective_skip.contains(id));
         if args.json {
             // Emit NDJSON: one summary line, then one line per job.
-            let summary = serde_json::json!({
+            let mut summary = serde_json::json!({
                 "event": "dry_run_summary",
                 "total_jobs": effective_count,
                 "total_targets": targets.len(),
             });
+            if args.cache_remote.is_some() {
+                summary["remote_entries_checked"] = false.into();
+                summary["remote_restore_possible"] = remote_restore_possible.into();
+            }
             println!("{}", ox_report_json::reporter::envelope_line(&summary));
             if let Ok(topo) = job_graph.topological_order() {
                 for job_id in topo {
@@ -1614,7 +1636,7 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
                                 }
                             })
                             .collect();
-                        let job_event = serde_json::json!({
+                        let mut job_event = serde_json::json!({
                             "event": "dry_run_job",
                             "job_id": job_id.as_str(),
                             "rule": job.rule.as_str(),
@@ -1622,13 +1644,27 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
                             "inputs": inputs,
                             "execution": &job.execution,
                         });
+                        if args.cache_remote.is_some() {
+                            job_event["remote_restore_possible"] =
+                                (!args.no_cache && !force_rerun.contains(job_id)).into();
+                        }
                         println!("{}", ox_report_json::reporter::envelope_line(&job_event));
                     }
                 }
             }
         } else {
+            if remote_restore_possible {
+                println!(
+                    "Dry run: remote entries are not read; listed jobs may be restored instead of executed."
+                );
+            }
+            let disposition = if remote_restore_possible {
+                "planned"
+            } else {
+                "would execute"
+            };
             println!(
-                "Dry run: {} job(s) would execute for {} target(s)",
+                "Dry run: {} job(s) {disposition} for {} target(s)",
                 effective_count,
                 targets.len()
             );
@@ -1861,7 +1897,13 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
     }
 
     if !args.no_cache {
-        warn_uncached_outputs(&job_graph, &skip_jobs, &force_rerun, cache_store.as_mut());
+        warn_uncached_outputs(
+            &job_graph,
+            &skip_jobs,
+            &force_rerun,
+            cache_store.as_mut(),
+            false,
+        );
     }
 
     timer.mark("cache_prescan");

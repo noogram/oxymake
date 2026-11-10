@@ -867,6 +867,50 @@ impl CacheStore {
         removed
     }
 
+    /// Collect every key that invalidation would remove, without mutating state.
+    ///
+    /// `None` selects all local entries. A path selection includes historical
+    /// keys for each output, not only its most recent record. Invalid stored
+    /// keys are skipped and passed to `warn_invalid` for caller diagnostics.
+    pub fn invalidation_keys(
+        &self,
+        outputs: Option<&[&Path]>,
+        mut warn_invalid: impl FnMut(&str),
+    ) -> Result<Vec<ContentHash>, CacheError> {
+        let query = || -> rusqlite::Result<Vec<String>> {
+            if let Some(outputs) = outputs {
+                let mut stmt = self
+                    .conn
+                    .prepare("SELECT DISTINCT cache_key FROM output_records WHERE path = ?1")?;
+                let mut keys = std::collections::BTreeSet::new();
+                for path in outputs {
+                    for key in stmt.query_map(params![path.to_string_lossy().as_ref()], |row| {
+                        row.get::<_, String>(0)
+                    })? {
+                        keys.insert(key?);
+                    }
+                }
+                Ok(keys.into_iter().collect())
+            } else {
+                self.conn
+                    .prepare("SELECT cache_key FROM cache_entries ORDER BY cache_key")?
+                    .query_map([], |row| row.get(0))?
+                    .collect()
+            }
+        };
+        Ok(query()
+            .map_err(|e| CacheError::Manifest(e.to_string()))?
+            .into_iter()
+            .filter_map(|key| match ContentHash::from_hex(key.clone()) {
+                Ok(hash) => Some(hash),
+                Err(_) => {
+                    warn_invalid(&key);
+                    None
+                }
+            })
+            .collect())
+    }
+
     /// Return all distinct output paths stored in the cache.
     pub fn all_output_paths(&self) -> Vec<PathBuf> {
         self.conn
@@ -1412,6 +1456,68 @@ mod tests {
         let removed = store.invalidate(&[out1.as_path()]);
         assert_eq!(removed, 1);
         assert_eq!(store.len(), 1);
+    }
+
+    #[test]
+    fn invalidation_keys_include_history_without_mutating_records() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = make_store(&dir.path().join(".oxymake"));
+        let a = dir.path().join("a");
+        let b = dir.path().join("b");
+        std::fs::write(&a, "a").unwrap();
+        std::fs::write(&b, "b").unwrap();
+        for (key, path) in [("old", &a), ("new", &a), ("other", &b)] {
+            store
+                .record(ch(key), &[path], None, PlatformScope::Exact)
+                .unwrap();
+        }
+        let mut expected = vec![ch("old"), ch("new")];
+        expected.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+        assert_eq!(
+            store.invalidation_keys(Some(&[&a, &a]), |_| {}).unwrap(),
+            expected
+        );
+        assert_eq!(store.invalidation_keys(None, |_| {}).unwrap().len(), 3);
+        assert!(
+            store
+                .invalidation_keys(Some(&[]), |_| {})
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(store.len(), 3);
+        assert_eq!(store.invalidate(&[&a]), expected.len());
+        assert_eq!(
+            store.invalidation_keys(None, |_| {}).unwrap(),
+            vec![ch("other")]
+        );
+    }
+
+    #[test]
+    fn invalidation_keys_skip_non_hex_records() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = make_store(&dir.path().join(".oxymake"));
+        store
+            .conn
+            .execute(
+                "INSERT INTO cache_entries (cache_key, completed_at) VALUES ('legacy-key', 0)",
+                [],
+            )
+            .unwrap();
+        store
+            .conn
+            .execute(
+                "INSERT INTO cache_entries (cache_key, completed_at) VALUES (?1, 0)",
+                [ch("valid").as_str()],
+            )
+            .unwrap();
+        let mut warned = Vec::new();
+        assert_eq!(
+            store
+                .invalidation_keys(None, |key| warned.push(key.to_owned()))
+                .unwrap(),
+            vec![ch("valid")]
+        );
+        assert_eq!(warned, vec!["legacy-key"]);
     }
 
     #[test]
