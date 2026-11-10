@@ -242,6 +242,9 @@ fn current_keys(
 }
 
 pub fn cmd_invalidate(args: InvalidateArgs) -> Result<()> {
+    if args.cache_remote.is_none() {
+        return cmd_invalidate_local(args);
+    }
     if !args.all && args.rule.is_none() && args.outputs.is_empty() {
         bail!("specify --rule <name>, --output <path>, or --all");
     }
@@ -344,5 +347,112 @@ pub fn cmd_invalidate(args: InvalidateArgs) -> Result<()> {
             println!("{action} remote entry {}{version}", entry.path.display());
         }
     }
+    Ok(())
+}
+
+// Keep the established local-only reporting and mutation contract.
+fn cmd_invalidate_local(args: InvalidateArgs) -> Result<()> {
+    let oxymake_dir = PathBuf::from(".oxymake");
+    let mut cache = CacheStore::open(&oxymake_dir)
+        .context("cannot open cache (is .oxymake/cache/ present?)")?;
+
+    if cache.is_empty() {
+        println!("Cache is empty — nothing to invalidate.");
+        return Ok(());
+    }
+
+    // --all: clear everything
+    if args.all {
+        let count = cache.len();
+        let output_paths = if !args.keep_outputs {
+            cache.all_output_paths()
+        } else {
+            Vec::new()
+        };
+        if args.dry_run {
+            println!("Would invalidate all {count} cache entries.");
+            if !output_paths.is_empty() {
+                println!("Would delete {} output file(s).", output_paths.len());
+            }
+            return Ok(());
+        }
+        cache.clear();
+        cache.save().context("failed to save cache manifest")?;
+        let deleted = delete_output_files(&output_paths);
+        println!("Invalidated all {count} cache entries.");
+        if deleted > 0 {
+            println!("Deleted {deleted} output file(s).");
+        }
+        return Ok(());
+    }
+
+    // Must specify at least --rule or --output
+    if args.rule.is_none() && args.outputs.is_empty() {
+        bail!("specify --rule <name>, --output <path>, or --all");
+    }
+
+    let paths_to_invalidate = selected_paths(&args, Some(&cache), false)?;
+
+    if paths_to_invalidate.is_empty() {
+        println!("No output paths found to invalidate.");
+        return Ok(());
+    }
+
+    // Perform invalidation
+    let path_refs: Vec<&std::path::Path> =
+        paths_to_invalidate.iter().map(|p| p.as_path()).collect();
+
+    if args.dry_run {
+        println!(
+            "Would invalidate cache entries referencing {} output(s):",
+            path_refs.len()
+        );
+        for p in &paths_to_invalidate {
+            println!("  {}", p.display());
+        }
+        if !args.keep_outputs {
+            let existing: Vec<_> = paths_to_invalidate.iter().filter(|p| p.exists()).collect();
+            if !existing.is_empty() {
+                println!("Would delete {} output file(s).", existing.len());
+            }
+        }
+        return Ok(());
+    }
+
+    let removed = cache.invalidate(&path_refs);
+    cache.save().context("failed to save cache manifest")?;
+
+    let deleted = if !args.keep_outputs {
+        let paths_vec: Vec<PathBuf> = paths_to_invalidate.iter().cloned().collect();
+        delete_output_files(&paths_vec)
+    } else {
+        0
+    };
+
+    if args.json {
+        let invalidated: Vec<&str> = paths_to_invalidate
+            .iter()
+            .map(|p| p.to_str().unwrap_or(""))
+            .collect();
+        let obj = serde_json::json!({
+            "invalidated_entries": removed,
+            "output_paths": invalidated,
+            "deleted_files": deleted,
+        });
+        println!("{}", serde_json::to_string(&obj).unwrap_or_default());
+    } else if removed > 0 || deleted > 0 {
+        if removed > 0 {
+            println!("Invalidated {removed} cache entry(ies).");
+        }
+        if deleted > 0 {
+            println!("Deleted {deleted} output file(s).");
+        }
+        for p in &paths_to_invalidate {
+            println!("  {}", p.display());
+        }
+    } else {
+        println!("No cache entries matched the specified outputs.");
+    }
+
     Ok(())
 }

@@ -108,3 +108,91 @@ fn remote_all_does_not_delete_unrecorded_shared_outputs() {
         assert_eq!(fs::read_to_string(root.join(p)).unwrap(), "other checkout");
     }
 }
+
+#[test]
+fn local_empty_cache_preserves_outputs_and_legacy_success_message() {
+    for args in [
+        vec!["invalidate"],
+        vec!["invalidate", "--rule", "align"],
+        vec!["invalidate", "--all", "--rule", "nomatch", "--json"],
+        vec!["invalidate", "--output", "aligned/A.txt", "--cascade"],
+    ] {
+        let (_tmp, root, _) = setup();
+        fs::create_dir(root.join("aligned")).unwrap();
+        fs::write(root.join("aligned/A.txt"), "unrecorded").unwrap();
+        let out = success(&root, &args, None);
+        assert_eq!(
+            String::from_utf8(out.stdout).unwrap(),
+            "Cache is empty — nothing to invalidate.\n"
+        );
+        assert_eq!(
+            fs::read_to_string(root.join("aligned/A.txt")).unwrap(),
+            "unrecorded"
+        );
+    }
+}
+#[test]
+fn local_all_and_json_keep_the_legacy_output_contract() {
+    for dry in [false, true] {
+        let (_tmp, root, remote) = setup();
+        success(&root, &["run", "aligned/A.txt"], Some(&remote));
+        let mut args = vec!["invalidate", "--all", "--rule", "nomatch", "--json"];
+        if dry {
+            args.push("--dry-run");
+        }
+        let out = success(&root, &args, None);
+        assert_eq!(
+            String::from_utf8(out.stdout).unwrap(),
+            if dry {
+                "Would invalidate all 1 cache entries.\nWould delete 1 output file(s).\n"
+            } else {
+                "Invalidated all 1 cache entries.\nDeleted 1 output file(s).\n"
+            }
+        );
+        assert_eq!(rows(&root), if dry { 1 } else { 0 });
+    }
+    let (_tmp, root, remote) = setup();
+    success(&root, &["run", "aligned/A.txt"], Some(&remote));
+    let out = success(
+        &root,
+        &["invalidate", "--output", "aligned/A.txt", "--json"],
+        None,
+    );
+    let report: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(
+        report,
+        serde_json::json!({"invalidated_entries":1,"output_paths":["aligned/A.txt"],"deleted_files":1})
+    );
+}
+#[test]
+fn local_no_match_no_paths_and_dry_run_messages_are_preserved() {
+    let (_tmp, root, remote) = setup();
+    success(&root, &["run", "aligned/A.txt"], Some(&remote));
+    let missing = invoke(&root, &["invalidate", "--rule", "nomatch"], None);
+    assert!(!missing.status.success());
+    assert!(String::from_utf8_lossy(&missing.stderr).contains("no rules match 'nomatch'"));
+    let out = success(&root, &["invalidate", "--output", "missing"], None);
+    assert_eq!(
+        out.stdout,
+        b"No cache entries matched the specified outputs.\n"
+    );
+    let out = success(
+        &root,
+        &[
+            "invalidate",
+            "--output",
+            "aligned/A.txt",
+            "--dry-run",
+            "--json",
+        ],
+        None,
+    );
+    assert_eq!(out.stdout, b"Would invalidate cache entries referencing 1 output(s):\n  aligned/A.txt\nWould delete 1 output file(s).\n");
+    fs::write(
+        root.join("Oxymakefile.toml"),
+        "ox_version = \"0.1\"\n[rule.empty]\nshell = \"true\"\n",
+    )
+    .unwrap();
+    let out = success(&root, &["invalidate", "--rule", "empty"], None);
+    assert_eq!(out.stdout, b"No output paths found to invalidate.\n");
+}
