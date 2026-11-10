@@ -236,23 +236,87 @@ mod tests {
     use tempfile::TempDir;
 
     #[tokio::test]
-    async fn entry_roundtrip_and_concurrent_publishers_leave_no_staging() {
+    async fn entry_roundtrip() {
         let dir = TempDir::new().unwrap();
-        let a = DirectoryCache::new(dir.path());
-        let b = DirectoryCache::new(dir.path());
+        let cache = DirectoryCache::new(dir.path());
         let key = content_key(b"computation");
-        let first = br#"{"outputs": [1]}"#;
-        let second = br#"{"outputs": [2]}"#;
-        assert!(a.fetch_entry(&key).await.unwrap().is_none());
-        a.store_entry(&key, first).await.unwrap();
-        assert_eq!(a.fetch_entry(&key).await.unwrap().unwrap(), first);
-        let (x, y) = tokio::join!(a.store_entry(&key, first), b.store_entry(&key, second));
-        x.unwrap();
-        y.unwrap();
-        let bytes = a.fetch_entry(&key).await.unwrap().unwrap();
-        assert!(bytes == first || bytes == second);
-        let parent = dir.path().join("entries").join(&key.as_str()[..2]);
-        let names: Vec<_> = std::fs::read_dir(parent)
+        let bytes = br#"{"outputs": [1]}"#;
+        assert!(cache.fetch_entry(&key).await.unwrap().is_none());
+        cache.store_entry(&key, bytes).await.unwrap();
+        assert_eq!(cache.fetch_entry(&key).await.unwrap().unwrap(), bytes);
+    }
+
+    // Run this same test executable as two independent publishers. Each signals
+    // readiness before the parent releases both, so their publication windows overlap.
+    #[test]
+    #[ignore = "subprocess helper"]
+    fn entry_publisher_process() {
+        let root = PathBuf::from(std::env::var_os("OX_ENTRY_TEST_ROOT").unwrap());
+        let writer = std::env::var("OX_ENTRY_TEST_WRITER").unwrap();
+        let cache = DirectoryCache::new(&root);
+        let key = content_key(b"computation");
+        let bytes = format!("\"{}\"", writer.repeat(256 * 1024)).into_bytes();
+        std::fs::write(root.join(format!("ready-{writer}")), b"").unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !root.join("go").exists() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "publisher barrier timed out"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(async {
+                for _ in 0..20 {
+                    cache.store_entry(&key, &bytes).await.unwrap();
+                }
+            });
+    }
+
+    #[tokio::test]
+    async fn independent_entry_publishers_leave_one_complete_entry_and_no_staging() {
+        let dir = TempDir::new().unwrap();
+        let spawn = |writer: &str| {
+            std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "directory::tests::entry_publisher_process",
+                    "--ignored",
+                ])
+                .env("OX_ENTRY_TEST_ROOT", dir.path())
+                .env("OX_ENTRY_TEST_WRITER", writer)
+                .spawn()
+                .unwrap()
+        };
+        let mut a = spawn("a");
+        let mut b = spawn("b");
+        assert_ne!(a.id(), b.id());
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+        while !(dir.path().join("ready-a").exists() && dir.path().join("ready-b").exists()) {
+            if std::time::Instant::now() >= deadline {
+                let _ = a.kill();
+                let _ = b.kill();
+                let _ = a.wait();
+                let _ = b.wait();
+                panic!("publishers did not reach barrier");
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        std::fs::write(dir.path().join("go"), b"").unwrap();
+        assert!(a.wait().unwrap().success());
+        assert!(b.wait().unwrap().success());
+        let cache = DirectoryCache::new(dir.path());
+        let key = content_key(b"computation");
+        let bytes = cache.fetch_entry(&key).await.unwrap().unwrap();
+        assert!(
+            ["a", "b"]
+                .iter()
+                .any(|w| bytes == format!("\"{}\"", w.repeat(256 * 1024)).as_bytes())
+        );
+        let names: Vec<_> = std::fs::read_dir(cache.entry_path(&key).parent().unwrap())
             .unwrap()
             .map(|e| e.unwrap().file_name())
             .collect();
