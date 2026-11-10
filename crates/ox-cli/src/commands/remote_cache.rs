@@ -586,6 +586,38 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn restore_accepts_an_entry_of_exactly_one_mib() {
+        let f = Fixture::new();
+        f.publish().await;
+        let key = f.components.cache_key.as_str();
+        let entry = f
+            .remote
+            .join("entries")
+            .join(&key[..2])
+            .join(format!("{key}.json"));
+        let mut bytes = std::fs::read(&entry).unwrap();
+        // JSON permits trailing whitespace; the transport limit includes it.
+        bytes.resize(1024 * 1024, b' ');
+        std::fs::write(entry, bytes).unwrap();
+        let mut store = f.store();
+        assert!(
+            f.session
+                .restore(
+                    &mut store,
+                    &f.components,
+                    &f.outputs(&f.root),
+                    PlatformScope::Exact,
+                    &f.root
+                )
+                .await
+        );
+        assert_eq!(std::fs::read(f.root.join("a")).unwrap(), b"first");
+        assert_eq!(std::fs::read(f.root.join("b")).unwrap(), b"second");
+        assert!(store.get(&f.components.cache_key).unwrap().restored);
+        assert!(f.session.warnings.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
     async fn restore_staging_supports_long_names_and_reports_name_limit() {
         let f = Fixture::new();
         f.publish().await;

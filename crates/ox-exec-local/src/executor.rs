@@ -1992,6 +1992,7 @@ mod tests {
             "retimed",
             "replaced",
             "missing",
+            "incomplete",
         ] {
             let dir = tempfile::tempdir().unwrap();
             let out = dir.path().join("out");
@@ -2007,6 +2008,7 @@ mod tests {
                 }
                 "replaced" => "cp -pf out replacement; mv -f replacement out; exit 1",
                 "missing" => "true",
+                "incomplete" => "echo changed-and-longer > out",
                 _ => unreachable!(),
             };
             let mut outputs = vec![ResolvedOutput {
@@ -2016,7 +2018,7 @@ mod tests {
                 lifecycle: Default::default(),
                 materialize: Default::default(),
             }];
-            if case == "missing" {
+            if matches!(case, "missing" | "incomplete") {
                 outputs.push(ResolvedOutput {
                     reference: OutputRef::File(dir.path().join("missing")),
                     ..outputs[0].clone()
@@ -2040,9 +2042,10 @@ mod tests {
             let mut ws = exec.prepare_workspace(&job, &ctx).await.unwrap();
             ws.work_dir = dir.path().into();
             let result = exec.execute(&job, &ws, &ctx).await.unwrap();
-            assert_eq!(result.exit_code, if case == "missing" { 0 } else { 1 });
+            let incomplete = matches!(case, "missing" | "incomplete");
+            assert_eq!(result.exit_code, if incomplete { 0 } else { 1 });
             let finalized = exec.finalize_workspace(ws, &result).await;
-            let message = if case == "missing" {
+            let message = if incomplete {
                 finalized.unwrap_err().to_string()
             } else {
                 finalized.unwrap();
