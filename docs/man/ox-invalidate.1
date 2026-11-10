@@ -4,7 +4,7 @@
 .SH NAME
 ox\-invalidate \- Invalidate cached outputs
 .SH SYNOPSIS
-\fBox\-invalidate\fR [\fB\-\-rule\fR] [\fB\-\-output\fR] [\fB\-\-cascade\fR] [\fB\-\-all\fR] [\fB\-n\fR|\fB\-\-dry\-run\fR] [\fB\-\-keep\-outputs\fR] [\fB\-\-json\fR] [\fB\-f\fR|\fB\-\-file\fR] [\fB\-h\fR|\fB\-\-help\fR] 
+\fBox\-invalidate\fR [\fB\-\-rule\fR] [\fB\-\-output\fR] [\fB\-\-cascade\fR] [\fB\-\-all\fR] [\fB\-n\fR|\fB\-\-dry\-run\fR] [\fB\-\-keep\-outputs\fR] [\fB\-\-cache\-remote\fR] [\fB\-\-json\fR] [\fB\-f\fR|\fB\-\-file\fR] [\fB\-h\fR|\fB\-\-help\fR] 
 .SH DESCRIPTION
 Invalidate cached outputs
 .SH OPTIONS
@@ -27,7 +27,10 @@ Show what would be invalidated without modifying the cache
 \fB\-\-keep\-outputs\fR
 Keep output files on disk (only clear cache entries).
 
-By default, `ox invalidate` deletes output files so that subsequent runs rebuild them regardless of cache validation mode.  With `\-\-keep\-outputs`, only the cache database entries are removed.
+By default, `ox invalidate` deletes output files so that subsequent runs rebuild them regardless of cache validation mode.  With `\-\-keep\-outputs`, only cache metadata is removed (including remote computation entries when `\-\-cache\-remote` is supplied).
+.TP
+\fB\-\-cache\-remote\fR \fI<DIR>\fR
+Also remove computation entries from this remote directory (never blobs)
 .TP
 \fB\-\-json\fR
 Output results as JSON
