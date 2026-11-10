@@ -3,16 +3,9 @@ exclude_re = [
     'delete match arm Some\("deterministic"\) in parse_rule$',
     # ErrorStrategy::default() is Terminate, identical to this explicit arm.
     'delete match arm "terminate" in parse_error_strategy$',
-    # These validators have no observable effect: neither emits diagnostics nor
-    # changes the workflow. Mutating their empty checks is equivalent today.
-    'delete ! in check_output_wildcards$',
-    'replace && with \|\| in check_output_wildcards$',
-    'replace check_execution_modes with \(\)$',
-    'replace check_output_wildcards with \(\)$',
     # Keeping the closing ASCII brace as the next scan's first character cannot
-    # add a match: both scanners search for an opening brace/prefix, then advance.
+    # add a match: the scanner searches for an opening prefix, then advances.
     'replace \+ with \* in check_namespaced_placeholders$',
-    'src/validate\.rs:250:42: replace \+ with \* in extract_wildcards_from_patterns$',
     # prepare only edits schema/version declarations, then parses the retained
     # snapshots through the same parser. Command and environment comparisons
     # cannot differ on any accepted migration; weakening this defensive check
