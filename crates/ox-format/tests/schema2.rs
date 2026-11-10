@@ -244,3 +244,81 @@ fn migration_report_states_cache_and_document_formatting_contracts() {
     );
     assert!(!report.contains("first run after"), "{report}");
 }
+
+#[test]
+fn version_contract_rejects_non_strings_prereleases_and_build_metadata() {
+    reject("format_version = 2", &["unsupported format_version 2"]);
+    for requirement in [">=0.7.0-alpha", ">=0.7.0+build"] {
+        reject(
+            &format!("format_version='2'\nox_version='{requirement}'"),
+            &["invalid or unsatisfied"],
+        );
+    }
+}
+
+#[test]
+fn all_guard_shapes_and_nested_conditions_are_checked() {
+    let header = "format_version='2'\nox_version='>=0.7.0'\n[rule.a]\n";
+    for guard in [
+        "{op='eq',field='sample',value='A'}",
+        "{op='not_eq',field='sample',value='A'}",
+        "{op='in',field='sample',values=['A']}",
+        "{op='not_in',field='sample',values=['A']}",
+        "{op='regex',field='sample',pattern='A.*'}",
+        "{op='config_eq',key='project',value='demo'}",
+        "{op='env_set',var='X'}",
+        "{op='env_eq',var='X',value='yes'}",
+        "{op='file_exists',path='input.txt'}",
+        "{op='and',conditions=[{op='env_set',var='X'}]}",
+        "{op='or',conditions=[{op='env_set',var='X'}]}",
+        "{op='not',condition={op='env_set',var='X'}}",
+    ] {
+        let source = format!("{header}when={guard}");
+        parse_workflow(&source, Path::new("guard.toml")).unwrap();
+    }
+    reject(
+        &format!("{header}when={{op='and',conditions=[{{op='env_set',var='X',typo=1}}]}}"),
+        &["rule.a.when.conditions.typo"],
+    );
+}
+
+#[test]
+fn migration_preserves_schema2_files_and_rejects_ambiguous_markers() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("root.toml");
+    let source = "# keep comment\nformat_version='2'\nox_version='>=0.7.0'\n";
+    fs::write(&path, source).unwrap();
+    let migration = ox_format::migrate::prepare(&path).unwrap();
+    assert!(migration.report().contains("already schema 2; unchanged"));
+    migration.write().unwrap();
+    assert_eq!(fs::read_to_string(&path).unwrap(), source);
+    for declaration in ["", "ox_version='0.2'", "ox_version='99.0'"] {
+        fs::write(&path, declaration).unwrap();
+        let error = ox_format::migrate::prepare(&path).unwrap_err().to_string();
+        assert!(error.contains("only known generated markers"), "{error}");
+        assert_eq!(fs::read_to_string(&path).unwrap(), declaration);
+    }
+}
+
+#[test]
+fn schema2_accepts_named_input_tables() {
+    parse_workflow(
+        "format_version='2'\nox_version='>=0.7.0'\n[rule.a]\ninput=[{path='data.txt',name='data',format='text'}]",
+        Path::new("input.toml"),
+    ).unwrap();
+}
+
+#[test]
+fn schema2_resource_validation_precedes_external_config_reads() {
+    for body in [
+        "[rule.a]\nresources={cpu=true}",
+        "[resource_classes.small]\ncpu=true",
+    ] {
+        reject(
+            &format!(
+                "format_version='2'\nox_version='>=0.7.0'\n[config]\nx={{source='must-not-read.csv',key='x'}}\n{body}"
+            ),
+            &["invalid resource value at", "cpu"],
+        );
+    }
+}

@@ -58,7 +58,7 @@ jobs:
           path: mutants.out/
 
   nightly-report:
-    name: Full ox-format report
+    name: Full ox-format
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 120
@@ -69,18 +69,10 @@ jobs:
       - name: Install cargo-mutants
         run: cargo install cargo-mutants --locked --version 27.0.0
       # Full ox-core is deferred; changed-code still checks it on PRs and main.
-      # Surviving ox-format mutations are reported until the remaining backlog is covered.
-      - name: Run full mutation report
-        run: |
-          status=0
-          cargo mutants --package ox-format --cargo-arg=--release --build-timeout 600 --timeout 120 || status=$?
-          case "$status" in
-            0) echo 'Full ox-format mutation run passed.' >> "$GITHUB_STEP_SUMMARY" ;;
-            2|3)
-              echo "Full ox-format report: cargo-mutants exit $status (survivors or timeouts). See the mutation artifact." >> "$GITHUB_STEP_SUMMARY"
-              ;;
-            *) exit "$status" ;;
-          esac
+      - name: Test full ox-format
+        run: >-
+          cargo mutants --package ox-format --cargo-arg=--release
+          --build-timeout 600 --timeout 120
       - name: Upload mutation report
         if: always()
         uses: actions/upload-artifact@v4
