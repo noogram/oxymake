@@ -213,6 +213,14 @@ renames staged files one by one: if a later rename fails, earlier renames
 remain installed, so the unit can have a partial set of restored outputs.
 No restored cache row is written in that case; the unit re-executes.
 
+Restore uses sibling files named `<output>.remote.<16 hexadecimal digits>`
+for staging. When an output needs fetching, recognized staging files for that
+same output older than one hour are removed; fresh files and unrelated
+siblings are retained. Declared inputs, outputs and known workflow source files
+are protected even when their names match this convention. Keep other data
+outside this staging namespace. The age threshold is a cleanup heuristic,
+not proof that another restore has stopped.
+
 Writers of the remote directory are trusted producers: they can choose which
 output hashes satisfy a computation key. Hash verification detects corrupt
 bytes; it does not prove that a writer performed the declared computation.
