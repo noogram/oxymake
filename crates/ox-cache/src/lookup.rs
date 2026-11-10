@@ -732,6 +732,23 @@ impl CacheStore {
                 params![cache_key.as_str(), &key, h.as_str(), mt as i64, sz as i64],
             )
             .map_err(|e| CacheError::Manifest(format!("sqlite insert: {e}")))?;
+
+            // Planning may have hashed this path before its producer ran.
+            // Replace that input hash with the recorded output hash, including
+            // the persistent fast path when the writer preserved metadata.
+            let input_path = std::fs::canonicalize(path)?;
+            tx.execute(
+                "INSERT OR REPLACE INTO input_file_hashes (path, content_hash, mtime_nanos, size)
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![
+                    input_path.to_string_lossy(),
+                    h.as_str(),
+                    mt as i64,
+                    sz as i64
+                ],
+            )
+            .map_err(|e| CacheError::Manifest(format!("sqlite input hash: {e}")))?;
+            self.input_memo.insert(input_path, h.clone());
         }
 
         tx.commit()
@@ -749,12 +766,15 @@ impl CacheStore {
     /// Returns the BLAKE3 content hash of `path`, but avoids re-reading the
     /// file when the stored mtime+size match the current metadata. This turns
     /// repeated cache-key computations for large, unchanged input files into
-    /// a single `stat()` call instead of a full file read.
+    /// metadata checks instead of a full file read.
     ///
     /// Results are memoized in memory for the duration of this session and
-    /// persisted in SQLite for fast lookup across runs.
+    /// persisted in SQLite for fast lookup across runs. Canonical paths share
+    /// one hash across aliases; recording a produced output refreshes it.
     pub fn hash_input_cached(&mut self, path: &Path) -> Result<ContentHash, CacheError> {
-        // 1. Session memo — no I/O at all.
+        let input_path = std::fs::canonicalize(path)?;
+        let path = input_path.as_path();
+        // 1. Session memo — no file read or SQLite lookup.
         if let Some(h) = self.input_memo.get(path) {
             return Ok(h.clone());
         }
@@ -2211,6 +2231,36 @@ mod tests {
     }
 
     // -- Input file hash caching tests ----------------------------------------
+
+    #[test]
+    fn recording_output_refreshes_memoized_input_aliases_and_persisted_hash() {
+        let dir = tempfile::tempdir().unwrap();
+        let oxdir = dir.path().join(".oxymake");
+        let path = dir.path().join("intermediate");
+        std::fs::create_dir(dir.path().join("child")).unwrap();
+        let alias = dir.path().join("child/../intermediate");
+        std::fs::write(&path, b"hello").unwrap();
+        let modified = std::fs::metadata(&path).unwrap().modified().unwrap();
+        let mut store = make_store(&oxdir);
+        let before = store.hash_input_cached(&alias).unwrap();
+        // The writer can preserve metadata. Recording its known output hash
+        // must supersede both the session memo and the persistent fast path.
+        std::fs::write(&path, b"other").unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(modified)
+            .unwrap();
+        let after = hash::hash_file(&path).unwrap();
+        assert_ne!(before, after);
+        store
+            .record(ch("rebuilt"), &[path.as_path()], None, PlatformScope::Exact)
+            .unwrap();
+        assert_eq!(store.hash_input_cached(&alias).unwrap(), after);
+        drop(store);
+        assert_eq!(make_store(&oxdir).hash_input_cached(&alias).unwrap(), after);
+    }
 
     #[test]
     fn hash_input_cached_returns_correct_hash() {

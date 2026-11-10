@@ -53,22 +53,18 @@ struct NewerEntryVersion;
 /// One invocation shares defect warnings between the pre-scan and scheduler.
 pub(super) struct RemoteSession {
     backend: Arc<dyn RemoteCache>,
-    run_id: String,
     warnings: Mutex<HashSet<&'static str>>,
     restore_exclusions: HashSet<JobId>,
+    scanned_restore_parents: Mutex<HashSet<PathBuf>>,
 }
 
 impl RemoteSession {
-    pub fn new(
-        backend: Arc<dyn RemoteCache>,
-        run_id: String,
-        restore_exclusions: HashSet<JobId>,
-    ) -> Self {
+    pub fn new(backend: Arc<dyn RemoteCache>, restore_exclusions: HashSet<JobId>) -> Self {
         Self {
             backend,
-            run_id,
             warnings: Mutex::new(HashSet::new()),
             restore_exclusions,
+            scanned_restore_parents: Mutex::new(HashSet::new()),
         }
     }
 
@@ -316,12 +312,38 @@ impl RemoteSession {
             if hash_file(output).ok().as_ref() == Some(hash) {
                 continue;
             }
-            let staging = output.with_file_name(format!(
-                "{}.remote.{}.{}",
-                output.file_name().unwrap_or_default().to_string_lossy(),
-                self.run_id,
-                STAGING_COUNTER.fetch_add(1, Ordering::Relaxed)
-            ));
+            if let Some(parent) = output.parent() {
+                // Mark before scanning so concurrent restores share the same
+                // one-scan budget, including failed directory reads.
+                if self
+                    .scanned_restore_parents
+                    .lock()
+                    .unwrap()
+                    .insert(parent.to_path_buf())
+                {
+                    cleanup_restore_staging(parent);
+                }
+            }
+            let staging = match reserve_restore_staging(output) {
+                Ok(path) => path,
+                Err(e) => {
+                    if output
+                        .file_name()
+                        .is_some_and(|n| n.as_encoded_bytes().len() > 231)
+                    {
+                        self.warn("output filename is too long for remote restore staging");
+                    } else {
+                        eprintln!(
+                            "warning: remote cache staging for {} failed: {e}",
+                            output.display()
+                        );
+                    }
+                    for (path, _) in &staged {
+                        let _ = tokio::fs::remove_file(path).await;
+                    }
+                    return false;
+                }
+            };
             // Include the current path before fetching: a failing backend may leave bytes.
             staged.push((staging.clone(), output));
             let fetched = match self.backend.fetch(hash, &staging).await {
@@ -358,6 +380,90 @@ impl RemoteSession {
             }
         }
         true
+    }
+}
+
+// A 24-byte suffix leaves 231 bytes for the output on NAME_MAX=255
+// filesystems. Exclusive creation also protects against PID reuse and another
+// machine using the same PID; a collision simply takes the next counter.
+fn reserve_restore_staging(output: &Path) -> std::io::Result<PathBuf> {
+    let name = output.file_name().unwrap_or_default();
+    if name.as_encoded_bytes().len() > 231 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "output filename is too long for remote restore staging",
+        ));
+    }
+    if let Some(parent) = output.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    loop {
+        let counter = STAGING_COUNTER
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| {
+                (n <= u32::MAX as u64).then_some(n + 1)
+            })
+            .map_err(|_| std::io::Error::other("remote restore staging counter exhausted"))?;
+        let mut staging_name = name.to_os_string();
+        staging_name.push(format!(".remote.{:08x}{counter:08x}", std::process::id()));
+        let staging = output.with_file_name(staging_name);
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&staging)
+        {
+            Ok(_) => return Ok(staging),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e),
+        }
+    }
+}
+
+fn is_restore_suffix(suffix: &str) -> bool {
+    if suffix.len() == 16 && suffix.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return true;
+    }
+    // Also collect crash debris from the previous UUID-based naming scheme.
+    suffix
+        .strip_prefix("run-")
+        .and_then(|s| s.rsplit_once('.'))
+        .is_some_and(|(id, counter)| {
+            uuid::Uuid::parse_str(id).is_ok()
+                && !counter.is_empty()
+                && counter.bytes().all(|b| b.is_ascii_digit())
+        })
+}
+
+fn cleanup_restore_staging(parent: &Path) {
+    use std::time::{Duration, SystemTime};
+    let Ok(entries) = std::fs::read_dir(parent) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let file_name = entry.file_name();
+        // Search bytes so a non-UTF-8 output basename is still recognized.
+        // The last marker also handles basenames that themselves contain it.
+        let name = file_name.as_encoded_bytes();
+        let marker = b".remote.";
+        let Some(offset) = name.windows(marker.len()).rposition(|part| part == marker) else {
+            continue;
+        };
+        if !std::str::from_utf8(&name[offset + marker.len()..]).is_ok_and(is_restore_suffix) {
+            continue;
+        }
+        let Ok(metadata) = std::fs::symlink_metadata(entry.path()) else {
+            continue;
+        };
+        // One hour is a conservative crash-debris threshold. Fresh staging
+        // belongs to a potentially active restore and must be left alone.
+        if metadata.is_file()
+            && metadata
+                .modified()
+                .ok()
+                .and_then(|mtime| SystemTime::now().duration_since(mtime).ok())
+                .is_some_and(|age| age > Duration::from_secs(3600))
+        {
+            let _ = std::fs::remove_file(entry.path());
+        }
     }
 }
 
@@ -442,7 +548,6 @@ mod tests {
                     &remote,
                     "run-00000000-0000-4000-8000-000000000001",
                 )),
-                "run-00000000-0000-4000-8000-000000000001".into(),
                 HashSet::new(),
             );
             Self {
@@ -478,6 +583,131 @@ mod tests {
             )
             .unwrap()
         }
+    }
+
+    #[tokio::test]
+    async fn restore_staging_supports_long_names_and_reports_name_limit() {
+        let f = Fixture::new();
+        f.publish().await;
+        let hash = ContentHash::from_hex(&f.result.outputs[0].content_hash).unwrap();
+        let output = f.root.join("x".repeat(231));
+        assert!(
+            f.session
+                .restore_files(&[output.clone()], &[hash.clone()], true)
+                .await
+        );
+        assert_eq!(std::fs::read(&output).unwrap(), b"first");
+        let too_long = f.root.join("x".repeat(232));
+        assert!(!f.session.restore_files(&[too_long], &[hash], true).await);
+        let warnings = f.session.warnings.lock().unwrap();
+        assert!(warnings.contains("output filename is too long for remote restore staging"));
+        assert!(!warnings.contains("has a missing, corrupt or unreadable blob"));
+    }
+
+    #[tokio::test]
+    async fn restore_removes_only_old_recognized_staging_in_parent() {
+        use std::time::{Duration, SystemTime};
+        let f = Fixture::new();
+        f.publish().await;
+        let old = [
+            "a.remote.0000000100000001",
+            "b.remote.0000000100000001",
+            "nested.remote.name.remote.0000000100000001",
+            "a.remote.run-00000000-0000-4000-8000-000000000001.0",
+        ];
+        let keep = [
+            "a.remote.0000000100000002",
+            "a.remote.notes",
+            "a.remote.0000000100000001.extra",
+        ];
+        for name in old.iter().chain(&keep) {
+            let file = std::fs::File::create(f.root.join(name)).unwrap();
+            if *name != keep[0] {
+                file.set_modified(SystemTime::now() - Duration::from_secs(7200))
+                    .unwrap();
+            }
+        }
+        let directory = f.root.join("directory.remote.0000000100000001");
+        std::fs::create_dir(&directory).unwrap();
+        std::fs::File::open(&directory)
+            .unwrap()
+            .set_modified(SystemTime::now() - Duration::from_secs(7200))
+            .unwrap();
+        #[cfg(unix)]
+        let symlink = {
+            let target = f.root.join("symlink-target");
+            std::fs::write(&target, "keep").unwrap();
+            std::fs::File::open(&target)
+                .unwrap()
+                .set_modified(SystemTime::now() - Duration::from_secs(7200))
+                .unwrap();
+            let link = f.root.join("link.remote.0000000100000001");
+            std::os::unix::fs::symlink(target, &link).unwrap();
+            link
+        };
+        let hash = ContentHash::from_hex(&f.result.outputs[0].content_hash).unwrap();
+        assert!(
+            f.session
+                .restore_files(&[f.root.join("a")], &[hash], true)
+                .await
+        );
+        for name in old {
+            assert!(!f.root.join(name).exists(), "{name}");
+        }
+        for name in keep {
+            assert!(f.root.join(name).exists(), "{name}");
+        }
+        assert!(directory.is_dir());
+        #[cfg(unix)]
+        assert!(symlink.is_symlink());
+    }
+
+    #[tokio::test]
+    async fn restore_scans_parent_only_on_first_needed_fetch_in_session() {
+        use std::time::{Duration, SystemTime};
+        let f = Fixture::new();
+        f.publish().await;
+        let debris = f.root.join("a.remote.0000000100000001");
+        let plant_debris = || {
+            std::fs::File::create(&debris)
+                .unwrap()
+                .set_modified(SystemTime::now() - Duration::from_secs(7200))
+                .unwrap();
+        };
+        let hash = ContentHash::from_hex(&f.result.outputs[0].content_hash).unwrap();
+        let output = f.root.join("a");
+        plant_debris();
+        std::fs::write(&output, "first").unwrap();
+        assert!(
+            f.session
+                .restore_files(
+                    std::slice::from_ref(&output),
+                    std::slice::from_ref(&hash),
+                    true
+                )
+                .await
+        );
+        assert!(debris.exists(), "matching output must not trigger cleanup");
+        std::fs::remove_file(&output).unwrap();
+        assert!(
+            f.session
+                .restore_files(
+                    std::slice::from_ref(&output),
+                    std::slice::from_ref(&hash),
+                    true
+                )
+                .await
+        );
+        assert!(!debris.exists(), "first needed fetch must scan the parent");
+        plant_debris();
+        // Many missing outputs share this already-scanned parent. None should
+        // trigger another directory enumeration, even in a later restore call.
+        let outputs: Vec<_> = (0..1024)
+            .map(|n| f.root.join(format!("fanout-{n}")))
+            .collect();
+        let hashes = vec![hash; outputs.len()];
+        assert!(f.session.restore_files(&outputs, &hashes, true).await);
+        assert!(debris.exists(), "same session must not rescan this parent");
     }
 
     #[tokio::test]
