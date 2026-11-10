@@ -224,6 +224,117 @@ pub fn extract_wildcards(pattern: &str) -> Vec<String> {
 mod tests {
     use super::*;
 
+    fn workflow(source: &str) -> Workflow {
+        crate::parse::parse_workflow(source, std::path::Path::new("targets.toml")).unwrap()
+    }
+
+    #[test]
+    fn config_keeps_scalars_lists_and_unresolved_file_sources() {
+        let mut wf = workflow("[config]\nroot='out'\nsamples=['A','B']");
+        wf.config.insert(
+            "empty".into(),
+            ConfigValue::FileSource {
+                source: "missing.csv".into(),
+                key: "sample".into(),
+                columns: vec![],
+            },
+        );
+        let config = workflow_config(&wf);
+        assert_eq!(
+            config.scalars,
+            BTreeMap::from([("root".into(), "out".into())])
+        );
+        assert_eq!(
+            config.lists,
+            BTreeMap::from([
+                ("samples".into(), vec!["A".into(), "B".into()]),
+                ("empty".into(), vec![]),
+            ])
+        );
+    }
+
+    #[test]
+    fn explicit_targets_override_defaults_and_substitute_config() {
+        let wf = workflow("[config]\nroot='out'\n[rule.a]\noutput=['default']\nshell='true'");
+        assert_eq!(
+            resolve_targets(&wf, &["{config.root}/chosen".into(), "literal".into()]),
+            vec!["out/chosen", "literal"]
+        );
+    }
+
+    #[test]
+    fn defaults_prefer_all_then_first_rule_and_expand_inputs_or_outputs() {
+        let wf = workflow(
+            "[config]\nsamples=['A','B']\nroot='out'\n[rule.align]\noutput=['wrong']\nshell='true'\n[rule.all]\ninput=['fixed', '{config.root}/{sample}.txt']",
+        );
+        assert_eq!(
+            resolve_targets(&wf, &[]),
+            vec!["fixed", "out/A.txt", "out/B.txt"]
+        );
+        let wf = workflow(
+            "[config]\nsamples=['A','B']\n[rule.a]\noutput=['fixed', '{sample}.txt']\nshell='true'",
+        );
+        assert_eq!(resolve_targets(&wf, &[]), vec!["fixed", "A.txt", "B.txt"]);
+        assert!(resolve_targets(&workflow(""), &[]).is_empty());
+    }
+
+    #[test]
+    fn expansion_matches_exact_plural_and_singular_axes_and_cartesian_product() {
+        let config = Config {
+            lists: BTreeMap::from([
+                ("sample".into(), vec!["A".into(), "B".into()]),
+                ("stages".into(), vec!["raw".into(), "done".into()]),
+                ("empty".into(), vec![]),
+            ]),
+            scalars: BTreeMap::from([("root".into(), "out".into())]),
+        };
+        let mut out = vec!["existing".into()];
+        expand_pattern(
+            "{config.root}/{samples}/{stage}/{samples}",
+            &config,
+            &mut out,
+        );
+        assert_eq!(
+            out,
+            vec![
+                "existing",
+                "out/A/raw/A",
+                "out/A/done/A",
+                "out/B/raw/B",
+                "out/B/done/B"
+            ]
+        );
+        for pattern in ["{unknown}", "{unknowns}", "{empty}"] {
+            let mut out = Vec::new();
+            expand_pattern(pattern, &config, &mut out);
+            assert!(out.is_empty(), "{pattern}: {out:?}");
+        }
+        let mut out = Vec::new();
+        expand_pattern("{sample}", &config, &mut out);
+        expand_pattern("plain", &config, &mut out);
+        assert_eq!(out, vec!["A", "B", "plain"]);
+    }
+
+    #[test]
+    fn wildcard_extraction_omits_empty_and_duplicate_names() {
+        assert_eq!(
+            extract_wildcards("{}-{sample}-{sample}-{stage}"),
+            vec!["sample", "stage"]
+        );
+    }
+
+    #[test]
+    fn substitution_handles_adjacent_refs_literals_and_unclosed_suffixes() {
+        let scalars = BTreeMap::from([("x".into(), "X".into())]);
+        for (pattern, expected) in [
+            ("plain", "plain"),
+            ("a{config.x}{config.x}z", "aXXz"),
+            ("a{config.x", "a{config.x"),
+        ] {
+            assert_eq!(substitute_config_refs(pattern, &scalars), expected);
+        }
+    }
+
     #[test]
     fn extract_wildcards_simple() {
         let wcs = extract_wildcards("results/{sample}.txt");

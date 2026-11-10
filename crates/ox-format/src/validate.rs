@@ -267,6 +267,71 @@ mod tests {
     use std::path::Path;
 
     #[test]
+    fn namespaced_placeholder_scanning_handles_unicode_keys_and_multiple_errors() {
+        let mut errors = Vec::new();
+        check_namespaced_placeholders(
+            "{resources.é} {resources.next}",
+            "resources",
+            &[],
+            "a",
+            "keys",
+            &mut errors,
+        );
+        let placeholders: Vec<_> = errors
+            .iter()
+            .map(|error| match error {
+                ParseError::UnresolvedPlaceholder { placeholder, .. } => placeholder.as_str(),
+                other => panic!("unexpected error: {other:?}"),
+            })
+            .collect();
+        assert_eq!(placeholders, vec!["{resources.é}", "{resources.next}"]);
+    }
+
+    #[test]
+    fn wildcard_extraction_keeps_exact_names_and_skips_empty_braces() {
+        let patterns = ["prefix/{sample}/{}-{stage}-{sample}", "{other}tail", "{é}"];
+        assert_eq!(
+            extract_wildcards_from_patterns(patterns.into_iter()),
+            HashSet::from(["sample".into(), "stage".into(), "other".into(), "é".into()])
+        );
+    }
+
+    #[test]
+    fn placeholder_errors_are_deduplicated_and_keep_empty_key_diagnostics() {
+        let wf = parse_workflow(
+            "[rule.a]\nshell='echo {resources.missing} {resources.missing} {params.absent} {resources.unclosed'",
+            Path::new("test.toml"),
+        ).unwrap();
+        let errors = validate(&wf).unwrap_err();
+        assert_eq!(errors.len(), 2);
+        for (error, placeholder, label) in [
+            (
+                &errors[0],
+                "{resources.missing}",
+                "declared resource keys: none",
+            ),
+            (
+                &errors[1],
+                "{params.absent}",
+                "declared parameter keys: none",
+            ),
+        ] {
+            match error {
+                ParseError::UnresolvedPlaceholder {
+                    rule,
+                    placeholder: actual,
+                    available,
+                } => {
+                    assert_eq!(rule, "a");
+                    assert_eq!(actual, placeholder);
+                    assert_eq!(available, label);
+                }
+                other => panic!("unexpected error: {other:?}"),
+            }
+        }
+    }
+
+    #[test]
     fn valid_simple_workflow() {
         let toml = r#"
 ox_version = "0.1"
