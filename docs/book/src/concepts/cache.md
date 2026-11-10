@@ -198,6 +198,11 @@ unit's outputs, then validates all outputs by content. Missing, corrupt,
 incompatible or oversized entries produce a cache miss and re-execution.
 `ox run --dry-run` does not read remote entries or fetch outputs.
 
+A failed fetch leaves declared outputs untouched. The final installation
+renames staged files one by one: if a later rename fails, earlier renames
+remain installed, so the unit can have a partial set of restored outputs.
+No restored cache row is written in that case; the unit re-executes.
+
 Writers of the remote directory are trusted producers: they can choose which
 output hashes satisfy a computation key. Hash verification detects corrupt
 bytes; it does not prove that a writer performed the declared computation.
