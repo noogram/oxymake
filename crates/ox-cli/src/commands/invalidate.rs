@@ -157,6 +157,7 @@ fn selected_paths(
     args: &InvalidateArgs,
     cache: Option<&CacheStore>,
     current_remote_keys: bool,
+    workflow: Option<&ox_format::parse::Workflow>,
 ) -> Result<BTreeSet<PathBuf>> {
     // Remote recall never adds files or rows to local invalidation. In an
     // empty cache, main's local invalidation deletes nothing.
@@ -174,10 +175,10 @@ fn selected_paths(
     if args.rule.is_none() && !(args.all && current_remote_keys) {
         return Ok(paths);
     }
-    let workflow = common::load_workflow(Path::new(&args.file))?;
-    let config = common::workflow_config(&workflow);
+    let workflow = workflow.context("workflow required for rule selection")?;
+    let config = common::workflow_config(workflow);
     let mut rules: HashSet<RuleName> = HashSet::new();
-    if let Some(filter) = &args.rule {
+    if let Some(filter) = args.rule.as_ref().filter(|_| !args.all) {
         let regex = if filter.starts_with('/') && filter.ends_with('/') && filter.len() >= 2 {
             Some(
                 regex::Regex::new(&filter[1..filter.len() - 1])
@@ -231,8 +232,9 @@ fn current_keys(
     args: &InvalidateArgs,
     paths: &BTreeSet<PathBuf>,
     cache: Option<&CacheStore>,
+    workflow: &ox_format::parse::Workflow,
 ) -> Result<BTreeSet<String>> {
-    current_keys_with(args, paths, cache, |job| {
+    current_keys_with(args, paths, cache, workflow, |job| {
         super::run::job_cache_key_with_components(job, None).map(|key| key.cache_key)
     })
 }
@@ -241,14 +243,14 @@ fn current_keys_with(
     args: &InvalidateArgs,
     paths: &BTreeSet<PathBuf>,
     cache: Option<&CacheStore>,
+    workflow: &ox_format::parse::Workflow,
     mut key_for: impl FnMut(&ox_core::model::ConcreteJob) -> Option<ContentHash>,
 ) -> Result<BTreeSet<String>> {
     let file = Path::new(&args.file);
-    let workflow = common::load_workflow(file)?;
-    let config = common::workflow_config(&workflow);
+    let config = common::workflow_config(workflow);
     // Honour adopted inputs just as a cache-enabled run does. With no cache
     // there are no adopted rows, and discovery must not create dry-run state.
-    let existing_files = common::discover_source_files(file, &workflow, &config, cache.is_some());
+    let existing_files = common::discover_source_files(file, workflow, &config, cache.is_some());
     let request = ResolveRequest {
         targets: paths
             .iter()
@@ -338,7 +340,8 @@ fn cmd_invalidate_remote(args: InvalidateArgs) -> Result<()> {
     } else {
         None
     };
-    let paths = selected_paths(&args, cache.as_ref(), false)?;
+    let workflow = common::load_workflow(Path::new(&args.file))?;
+    let paths = selected_paths(&args, cache.as_ref(), false, Some(&workflow))?;
     let refs: Vec<_> = paths.iter().map(|p| p.as_path()).collect();
     let mut invalid_keys = 0;
     let local_keys = cache
@@ -353,8 +356,13 @@ fn cmd_invalidate_remote(args: InvalidateArgs) -> Result<()> {
         .unwrap_or_default();
     let mut keys: BTreeSet<String> = local_keys.iter().map(ContentHash::to_string).collect();
     let remote = if let Some(root) = &args.cache_remote {
-        let current_paths = selected_paths(&args, cache.as_ref(), true)?;
-        keys.extend(current_keys(&args, &current_paths, cache.as_ref())?);
+        let current_paths = selected_paths(&args, cache.as_ref(), true, Some(&workflow))?;
+        keys.extend(current_keys(
+            &args,
+            &current_paths,
+            cache.as_ref(),
+            &workflow,
+        )?);
         remote_entries(root, &keys)
     } else {
         Vec::new()
@@ -487,7 +495,12 @@ fn cmd_invalidate_local(args: InvalidateArgs) -> Result<()> {
         bail!("specify --rule <name>, --output <path>, or --all");
     }
 
-    let paths_to_invalidate = selected_paths(&args, Some(&cache), false)?;
+    let workflow = args
+        .rule
+        .as_ref()
+        .map(|_| common::load_workflow(Path::new(&args.file)))
+        .transpose()?;
+    let paths_to_invalidate = selected_paths(&args, Some(&cache), false, workflow.as_ref())?;
 
     if paths_to_invalidate.is_empty() {
         println!("No output paths found to invalidate.");
@@ -595,7 +608,8 @@ shell="true"
         };
         let paths = BTreeSet::from([first, second]);
         let mut counts = std::collections::BTreeMap::new();
-        current_keys_with(&args, &paths, None, |job| {
+        let workflow = common::load_workflow_quiet(&file).unwrap();
+        current_keys_with(&args, &paths, None, &workflow, |job| {
             *counts.entry(job.id.as_str().to_owned()).or_insert(0) += 1;
             Some(ContentHash::from(blake3::hash(job.id.as_str().as_bytes())))
         })
