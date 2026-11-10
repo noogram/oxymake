@@ -67,6 +67,46 @@ fn entries(remote: &Path) -> Vec<PathBuf> {
         .collect()
 }
 #[test]
+fn remote_recall_deletion_messages_match_dry_run_and_keep_outputs() {
+    for (flags, expected, kept) in [
+        (
+            vec!["--dry-run"],
+            vec!["Would delete 1 output file(s)."],
+            true,
+        ),
+        (vec!["--dry-run", "--keep-outputs"], vec![], true),
+        (vec![], vec!["Deleted 1 output file(s)."], false),
+        (vec!["--keep-outputs"], vec![], true),
+    ] {
+        let (_tmp, root, remote) = setup();
+        success(&root, &["run", "aligned/A.txt"], Some(&remote));
+        let mut args = vec!["invalidate", "--all"];
+        args.extend(flags);
+        let output = success(&root, &args, Some(&remote));
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let messages: Vec<_> = stdout
+            .lines()
+            .filter(|line| line.starts_with("Would delete ") || line.starts_with("Deleted "))
+            .collect();
+        assert_eq!(messages, expected, "{args:?}: {stdout}");
+        assert_eq!(root.join("aligned/A.txt").exists(), kept, "{args:?}");
+    }
+    for flags in [vec![], vec!["--dry-run"]] {
+        let (_tmp, root, remote) = setup();
+        let mut args = vec!["invalidate", "--all"];
+        args.extend(flags);
+        let output = success(&root, &args, Some(&remote));
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            !stdout
+                .lines()
+                .any(|line| line.starts_with("Would delete ") || line.starts_with("Deleted ")),
+            "{args:?}: {stdout}"
+        );
+    }
+}
+
+#[test]
 fn remote_rule_regex_requires_both_delimiters() {
     for filter in ["/align", "align/", "/"] {
         let (_tmp, root, remote) = setup();
@@ -347,6 +387,16 @@ fn non_hex_local_record_warns_without_aborting_other_recalls() {
         [],
     )
     .unwrap();
+    let dry = success(
+        &root,
+        &["invalidate", "--all", "--dry-run", "--json"],
+        Some(&remote),
+    );
+    assert!(String::from_utf8_lossy(&dry.stderr).contains("invalid stored cache key"));
+    let preview: serde_json::Value = serde_json::from_slice(&dry.stdout).unwrap();
+    assert_eq!(preview["invalidated_entries"], 2);
+    assert_eq!(rows(&root), 2);
+    assert_eq!(entries(&remote).len(), 1);
     let out = success(&root, &["invalidate", "--all", "--json"], Some(&remote));
     assert!(String::from_utf8_lossy(&out.stderr).contains("invalid stored cache key"));
     let report: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
