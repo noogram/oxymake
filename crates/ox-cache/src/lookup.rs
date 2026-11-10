@@ -847,6 +847,42 @@ impl CacheStore {
         removed
     }
 
+    /// Collect every key that invalidation would remove, without mutating state.
+    ///
+    /// `None` selects all local entries. A path selection includes historical
+    /// keys for each output, not only its most recent record.
+    pub fn invalidation_keys(
+        &self,
+        outputs: Option<&[&Path]>,
+    ) -> Result<Vec<ContentHash>, CacheError> {
+        let query = || -> rusqlite::Result<Vec<String>> {
+            if let Some(outputs) = outputs {
+                let mut stmt = self
+                    .conn
+                    .prepare("SELECT DISTINCT cache_key FROM output_records WHERE path = ?1")?;
+                let mut keys = std::collections::BTreeSet::new();
+                for path in outputs {
+                    for key in stmt.query_map(params![path.to_string_lossy().as_ref()], |row| {
+                        row.get::<_, String>(0)
+                    })? {
+                        keys.insert(key?);
+                    }
+                }
+                Ok(keys.into_iter().collect())
+            } else {
+                self.conn
+                    .prepare("SELECT cache_key FROM cache_entries ORDER BY cache_key")?
+                    .query_map([], |row| row.get(0))?
+                    .collect()
+            }
+        };
+        query()
+            .map_err(|e| CacheError::Manifest(e.to_string()))?
+            .into_iter()
+            .map(|key| ContentHash::from_hex(key).map_err(|e| CacheError::Manifest(e.to_string())))
+            .collect()
+    }
+
     /// Return all distinct output paths stored in the cache.
     pub fn all_output_paths(&self) -> Vec<PathBuf> {
         self.conn
@@ -1392,6 +1428,29 @@ mod tests {
         let removed = store.invalidate(&[out1.as_path()]);
         assert_eq!(removed, 1);
         assert_eq!(store.len(), 1);
+    }
+
+    #[test]
+    fn invalidation_keys_include_history_without_mutating_records() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = make_store(&dir.path().join(".oxymake"));
+        let a = dir.path().join("a");
+        let b = dir.path().join("b");
+        std::fs::write(&a, "a").unwrap();
+        std::fs::write(&b, "b").unwrap();
+        for (key, path) in [("old", &a), ("new", &a), ("other", &b)] {
+            store
+                .record(ch(key), &[path], None, PlatformScope::Exact)
+                .unwrap();
+        }
+        let mut expected = vec![ch("old"), ch("new")];
+        expected.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+        assert_eq!(store.invalidation_keys(Some(&[&a, &a])).unwrap(), expected);
+        assert_eq!(store.invalidation_keys(None).unwrap().len(), 3);
+        assert!(store.invalidation_keys(Some(&[])).unwrap().is_empty());
+        assert_eq!(store.len(), 3);
+        assert_eq!(store.invalidate(&[&a]), expected.len());
+        assert_eq!(store.invalidation_keys(None).unwrap(), vec![ch("other")]);
     }
 
     #[test]

@@ -90,7 +90,19 @@ fn dry_run_uses_content_validation_with_a_remote_cache() {
             "remote",
         ],
     );
-    assert!(stderr.contains(WARNING), "{stderr}");
+    assert!(
+        stderr.contains("outputs present but no cache entry"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("remote entries are not read in dry-run"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("may be restored instead of executed"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("they will be rebuilt"), "{stderr}");
     assert!(!dir.path().join("remote").exists());
 }
 

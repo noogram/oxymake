@@ -198,7 +198,11 @@ Restoration checks the entry's job specification, platform scope, input
 provenance and declared output paths. It verifies fetched blobs by BLAKE3 before installing any of a
 unit's outputs, then validates all outputs by content. Missing, corrupt,
 incompatible or oversized entries produce a cache miss and re-execution.
-`ox run --dry-run` does not read remote entries or fetch outputs.
+`ox run --dry-run` does not read remote entries or fetch outputs. With
+`--cache-remote`, its header and uncached-output warning explain that listed
+jobs may be restored instead of executed during a real run. Its JSON summary
+sets `remote_entries_checked = false` and `remote_restore_possible = true`
+when remote caching is enabled.
 
 A failed fetch leaves declared outputs untouched. The final installation
 renames staged files one by one: if a later rename fails, earlier renames
@@ -223,8 +227,17 @@ The local `cache.db` gains an additive, forward-only `restored` column (default
 provenance, take the reproducibility class from the local rule, and leave
 `adopted = 0`; `adopted` continues to mark explicit
 `cache-import`. This cache migration is separate from `state.db`'s schema.
-`ox invalidate` removes local rows only: with `--cache-remote`, the next run
-can restore them again. To recall a remote result, remove its entry file.
+`ox invalidate` removes local rows and, by default, output files. Without
+`--cache-remote`, a later run can restore the result again. To recall remote
+results too, use `ox invalidate --rule NAME --cache-remote DIR` (or select with
+`--output`, `--all`, and `--cascade`). It removes entries addressed by the
+invalidated local keys and the selected jobs' calculable current keys, even
+with fresh local state. Inputs must be present to calculate a current key;
+historical keys require a local record. `--all` does not clear unrelated
+entries in the shared directory, and no blobs are removed. Unsupported newer
+entry versions are also removed by this explicit recall. Review entry paths
+with `--dry-run`; add `--json` for a structured list. `--keep-outputs` preserves
+local output files.
 
 ## Cache and Materialization
 

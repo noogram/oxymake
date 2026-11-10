@@ -139,7 +139,9 @@ outputs are BLAKE3-verified. Validation is always promoted to `hash`.
 Writers of the directory are trusted to supply results for computation keys;
 restrict write access using filesystem permissions. Invalid or unsupported
 entries are misses, with a warning. `--dry-run` reads no entries and fetches
-no blobs. `ox invalidate` still removes local rows only.
+no blobs; its listed jobs may be restored instead of executed during a real
+run. Use `ox invalidate --cache-remote DIR` to recall selected remote entries
+as well as local rows.
 With `--executor ray`, publication happens only under `--follow`, as completed
 task records are read, not during `ox status` reconciliation. See
 [Ray integration](../concepts/ray-integration.md#per-task-records) and
@@ -484,9 +486,33 @@ ox snapshot list                    # List snapshots
 Invalidate cached outputs to force re-execution.
 
 ```bash
-ox invalidate stats                 # Invalidate a rule
-ox invalidate results/alice.txt     # Invalidate a specific output
+ox invalidate --rule stats                       # Invalidate a rule
+ox invalidate --output results/alice.txt          # Invalidate a specific output
+ox invalidate --rule stats --cascade              # Include downstream rules
+ox invalidate --rule stats --cache-remote shared  # Also recall remote entries
+ox invalidate --all --cache-remote shared --dry-run --json
 ```
+
+Select outputs with repeatable `--output PATH`, rules with `--rule NAME`
+(or `/regex/`), or all local cache entries and workflow outputs with `--all`.
+`--cascade` also selects downstream rules. By default output files are deleted;
+`--keep-outputs` preserves them while removing cache metadata.
+
+`--cache-remote DIR` additionally removes `entries/<prefix>/<key>.json` for
+all invalidated local keys, including historical keys, and for the selected
+jobs' current keys when their inputs are available. It works with fresh local
+state. Missing inputs prevent current-key computation; recorded local keys can
+still be recalled. `--all` selects keys from this workflow and its local cache;
+it never clears the shared remote directory. Blobs are always retained.
+Newer entry versions are removed too, and their version is reported when it
+can be read. No additional confirmation is required.
+
+`--dry-run` lists the entries and outputs without removing any rows or files.
+`--json` includes `remote_entries` with each entry's key, path,
+`format_version` (null when unreadable) and `newer_version`, alongside
+`invalidated_entries`, `output_paths`, `deleted_files` and `dry_run`. In a
+dry-run, `invalidated_entries` is the number of local rows that would be
+removed and `deleted_files` is zero.
 
 ### `ox clean`
 

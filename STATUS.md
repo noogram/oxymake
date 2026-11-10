@@ -59,8 +59,11 @@ The `ox` binary exposes 27 subcommands today (see `crates/ox-cli/src/lib.rs`).
   cache key, in a shared directory, and forces content-hash validation. A
   checkout with fresh local state, the same workflow and the same raw inputs
   restores and skips the units recorded there (ADR-022). Writers of the
-  directory are trusted producers for every run that reads it. Removing
-  remote entries through `ox invalidate` is not implemented yet.
+  directory are trusted producers for every run that reads it. The unstable
+  `ox invalidate --cache-remote DIR` flag recalls entries for invalidated local
+  keys and calculable current workflow keys, preserving blobs and unrelated
+  remote entries. `ox run --dry-run` reads no remote entries and reports that
+  remote restoration may replace execution.
 - **`ox init`** — `ox init [dir] [--force]`.
 - **`ox plan`**, **`ox status`**, **`ox lint`**, **`ox explain`**,
   **`ox query`**, **`ox logs`**, **`ox history`** — *names* and *exit codes*

@@ -31,7 +31,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rule's reproducibility class, so `ox cache-export` refusals still hold, and
   are marked as restored, distinct from `ox cache-import` adoption. Forced
   jobs and jobs excluded by `--until` or `--omit-from` are not restored.
-  Writers of the remote directory are trusted producers (#66).
+  Writers of the remote directory are trusted producers. Dry-runs read no
+  remote entries and explain that listed jobs may be restored instead of
+  executed (#66).
+- `ox invalidate --cache-remote DIR` recalls entries for invalidated local
+  keys (including historical keys) and calculable current keys of selected
+  workflow jobs, even with fresh local state. `--all` preserves unrelated
+  remote entries; blobs are never removed. `--dry-run` lists entries without
+  deletion, `--json` includes them, and explicit recall removes newer entry
+  versions too, reporting their version when readable.
 - Before dispatch, `ox run` warns when planned jobs have all declared file
   outputs present but no cache entry, listing up to ten job ids. This also
   applies to `--dry-run` and every executor; explicitly forced jobs are
