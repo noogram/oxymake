@@ -33,6 +33,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Blob-fetch failures backed by a local cache row again name the declared
+  output instead of reporting a remote-entry defect (#66).
+
 - Forced jobs and jobs excluded by `--until` or `--omit-from` no longer
   restore remote outputs during planning or scheduler cache checks (#66).
 

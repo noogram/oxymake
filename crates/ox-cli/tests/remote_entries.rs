@@ -494,3 +494,33 @@ fn selective_execution_never_restores_excluded_outputs() {
         assert_eq!(restored_count(&reader), 1);
     }
 }
+
+#[test]
+fn local_row_blob_fetch_failure_names_the_declared_output() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("project");
+    let remote = temp.path().join("remote");
+    checkout(&root);
+    run(&root, &remote, &[]);
+    let entry: Value = serde_json::from_slice(&fs::read(entry_file(&remote)).unwrap()).unwrap();
+    let hash = entry["outputs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|out| out["path"] == "a")
+        .unwrap()["content_hash"]
+        .as_str()
+        .unwrap();
+    let blob = remote.join(&hash[..2]).join(hash);
+    fs::remove_file(&blob).unwrap();
+    fs::create_dir(&blob).unwrap();
+    fs::remove_file(root.join("a")).unwrap();
+    fs::remove_dir_all(remote.join("entries")).unwrap();
+    let result = run(&root, &remote, &[]);
+    let stderr = String::from_utf8_lossy(&result.stderr);
+    assert!(
+        stderr.contains("warning: remote cache fetch for a failed:"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("warning: remote cache entry"), "{stderr}");
+}

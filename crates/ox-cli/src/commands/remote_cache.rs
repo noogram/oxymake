@@ -271,7 +271,7 @@ impl RemoteSession {
             // Reproducibility is the reader's policy, not a producer grant.
             result.provenance.reproducibility = components.reproducibility;
             // Fetches are completed before the local row is created below.
-            if !self.restore_files(outputs, &hashes).await {
+            if !self.restore_files(outputs, &hashes, true).await {
                 return false;
             }
             if let Err(e) = store.record_restored(
@@ -286,13 +286,18 @@ impl RemoteSession {
             }
             return store.is_cached(key, &refs).unwrap_or(false);
         };
-        if !self.restore_files(outputs, &hashes).await {
+        if !self.restore_files(outputs, &hashes, false).await {
             return false;
         }
         store.is_cached(key, &refs).unwrap_or(false)
     }
 
-    async fn restore_files(&self, outputs: &[PathBuf], hashes: &[ContentHash]) -> bool {
+    async fn restore_files(
+        &self,
+        outputs: &[PathBuf],
+        hashes: &[ContentHash],
+        from_entry: bool,
+    ) -> bool {
         let mut staged = Vec::new();
         for (output, hash) in outputs.iter().zip(hashes) {
             if hash_file(output).ok().as_ref() == Some(hash) {
@@ -306,8 +311,21 @@ impl RemoteSession {
             ));
             // Include the current path before fetching: a failing backend may leave bytes.
             staged.push((staging.clone(), output));
-            if !matches!(self.backend.fetch(hash, &staging).await, Ok(true)) {
-                self.warn("has a missing, corrupt or unreadable blob");
+            let fetched = match self.backend.fetch(hash, &staging).await {
+                Ok(true) => true,
+                failure => {
+                    if from_entry {
+                        self.warn("has a missing, corrupt or unreadable blob");
+                    } else if let Err(e) = failure {
+                        eprintln!(
+                            "warning: remote cache fetch for {} failed: {e}",
+                            output.display()
+                        );
+                    }
+                    false
+                }
+            };
+            if !fetched {
                 for (path, _) in &staged {
                     let _ = tokio::fs::remove_file(path).await;
                 }
@@ -316,7 +334,10 @@ impl RemoteSession {
         }
         for (staging, output) in &staged {
             if let Err(e) = tokio::fs::rename(staging, output).await {
-                eprintln!("warning: remote cache output installation failed: {e}");
+                eprintln!(
+                    "warning: remote cache output installation for {} failed: {e}",
+                    output.display()
+                );
                 for (path, _) in &staged {
                     let _ = tokio::fs::remove_file(path).await;
                 }
