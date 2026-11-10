@@ -7,15 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Breaking changes
+
+- With the default `clean_outputs = "always"`, Ray shell, script and inline
+  `run` tasks now remove existing declared outputs before execution, as the
+  local executor does; they also clear stale `.oxytmp` files under every
+  policy. 0.8.0 left those outputs in place until a failure. A task that
+  refuses to overwrite an existing file now rebuilds instead of failing and
+  losing the file (#65). To keep existing outputs available to the command,
+  declare `clean_outputs = "on-failure"` or `"never"` on the rule.
+
 ### Added
 
-- `--cache-remote` publishes one computation entry per recorded unit after
-  its blobs. Fresh local state with the same workflow and raw inputs can
-  restore and skip completed units, including after an interrupted run;
-  Ray publishes while `--follow` reads task records. Restored outputs are
-  hash-verified, and remote writers are trusted producers. Local cache rows
-  distinguish remote restoration from explicit `cache-import` adoption (#66).
-
+- `--cache-remote` publishes one computation entry per recorded unit, after
+  its blobs (ADR-022). A run with fresh local state, the same workflow and the
+  same raw inputs restores and skips completed units, including those
+  recorded before an interruption; under Ray, entries are published while
+  `--follow` reads task records. Restored outputs are hash-verified and
+  always written to the local declared paths. An entry whose kind, version,
+  key, job specification, platform scope, input provenance or output set does
+  not match is a miss, with one warning per kind of defect; an entry of a
+  newer format version is never overwritten. Restored rows keep the local
+  rule's reproducibility class, so `ox cache-export` refusals still hold, and
+  are marked as restored, distinct from `ox cache-import` adoption. Forced
+  jobs and jobs excluded by `--until` or `--omit-from` are not restored.
+  Writers of the remote directory are trusted producers (#66).
 - Before dispatch, `ox run` warns when planned jobs have all declared file
   outputs present but no cache entry, listing up to ten job ids. This also
   applies to `--dry-run` and every executor; explicitly forced jobs are
@@ -33,26 +49,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Remote output matching compares normalized path sets, accepting equivalent
-  spellings and repeated names while refusing conflicting hashes (#66).
-
-- Blob-fetch failures backed by a local cache row again name the declared
-  output instead of reporting a remote-entry defect (#66).
-
-- Forced jobs and jobs excluded by `--until` or `--omit-from` no longer
-  restore remote outputs during planning or scheduler cache checks (#66).
-
-- Older remote-cache producers recognize unsupported entry versions before
-  parsing their body and leave newer entries unchanged when publishing (#66).
-
-- Remote restoration checks input provenance and retains the local rule's
-  reproducibility class, preserving `cache-export` refusals (#66).
-
-- Ray shell, script and inline `run` tasks now clear stale `.oxytmp` files
-  before execution and remove existing declared outputs with
-  `clean_outputs = "always"`, matching the local executor. `on-failure` and
-  `never` continue to keep existing outputs before execution. This lets
-  uncached tasks that refuse to overwrite a file rebuild successfully (#65).
 - Ray `--follow` now names the failed dependency for a task that could not
   run, instead of attributing the shared driver's error trace to that task.
   Per-task records take precedence when the driver reaches a terminal state (#65).

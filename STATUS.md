@@ -55,11 +55,12 @@ The `ox` binary exposes 27 subcommands today (see `crates/ox-cli/src/lib.rs`).
   Five `ox run` flags are shipped but **unstable**: `--cache-remote <dir>`,
   `--resource-budget KEY=VALUE`, `--metadata KEY=VALUE`, `--ray-python PATH`, and
   `--ray-allow-pending`. `--cache-remote`
-  stores output blobs in and restores missing outputs from a shared
-  directory, forcing content-hash validation. It is a blob transport: the
-  local SQLite index mapping computation keys to outputs does not travel,
-  so a fresh checkout cannot restore from the shared directory alone. Its
-  semantics will evolve when a remote computation-key manifest lands.
+  stores each recorded unit's output blobs, then one computation entry per
+  cache key, in a shared directory, and forces content-hash validation. A
+  checkout with fresh local state, the same workflow and the same raw inputs
+  restores and skips the units recorded there (ADR-022). Writers of the
+  directory are trusted producers for every run that reads it. Removing
+  remote entries through `ox invalidate` is not implemented yet.
 - **`ox init`** — `ox init [dir] [--force]`.
 - **`ox plan`**, **`ox status`**, **`ox lint`**, **`ox explain`**,
   **`ox query`**, **`ox logs`**, **`ox history`** — *names* and *exit codes*

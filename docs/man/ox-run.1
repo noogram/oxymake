@@ -96,7 +96,7 @@ Resolution order (highest wins): this flag, the OX_CACHE_VALIDATION environment 
 \fB\-\-cache\-remote\fR \fI<DIR>\fR
 Shared directory for content\-addressed cache artifacts.
 
-Existing local cache entries can restore missing outputs from this directory. Remote caches always use content\-hash validation.
+Recorded units publish their output blobs and a computation entry here. A run with fresh local state restores and skips units found in the directory; missing outputs of local cache entries are restored too. Writers of the directory are trusted producers. Remote caches always use content\-hash validation.
 .TP
 \fB\-v\fR, \fB\-\-verbose\fR
 Verbose output (\-v: job start/end/duration/exit codes, \-vv: also show stdout/stderr)

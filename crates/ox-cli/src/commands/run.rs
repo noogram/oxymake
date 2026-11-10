@@ -264,8 +264,11 @@ pub struct RunArgs {
 
     /// Shared directory for content-addressed cache artifacts.
     ///
-    /// Existing local cache entries can restore missing outputs from this
-    /// directory. Remote caches always use content-hash validation.
+    /// Recorded units publish their output blobs and a computation entry
+    /// here. A run with fresh local state restores and skips units found in
+    /// the directory; missing outputs of local cache entries are restored
+    /// too. Writers of the directory are trusted producers. Remote caches
+    /// always use content-hash validation.
     #[arg(long, value_name = "DIR")]
     pub cache_remote: Option<PathBuf>,
 

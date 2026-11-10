@@ -190,10 +190,12 @@ stored. A checkout with fresh local state, the same workflow and raw input
 bytes can therefore restore and skip those units using the shared directory
 alone. Entries are published per unit, so work recorded before a failure or
 interruption remains available. A wiped local state directory with matching
-outputs can recover the index without fetching the blobs again.
+outputs can recover the index without fetching the blobs again. The design is
+recorded in
+[ADR-022](https://github.com/noogram/oxymake/blob/main/docs/adr/022-remote-cache-manifest.md).
 
-Restoration checks the entry's job specification, platform scope and declared
-output paths. It verifies fetched blobs by BLAKE3 before installing any of a
+Restoration checks the entry's job specification, platform scope, input
+provenance and declared output paths. It verifies fetched blobs by BLAKE3 before installing any of a
 unit's outputs, then validates all outputs by content. Missing, corrupt,
 incompatible or oversized entries produce a cache miss and re-execution.
 `ox run --dry-run` does not read remote entries or fetch outputs.
@@ -218,7 +220,8 @@ supported yet.
 
 The local `cache.db` gains an additive, forward-only `restored` column (default
 `0`). Remote restores set it to `1`, preserve the producing platform and
-provenance, and leave `adopted = 0`; `adopted` continues to mark explicit
+provenance, take the reproducibility class from the local rule, and leave
+`adopted = 0`; `adopted` continues to mark explicit
 `cache-import`. This cache migration is separate from `state.db`'s schema.
 `ox invalidate` removes local rows only: with `--cache-remote`, the next run
 can restore them again. To recall a remote result, remove its entry file.

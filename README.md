@@ -433,7 +433,8 @@ and two concurrent sessions execute a job once. See the
   not applied and `uv` is applied only partially
 - **Distributed**: SLURM executor, Ray executor (`--executor slurm`, `--executor ray`)
 - **Remote cache**: shared-directory backend via `ox-cache-remote`
-  (atomic store, content re-verification on fetch)
+  (atomic store, content re-verification on fetch, one computation entry per
+  cache key so fresh checkouts restore completed units)
 - **Translation**: bidirectional Snakemake (`ox translate` / `ox export snakemake`)
 - **Query**: Bazel-style dependency graph queries (`deps`, `rdeps`, `allpaths`)
 

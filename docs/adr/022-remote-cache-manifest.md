@@ -396,3 +396,31 @@ Two variants of A were also considered:
 - Reading entries requires no opt-in beyond `--cache-remote`, which is already
   marked unstable. The documentation of `--cache-remote` states the trust it
   grants to writers of the remote directory, as described above.
+
+## Amendment — 2026-11-10: rules added during implementation review
+
+An adversarial review of the first implementation found cases that the text
+above leaves open or gets wrong. The implementation follows these rules, which
+take precedence over the sections they amend.
+
+- **Publish, step 3.** An existing entry whose `format_version` is higher than
+  the producer supports is never replaced. The producer reads only the
+  `kind` and `format_version` header before deciding. Without this rule, two
+  `ox` versions sharing one directory would overwrite each other's entries on
+  every run, and both would keep re-executing.
+- **Restore, step 2.** An entry whose recorded input hashes differ from the
+  local job's input hashes is a miss, like the other mismatches listed there.
+- **Restore, step 5.** The restored row records the local rule's
+  reproducibility class, not the class stored in the entry. The class is not
+  part of the cache key, so a producer could otherwise mark as `deterministic`
+  a result that the reader's rule declares `non_reproducible`, and
+  `ox cache-export` would then export it.
+- **Restore, scope.** Jobs that will execute anyway are not restored: jobs
+  forced with `--forcerun`, and jobs excluded by `--until` or `--omit-from`.
+  This applies to the pre-scan and to the scheduler's cache check alike.
+- **Restore, step 3.** The local declared outputs and the entry's paths are
+  compared as sets after normalization.
+- **Restore, step 4.** The staging fetch is all-or-nothing, but the final
+  rename loop is not a transaction. If a rename fails after earlier ones
+  succeeded, some declared outputs are already replaced, no row is written,
+  and the unit re-executes. The cache chapter documents this window.
