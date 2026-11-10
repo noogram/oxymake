@@ -260,17 +260,19 @@ fn current_keys_with(
         existing_files,
     };
     let mut keys = BTreeSet::new();
-    // Resolve the complete selection once; a dependency may occur under many
-    // targets but its computation key must only be calculated once.
-    match ox_core::resolver::resolve_with_source_fallback_at(
-        &workflow.rules,
-        &request,
-        ox_api::resolution::workflow_directory(file),
-        &|path| cache.is_none_or(|cache| cache.entry_for_output(path).is_none()),
-    ) {
-        Ok(result) => {
-            let mut seen = HashSet::new();
-            let mut resolved_paths = BTreeSet::new();
+    let mut seen = HashSet::new();
+    let mut resolved_paths = BTreeSet::new();
+    let mut failed_paths = BTreeSet::new();
+    {
+        let resolve = |request: &ResolveRequest| {
+            ox_core::resolver::resolve_with_source_fallback_at(
+                &workflow.rules,
+                request,
+                ox_api::resolution::workflow_directory(file),
+                &|path| cache.is_none_or(|cache| cache.entry_for_output(path).is_none()),
+            )
+        };
+        let mut collect_keys = |result: ox_core::resolver::ResolveResult| {
             for job in result.jobs {
                 let outputs = super::run::output_file_paths(&job);
                 if !outputs.iter().any(|p| paths.contains(p)) || !seen.insert(job.id.clone()) {
@@ -286,21 +288,39 @@ fn current_keys_with(
                     );
                 }
             }
-            for path in paths.difference(&resolved_paths) {
-                eprintln!(
-                    "warning: cannot calculate current remote key for {}; no producer job was resolved",
-                    path.display()
-                );
+        };
+        // Keep the single-request fast path. An unavailable source in one
+        // target must not prevent recall of independent, resolvable targets.
+        match resolve(&request) {
+            Ok(result) => collect_keys(result),
+            Err(_) => {
+                for target in &request.targets {
+                    let single = ResolveRequest {
+                        targets: vec![target.clone()],
+                        config: request.config.clone(),
+                        existing_files: request.existing_files.clone(),
+                    };
+                    match resolve(&single) {
+                        Ok(result) => collect_keys(result),
+                        Err(error) => {
+                            failed_paths.insert(PathBuf::from(target));
+                            eprintln!(
+                                "warning: cannot calculate current remote key for {target}: {error}; stored local keys are still selected"
+                            );
+                        }
+                    }
+                }
             }
         }
-        Err(error) => {
-            for path in paths {
-                eprintln!(
-                    "warning: cannot calculate current remote key for {}: {error}; stored local keys are still selected",
-                    path.display()
-                );
-            }
-        }
+    }
+    for path in paths
+        .difference(&resolved_paths)
+        .filter(|p| !failed_paths.contains(*p))
+    {
+        eprintln!(
+            "warning: cannot calculate current remote key for {}; no producer job was resolved",
+            path.display()
+        );
     }
     Ok(keys)
 }
@@ -572,6 +592,15 @@ mod review_tests {
 
     #[test]
     fn selected_jobs_are_keyed_once_across_all_targets() {
+        assert_jobs_keyed_once(false);
+    }
+
+    #[test]
+    fn selected_jobs_are_keyed_once_after_joint_resolution_fails() {
+        assert_jobs_keyed_once(true);
+    }
+
+    fn assert_jobs_keyed_once(joint_failure: bool) {
         let dir = tempfile::tempdir().unwrap();
         let first = dir.path().join("first");
         let second = dir.path().join("second");
@@ -606,7 +635,22 @@ shell="true"
             json: false,
             file: file.to_string_lossy().into_owned(),
         };
-        let paths = BTreeSet::from([first, second]);
+        let mut paths = BTreeSet::from([first, second]);
+        if joint_failure {
+            use std::io::Write;
+            let broken = dir.path().join("broken");
+            writeln!(
+                std::fs::OpenOptions::new()
+                    .append(true)
+                    .open(&file)
+                    .unwrap(),
+                "[rule.broken]\ninput=[\"{}\"]\noutput=[\"{}\"]\nshell=\"true\"",
+                dir.path().join("missing-raw").display(),
+                broken.display()
+            )
+            .unwrap();
+            paths.insert(broken);
+        }
         let mut counts = std::collections::BTreeMap::new();
         let workflow = common::load_workflow_quiet(&file).unwrap();
         current_keys_with(&args, &paths, None, &workflow, |job| {

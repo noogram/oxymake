@@ -315,3 +315,40 @@ fn non_hex_local_record_warns_without_aborting_other_recalls() {
     assert_eq!(rows(&root), 0);
     assert!(entries(&remote).is_empty());
 }
+
+#[test]
+fn fresh_recall_keeps_resolvable_wildcard_targets_when_one_input_is_missing() {
+    let (_writer, writer, remote) = setup();
+    let (_fresh, fresh, _) = setup();
+    success(
+        &writer,
+        &["run", "aligned/A.txt", "aligned/B.txt", "aligned/C.txt"],
+        Some(&remote),
+    );
+    let unavailable = entries(&remote)
+        .into_iter()
+        .find(|p| {
+            let entry: serde_json::Value = serde_json::from_slice(&fs::read(p).unwrap()).unwrap();
+            entry["outputs"][0]["path"] == "aligned/C.txt"
+        })
+        .unwrap();
+    let original = fs::read(&unavailable).unwrap();
+    fs::remove_file(fresh.join("raw/C.txt")).unwrap();
+    let out = success(
+        &fresh,
+        &["invalidate", "--rule", "align", "--json"],
+        Some(&remote),
+    );
+    let report: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(report["remote_entries_found"], 2);
+    assert_eq!(entries(&remote), vec![unavailable.clone()]);
+    assert_eq!(fs::read(unavailable).unwrap(), original);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let warnings: Vec<_> = stderr
+        .lines()
+        .filter(|line| line.contains("cannot calculate current remote key"))
+        .collect();
+    assert_eq!(warnings.len(), 1, "{stderr}");
+    assert!(warnings[0].contains("aligned/C.txt"), "{stderr}");
+    assert!(!fresh.join(".oxymake").exists());
+}

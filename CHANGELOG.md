@@ -39,7 +39,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   remote entries; blobs are never removed. `--dry-run` lists entries without
   deletion, `--json` includes them, and explicit recall removes newer entry
   versions too, reporting their version when readable. Recall requires an
-  existing remote directory and skips symlinks and special files (#66).
+  existing remote directory and skips symlinks and special files. A selected
+  target with unavailable inputs no longer blocks recall of the others (#66).
 - Before dispatch, `ox run` warns when planned jobs have all declared file
   outputs present but no cache entry, listing up to ten job ids. This also
   applies to `--dry-run` and every executor; explicitly forced jobs are

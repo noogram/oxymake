@@ -520,7 +520,8 @@ can be read. No additional confirmation is required.
 `format_version` (null when unreadable) and `newer_version`, alongside
 `remote_entries_found`, `invalidated_entries`, `output_paths`, `deleted_files`
 and `dry_run`. Missing current keys produce warnings; no matching remote
-entries are reported explicitly. In a
+entries are reported explicitly. If joint target resolution fails, targets are
+retried individually so one unavailable input does not block other recalls. In a
 dry-run, `invalidated_entries` is the number of local rows that would be
 removed and `deleted_files` is zero.
 
