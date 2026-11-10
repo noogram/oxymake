@@ -387,6 +387,13 @@ impl RemoteSession {
 // filesystems. Exclusive creation also protects against PID reuse and another
 // machine using the same PID; a collision simply takes the next counter.
 fn reserve_restore_staging(output: &Path) -> std::io::Result<PathBuf> {
+    reserve_restore_staging_with_counter(output, &STAGING_COUNTER)
+}
+
+fn reserve_restore_staging_with_counter(
+    output: &Path,
+    counter_source: &AtomicU64,
+) -> std::io::Result<PathBuf> {
     let name = output.file_name().unwrap_or_default();
     if name.as_encoded_bytes().len() > 231 {
         return Err(std::io::Error::new(
@@ -398,11 +405,7 @@ fn reserve_restore_staging(output: &Path) -> std::io::Result<PathBuf> {
         std::fs::create_dir_all(parent)?;
     }
     loop {
-        let counter = STAGING_COUNTER
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| {
-                (n <= u32::MAX as u64).then_some(n + 1)
-            })
-            .map_err(|_| std::io::Error::other("remote restore staging counter exhausted"))?;
+        let counter = next_restore_staging_counter(counter_source)?;
         let mut staging_name = name.to_os_string();
         staging_name.push(format!(".remote.{:08x}{counter:08x}", std::process::id()));
         let staging = output.with_file_name(staging_name);
@@ -416,6 +419,14 @@ fn reserve_restore_staging(output: &Path) -> std::io::Result<PathBuf> {
             Err(e) => return Err(e),
         }
     }
+}
+
+fn next_restore_staging_counter(counter_source: &AtomicU64) -> std::io::Result<u64> {
+    counter_source
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| {
+            (n <= u32::MAX as u64).then_some(n + 1)
+        })
+        .map_err(|_| std::io::Error::other("remote restore staging counter exhausted"))
 }
 
 fn is_restore_suffix(suffix: &str) -> bool {
@@ -434,7 +445,7 @@ fn is_restore_suffix(suffix: &str) -> bool {
 }
 
 fn cleanup_restore_staging(parent: &Path) {
-    use std::time::{Duration, SystemTime};
+    use std::time::SystemTime;
     let Ok(entries) = std::fs::read_dir(parent) else {
         return;
     };
@@ -455,16 +466,22 @@ fn cleanup_restore_staging(parent: &Path) {
         };
         // One hour is a conservative crash-debris threshold. Fresh staging
         // belongs to a potentially active restore and must be left alone.
-        if metadata.is_file()
-            && metadata
-                .modified()
-                .ok()
-                .and_then(|mtime| SystemTime::now().duration_since(mtime).ok())
-                .is_some_and(|age| age > Duration::from_secs(3600))
-        {
+        if restore_staging_is_expired(&metadata, SystemTime::now) {
             let _ = std::fs::remove_file(entry.path());
         }
     }
+}
+
+fn restore_staging_is_expired(
+    metadata: &std::fs::Metadata,
+    now: impl FnOnce() -> std::time::SystemTime,
+) -> bool {
+    metadata.is_file()
+        && metadata
+            .modified()
+            .ok()
+            .and_then(|mtime| now().duration_since(mtime).ok())
+            .is_some_and(|age| age > std::time::Duration::from_secs(3600))
 }
 
 /// Lexical ADR-021 normalization; never resolve symlinks on either side.
@@ -586,6 +603,163 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn restore_legacy_index_uses_blobs_without_a_remote_entry() {
+        let f = Fixture::new();
+        f.publish().await;
+        let outputs = f.outputs(&f.root);
+        for (source, output) in f.outputs(&f.writer).iter().zip(&outputs) {
+            std::fs::copy(source, output).unwrap();
+        }
+        let refs: Vec<_> = outputs.iter().map(PathBuf::as_path).collect();
+        let mut store = f.store();
+        store
+            .record(
+                f.components.cache_key.clone(),
+                &refs,
+                Some(&f.result.provenance),
+                PlatformScope::Exact,
+            )
+            .unwrap();
+        for output in &outputs {
+            std::fs::remove_file(output).unwrap();
+        }
+        let key = f.components.cache_key.as_str();
+        std::fs::remove_file(
+            f.remote
+                .join("entries")
+                .join(&key[..2])
+                .join(format!("{key}.json")),
+        )
+        .unwrap();
+        assert!(!store.is_cached(&f.components.cache_key, &refs).unwrap());
+        assert!(
+            f.session
+                .restore(
+                    &mut store,
+                    &f.components,
+                    &outputs,
+                    PlatformScope::Exact,
+                    &f.root
+                )
+                .await
+        );
+        assert_eq!(std::fs::read(&outputs[0]).unwrap(), b"first");
+        assert_eq!(std::fs::read(&outputs[1]).unwrap(), b"second");
+        let row = store.get(&f.components.cache_key).unwrap();
+        assert!(!row.restored);
+        assert!(!row.adopted);
+    }
+
+    #[test]
+    fn restore_staging_counter_advances_and_exhausts_without_wrapping() {
+        let counter = AtomicU64::new(0);
+        assert_eq!(next_restore_staging_counter(&counter).unwrap(), 0);
+        assert_eq!(next_restore_staging_counter(&counter).unwrap(), 1);
+        let last = u32::MAX as u64;
+        let counter = AtomicU64::new(last);
+        assert_eq!(next_restore_staging_counter(&counter).unwrap(), last);
+        assert!(next_restore_staging_counter(&counter).is_err());
+        assert_eq!(counter.load(Ordering::Relaxed), last + 1);
+    }
+
+    #[test]
+    fn restore_staging_collision_at_counter_limit_preserves_existing_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        let output = dir.path().join("out");
+        let collision = dir.path().join(format!(
+            "out.remote.{:08x}{:08x}",
+            std::process::id(),
+            u32::MAX
+        ));
+        std::fs::write(&collision, b"another restore").unwrap();
+        let counter = AtomicU64::new(u32::MAX as u64);
+        let error = reserve_restore_staging_with_counter(&output, &counter).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::Other);
+        assert!(error.to_string().contains("counter exhausted"));
+        assert_eq!(std::fs::read(collision).unwrap(), b"another restore");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn restore_staging_propagates_non_collision_errors_without_retrying() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let parent = dir.path().join("restricted");
+        std::fs::create_dir(&parent).unwrap();
+        let permissions = std::fs::metadata(&parent).unwrap().permissions();
+        std::fs::set_permissions(&parent, std::fs::Permissions::from_mode(0o500)).unwrap();
+        let denied = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(parent.join("probe"))
+            .is_err_and(|e| e.kind() == std::io::ErrorKind::PermissionDenied);
+        // Only one ordinal remains: an erroneous retry returns counter exhaustion,
+        // making the error-policy test bounded without waiting for a timeout.
+        let counter = AtomicU64::new(u32::MAX as u64);
+        let result = reserve_restore_staging_with_counter(&parent.join("out"), &counter);
+        std::fs::set_permissions(&parent, permissions).unwrap();
+        if !denied {
+            eprintln!("permission-denial witness unavailable for a privileged user");
+            return;
+        }
+        assert_eq!(counter.load(Ordering::Relaxed), u32::MAX as u64 + 1);
+        assert_eq!(
+            result.unwrap_err().kind(),
+            std::io::ErrorKind::PermissionDenied
+        );
+    }
+
+    #[test]
+    fn restore_staging_age_uses_a_strict_one_hour_boundary() {
+        use std::time::{Duration, SystemTime};
+        let dir = tempfile::tempdir().unwrap();
+        let file = std::fs::File::create(dir.path().join("staging")).unwrap();
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(10_000);
+        for (age, expired) in [(3599, false), (3600, false), (3601, true)] {
+            let modified = now - Duration::from_secs(age);
+            file.set_modified(modified).unwrap();
+            let metadata = file.metadata().unwrap();
+            assert_eq!(metadata.modified().unwrap(), modified);
+            assert_eq!(
+                restore_staging_is_expired(&metadata, || now),
+                expired,
+                "{age}"
+            );
+        }
+        file.set_modified(now + Duration::from_secs(1)).unwrap();
+        assert!(!restore_staging_is_expired(
+            &file.metadata().unwrap(),
+            || now
+        ));
+    }
+
+    #[test]
+    fn restore_staging_suffix_recognition_requires_full_valid_suffix() {
+        for suffix in [
+            "0123456789abcdef",
+            "0123456789ABCDEF",
+            "run-00000000-0000-4000-8000-000000000001.0",
+            "run-00000000-0000-4000-8000-000000000001.42",
+        ] {
+            assert!(is_restore_suffix(suffix), "{suffix}");
+        }
+        for suffix in [
+            "",
+            "01234567",
+            "gggggggggggggggg",
+            "0123456789abcde",
+            "0123456789abcdef0",
+            "run-not-a-uuid.0",
+            "run-00000000-0000-4000-8000-000000000001.",
+            "run-00000000-0000-4000-8000-000000000001.x",
+            "run-00000000-0000-4000-8000-000000000001.-1",
+            "run-00000000-0000-4000-8000-000000000001.0.trailing",
+        ] {
+            assert!(!is_restore_suffix(suffix), "{suffix}");
+        }
+    }
+
+    #[tokio::test]
     async fn restore_accepts_an_entry_of_exactly_one_mib() {
         let f = Fixture::new();
         f.publish().await;
@@ -629,6 +803,19 @@ mod tests {
                 .await
         );
         assert_eq!(std::fs::read(&output).unwrap(), b"first");
+        let blocked_parent = f.root.join("file-parent");
+        std::fs::write(&blocked_parent, b"keep").unwrap();
+        let valid_name = blocked_parent.join("x".repeat(231));
+        assert!(
+            !f.session
+                .restore_files(&[valid_name], &[hash.clone()], true)
+                .await
+        );
+        assert!(
+            f.session.warnings.lock().unwrap().is_empty(),
+            "a valid-length name must not be blamed for a parent I/O error"
+        );
+        assert_eq!(std::fs::read(blocked_parent).unwrap(), b"keep");
         let too_long = f.root.join("x".repeat(232));
         assert!(!f.session.restore_files(&[too_long], &[hash], true).await);
         let warnings = f.session.warnings.lock().unwrap();
