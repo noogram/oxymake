@@ -396,3 +396,35 @@ fn restored_provenance_keeps_local_non_reproducible_export_refusal() {
         .failure()
         .stderr(predicates::str::contains("refusing non-reproducible"));
 }
+
+#[test]
+fn newer_entry_shape_warns_as_unsupported_and_survives_execution_publication() {
+    let temp = tempfile::tempdir().unwrap();
+    let remote = temp.path().join("remote");
+    let writer = temp.path().join("writer");
+    let reader = temp.path().join("reader");
+    checkout(&writer);
+    checkout(&reader);
+    run(&writer, &remote, &[]);
+    let path = entry_file(&remote);
+    let future = br#"{"kind":"oxymake.remote-cache-entry","format_version":2,"v2_payload":{"different":"shape"}}"#;
+    fs::write(&path, future).unwrap();
+    let result = run(&reader, &remote, &[]);
+    assert!(
+        reader.join("ran.log").exists(),
+        "unsupported entry must miss"
+    );
+    let stderr = String::from_utf8_lossy(&result.stderr);
+    assert!(stderr.contains("unsupported version"), "{stderr}");
+    assert!(!stderr.contains("could not be parsed"), "{stderr}");
+    assert_eq!(
+        stderr.matches("warning: remote cache entry").count(),
+        1,
+        "{stderr}"
+    );
+    assert_eq!(
+        fs::read(path).unwrap(),
+        future,
+        "v1 producer replaced a future entry"
+    );
+}

@@ -41,6 +41,15 @@ struct RemoteEntry {
     result: CacheResult,
 }
 
+#[derive(Deserialize)]
+struct EntryHeader {
+    kind: String,
+    format_version: u32,
+}
+
+/// A newer document must survive publication by an older producer.
+struct NewerEntryVersion;
+
 /// One invocation shares defect warnings between the pre-scan and scheduler.
 pub(super) struct RemoteSession {
     backend: Arc<dyn RemoteCache>,
@@ -63,40 +72,50 @@ impl RemoteSession {
         }
     }
 
-    async fn read(&self, key: &ContentHash) -> Option<RemoteEntry> {
+    async fn read(&self, key: &ContentHash) -> Result<Option<RemoteEntry>, NewerEntryVersion> {
         let bytes = match self.backend.fetch_entry(key).await {
             Ok(Some(bytes)) => bytes,
-            Ok(None) => return None,
+            Ok(None) => return Ok(None),
             Err(_) => {
                 self.warn("read failed or exceeded 1 MiB");
-                return None;
+                return Ok(None);
             }
         };
         if bytes.len() > 1024 * 1024 {
             self.warn("exceeded 1 MiB");
-            return None;
+            return Ok(None);
+        }
+        let header: EntryHeader = match serde_json::from_slice(&bytes) {
+            Ok(header) => header,
+            Err(_) => {
+                self.warn("could not be parsed");
+                return Ok(None);
+            }
+        };
+        if header.format_version > 1 {
+            self.warn("has an unsupported version");
+            return Err(NewerEntryVersion);
+        }
+        if header.kind != ENTRY_KIND {
+            self.warn("has an unknown kind");
+            return Ok(None);
+        }
+        if header.format_version != 1 {
+            self.warn("has an unsupported version");
+            return Ok(None);
         }
         let entry: RemoteEntry = match serde_json::from_slice(&bytes) {
             Ok(entry) => entry,
             Err(_) => {
                 self.warn("could not be parsed");
-                return None;
+                return Ok(None);
             }
         };
-        let defect = if entry.kind != ENTRY_KIND {
-            Some("has an unknown kind")
-        } else if entry.format_version != 1 {
-            Some("has an unsupported version")
-        } else if entry.cache_key != *key {
-            Some("has a different computation key")
-        } else {
-            None
-        };
-        if let Some(defect) = defect {
-            self.warn(defect);
-            return None;
+        if entry.cache_key != *key {
+            self.warn("has a different computation key");
+            return Ok(None);
         }
-        Some(entry)
+        Ok(Some(entry))
     }
 
     pub async fn publish(&self, key: &ContentHash, result: CacheResult, outputs: &[PathBuf]) {
@@ -113,7 +132,11 @@ impl RemoteSession {
             }
         }
         // A forced execution replaces old hashes; identical entries need no write.
-        if let Some(old) = self.read(key).await {
+        let old = match self.read(key).await {
+            Ok(old) => old,
+            Err(NewerEntryVersion) => return,
+        };
+        if let Some(old) = old {
             let hashes = |r: &CacheResult| {
                 r.outputs
                     .iter()
@@ -193,7 +216,7 @@ impl RemoteSession {
             };
             hashes
         } else {
-            let Some(entry) = self.read(key).await else {
+            let Ok(Some(entry)) = self.read(key).await else {
                 return false;
             };
             let mut result = entry.result;
