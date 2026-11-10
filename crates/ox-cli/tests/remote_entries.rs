@@ -88,7 +88,7 @@ fn malformed_or_incompatible_entries_miss_with_one_warning_per_defect() {
         "platform_scope",
         "origin_platform",
         "paths",
-        "duplicate",
+        "conflicting",
         "hash",
         "oversize",
     ] {
@@ -113,8 +113,9 @@ fn malformed_or_incompatible_entries_miss_with_one_warning_per_defect() {
             "platform_scope" => entry["platform_scope"] = "any".into(),
             "origin_platform" => entry["origin_platform"] = "other/arch".into(),
             "paths" => entry["outputs"][0]["path"] = "../escape".into(),
-            "duplicate" => {
-                let out = entry["outputs"][0].clone();
+            "conflicting" => {
+                let mut out = entry["outputs"][0].clone();
+                out["content_hash"] = "0".repeat(64).into();
                 entry["outputs"].as_array_mut().unwrap().push(out);
             }
             "hash" => entry["outputs"][0]["content_hash"] = "invalid".into(),

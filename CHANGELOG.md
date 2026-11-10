@@ -33,6 +33,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Remote output matching compares normalized path sets, accepting equivalent
+  spellings and repeated names while refusing conflicting hashes (#66).
+
 - Blob-fetch failures backed by a local cache row again name the declared
   output instead of reporting a remote-entry defect (#66).
 

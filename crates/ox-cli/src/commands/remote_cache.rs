@@ -1,6 +1,6 @@
 //! Computation-entry publication and verified restoration (ADR-022).
 use super::run::CacheKeyComponents;
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::{Component, Path, PathBuf};
 use std::sync::{
     Arc, Mutex,
@@ -206,7 +206,12 @@ impl RemoteSession {
             return false;
         }
         let key = &components.cache_key;
-        let refs: Vec<_> = outputs.iter().map(PathBuf::as_path).collect();
+        let refs: Vec<_> = outputs
+            .iter()
+            .map(|p| (p.to_string_lossy().into_owned(), p.as_path()))
+            .collect::<BTreeMap<_, _>>()
+            .into_values()
+            .collect();
         if store.is_cached(key, &refs).unwrap_or(false) {
             return true;
         }
@@ -246,19 +251,27 @@ impl RemoteSession {
                 self.warn(defect);
                 return false;
             }
-            let paths: BTreeMap<_, _> = result
+            let declared_paths: BTreeSet<_> =
+                outputs.iter().map(|p| normalized_output(p, root)).collect();
+            let entry_paths: BTreeSet<_> = result
                 .outputs
                 .iter()
-                .map(|o| (o.path.as_str(), o.content_hash.as_str()))
+                .map(|o| normalized_output(Path::new(&o.path), root))
                 .collect();
-            if paths.len() != result.outputs.len()
-                || paths.len() != outputs.len()
-                || outputs
-                    .iter()
-                    .any(|p| !paths.contains_key(normalized_output(p, root).as_str()))
-            {
-                self.warn("has different or duplicate output paths");
+            if declared_paths != entry_paths {
+                self.warn("has different output paths");
                 return false;
+            }
+            let mut paths = BTreeMap::new();
+            for output in &result.outputs {
+                let path = normalized_output(Path::new(&output.path), root);
+                if paths
+                    .insert(path, output.content_hash.as_str())
+                    .is_some_and(|previous| previous != output.content_hash)
+                {
+                    self.warn("has conflicting output hashes");
+                    return false;
+                }
             }
             let hashes = outputs
                 .iter()
@@ -583,6 +596,42 @@ mod tests {
             std::fs::read_to_string(f.root.join("a")).unwrap(),
             "new result"
         );
+    }
+
+    #[tokio::test]
+    async fn restore_matches_normalized_output_sets_including_repeated_names() {
+        for case in ["entry_alias", "declared_duplicate", "entry_duplicate"] {
+            let mut f = Fixture::new();
+            if case == "entry_alias" {
+                f.result.outputs[0].path = "unused/../a".into();
+            }
+            if case == "entry_duplicate" {
+                f.result.outputs.push(CacheOutput {
+                    path: "./a".into(),
+                    content_hash: f.result.outputs[0].content_hash.clone(),
+                });
+            }
+            f.publish().await;
+            let mut outputs = f.outputs(&f.root);
+            if case == "declared_duplicate" {
+                outputs.push(f.root.join("a"));
+            }
+            let mut store = f.store();
+            assert!(
+                f.session
+                    .restore(
+                        &mut store,
+                        &f.components,
+                        &outputs,
+                        PlatformScope::Exact,
+                        &f.root
+                    )
+                    .await,
+                "{case}"
+            );
+            assert_eq!(std::fs::read_to_string(f.root.join("a")).unwrap(), "first");
+            assert_eq!(std::fs::read_to_string(f.root.join("b")).unwrap(), "second");
+        }
     }
 
     #[test]
