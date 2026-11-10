@@ -27,6 +27,7 @@ mod plan;
 mod query;
 mod ray_records;
 mod ray_remote;
+mod remote_cache;
 mod remote_follow;
 mod run;
 mod serve;

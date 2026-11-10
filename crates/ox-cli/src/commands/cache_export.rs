@@ -3,9 +3,9 @@
 use std::io::Write;
 use std::path::Path;
 
+use super::remote_cache::{CacheOutput as AdoptionOutput, CacheResult};
 use anyhow::{Context, Result, ensure};
 use ox_cache::CacheStore;
-use ox_core::model::{ArtifactProvenance, PlatformScope};
 use serde::{Deserialize, Serialize};
 
 pub(crate) const MANIFEST_KIND: &str = "oxymake.cache-adoption-manifest";
@@ -33,16 +33,8 @@ pub(crate) struct AdoptionManifest {
 #[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct AdoptionEntry {
     pub(crate) target: String,
-    pub(crate) outputs: Vec<AdoptionOutput>,
-    pub(crate) provenance: ArtifactProvenance,
-    pub(crate) origin_platform: String,
-    pub(crate) platform_scope: PlatformScope,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub(crate) struct AdoptionOutput {
-    pub(crate) path: String,
-    pub(crate) content_hash: String,
+    #[serde(flatten)]
+    pub(crate) result: CacheResult,
 }
 
 pub fn cmd_cache_export(args: CacheExportArgs) -> Result<()> {
@@ -80,10 +72,12 @@ pub fn cmd_cache_export(args: CacheExportArgs) -> Result<()> {
             .collect();
         entries.push(AdoptionEntry {
             target: target.clone(),
-            outputs,
-            provenance,
-            origin_platform,
-            platform_scope,
+            result: CacheResult {
+                outputs,
+                provenance,
+                origin_platform,
+                platform_scope,
+            },
         });
     }
 
@@ -111,20 +105,22 @@ pub fn cmd_cache_export(args: CacheExportArgs) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ox_core::model::ReproducibilityClass;
+    use ox_core::model::{ArtifactProvenance, PlatformScope, ReproducibilityClass};
 
     #[test]
     fn manifest_enum_wire_spellings_are_pinned() {
         let entry = |scope, reproducibility| AdoptionEntry {
             target: "out".into(),
-            outputs: Vec::new(),
-            provenance: ArtifactProvenance {
-                input_hashes: Vec::new(),
-                job_spec_hash: "spec".into(),
-                reproducibility,
+            result: CacheResult {
+                outputs: Vec::new(),
+                provenance: ArtifactProvenance {
+                    input_hashes: Vec::new(),
+                    job_spec_hash: "spec".into(),
+                    reproducibility,
+                },
+                origin_platform: "test/arch".into(),
+                platform_scope: scope,
             },
-            origin_platform: "test/arch".into(),
-            platform_scope: scope,
         };
         let manifest = AdoptionManifest {
             kind: MANIFEST_KIND.into(),

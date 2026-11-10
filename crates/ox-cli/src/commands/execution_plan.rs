@@ -3,14 +3,13 @@
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
+use super::remote_cache::RemoteSession;
 use ox_cache::{CacheHitStatus, CacheStore, CacheValidation};
-use ox_cache_remote::RemoteCache;
 use ox_core::job_graph::JobGraph;
 use ox_core::model::{JobId, RunReason};
 
 use super::run::{
     input_file_paths, job_cache_key_with_components, job_provenance, output_file_paths,
-    restore_remote_outputs,
 };
 
 /// The jobs satisfied by cache and the reason every other job may execute.
@@ -36,7 +35,7 @@ pub fn determine_execution(
     cache_enabled: bool,
     validation: CacheValidation,
     mut store: Option<&mut CacheStore>,
-    remote: Option<(&dyn RemoteCache, &tokio::runtime::Runtime)>,
+    remote: Option<(&RemoteSession, &tokio::runtime::Runtime)>,
 ) -> ExecutionPlan {
     let mut skip_jobs = HashSet::new();
     let mut run_reasons = HashMap::new();
@@ -95,11 +94,12 @@ pub fn determine_execution(
                     {
                         let cache_key = components.cache_key.clone();
                         let status = if let Some((remote_cache, runtime)) = remote {
-                            if runtime.block_on(restore_remote_outputs(
-                                remote_cache,
+                            if runtime.block_on(remote_cache.restore(
                                 cache_store,
-                                &cache_key,
+                                &components,
                                 &output_paths,
+                                job.platform_scope,
+                                &std::env::current_dir().unwrap_or_default(),
                             )) {
                                 CacheHitStatus::Hit
                             } else {

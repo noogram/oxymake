@@ -78,9 +78,9 @@ pub fn cmd_cache_import(args: CacheImportArgs) -> Result<()> {
         cache.record_adopted(
             cache_key,
             &refs,
-            &entry.provenance,
-            &entry.origin_platform,
-            entry.platform_scope,
+            &entry.result.provenance,
+            &entry.result.origin_platform,
+            entry.result.platform_scope,
         )?;
     }
     cache.save().context("failed to save cache")?;
@@ -94,21 +94,22 @@ fn prepare_entry<'a>(
     config: &ox_core::resolver::Config,
 ) -> Result<(&'a AdoptionEntry, ox_core::model::ContentHash, Vec<PathBuf>)> {
     ensure!(
-        entry.provenance.reproducibility != ReproducibilityClass::NonReproducible,
+        entry.result.provenance.reproducibility != ReproducibilityClass::NonReproducible,
         "refusing non-reproducible target '{}'",
         entry.target
     );
-    if entry.platform_scope == PlatformScope::Exact {
+    if entry.result.platform_scope == PlatformScope::Exact {
         ensure!(
-            entry.origin_platform == current_platform(),
+            entry.result.origin_platform == current_platform(),
             "target '{}' was produced on {} with exact platform scope (local platform is {})",
             entry.target,
-            entry.origin_platform,
+            entry.result.origin_platform,
             current_platform()
         );
     }
 
     let existing_files = entry
+        .result
         .provenance
         .input_hashes
         .iter()
@@ -134,7 +135,7 @@ fn prepare_entry<'a>(
         .with_context(|| format!("manifest target '{}' is not produced by a rule", entry.target))?;
 
     ensure!(
-        job.platform_scope == entry.platform_scope,
+        job.platform_scope == entry.result.platform_scope,
         "manifest platform scope for '{}' does not match the local rule",
         entry.target
     );
@@ -152,7 +153,12 @@ fn prepare_entry<'a>(
             _ => None,
         })
         .collect();
-    let manifest_paths: BTreeSet<_> = entry.outputs.iter().map(|out| out.path.clone()).collect();
+    let manifest_paths: BTreeSet<_> = entry
+        .result
+        .outputs
+        .iter()
+        .map(|out| out.path.clone())
+        .collect();
     ensure!(
         expected_paths == manifest_paths,
         "manifest output set for '{}' does not match the local rule",
@@ -160,7 +166,7 @@ fn prepare_entry<'a>(
     );
 
     let mut output_paths = Vec::new();
-    for output in &entry.outputs {
+    for output in &entry.result.outputs {
         let path = PathBuf::from(&output.path);
         ensure!(
             path.exists(),
@@ -180,6 +186,6 @@ fn prepare_entry<'a>(
         output_paths.push(path);
     }
 
-    let cache_key = job_cache_key_from_provenance(job, &entry.provenance)?;
+    let cache_key = job_cache_key_from_provenance(job, &entry.result.provenance)?;
     Ok((entry, cache_key, output_paths))
 }

@@ -92,6 +92,7 @@ async fn blake3_hex(path: &Path) -> std::io::Result<String> {
 }
 
 impl RemoteCache for DirectoryCache {
+    #[allow(clippy::type_complexity)] // Object-safe async entry transport.
     fn fetch_entry<'a>(
         &'a self,
         key: &'a ContentHash,

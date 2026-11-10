@@ -28,6 +28,7 @@ use crate::model::ContentHash;
 pub trait RemoteCache: Send + Sync {
     /// Fetch the entry for a computation key. Backends without entry support miss.
     /// Entries larger than 1 MiB must be refused before allocation.
+    #[allow(clippy::type_complexity)] // Object-safe async entry transport.
     fn fetch_entry<'a>(
         &'a self,
         _key: &'a ContentHash,
