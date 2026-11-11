@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.1] - 2026-11-11
+
+### Fixed
+
+- `ox-cli` builds again with warnings denied on the current stable toolchain:
+  the remote-restore staging counter no longer calls
+  `AtomicU64::fetch_update`, deprecated there, and keeps its behaviour.
+  The `v0.9.0` tag has no published release because its build failed for
+  this reason; 0.9.1 is the first release with the 0.9.0 changes below.
+
 ## [0.9.0] - 2026-11-11
 
 ### Breaking changes
