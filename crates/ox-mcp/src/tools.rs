@@ -596,13 +596,13 @@ fn handle_clean(args: &serde_json::Value, workdir: &Path) -> Result<ToolCallResu
     // Clean logs
     if matches!(what, "logs" | "all") {
         let log_dir = oxymake_dir.join("logs");
-        if log_dir.exists() {
-            if let Ok(entries) = std::fs::read_dir(&log_dir) {
-                for entry in entries.flatten() {
-                    let path = entry.path();
-                    if path.is_file() && std::fs::remove_file(&path).is_ok() {
-                        removed.push(path.display().to_string());
-                    }
+        if log_dir.exists()
+            && let Ok(entries) = std::fs::read_dir(&log_dir)
+        {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_file() && std::fs::remove_file(&path).is_ok() {
+                    removed.push(path.display().to_string());
                 }
             }
         }

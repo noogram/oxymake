@@ -276,10 +276,10 @@ fn convert_rule(rule: &Rule, diagnostics: &mut Vec<Diagnostic>) -> RuleIR {
     if let Some(ref stdout) = rule.log.stdout {
         log.push(stdout.clone());
     }
-    if let Some(ref stderr) = rule.log.stderr {
-        if rule.log.stdout.as_ref() != Some(stderr) {
-            log.push(stderr.clone());
-        }
+    if let Some(ref stderr) = rule.log.stderr
+        && rule.log.stdout.as_ref() != Some(stderr)
+    {
+        log.push(stderr.clone());
     }
 
     // Convert expand mode

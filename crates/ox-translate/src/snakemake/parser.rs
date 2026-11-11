@@ -1095,17 +1095,17 @@ pub(crate) fn translate_shell_command(cmd: &str) -> String {
 pub(crate) fn extract_string_literal(s: &str) -> String {
     let s = s.trim();
     for q in &[r#"""""#, "'''"] {
-        if let Some(stripped) = s.strip_prefix(q) {
-            if let Some(end) = stripped.find(q) {
-                return stripped[..end].to_string();
-            }
+        if let Some(stripped) = s.strip_prefix(q)
+            && let Some(end) = stripped.find(q)
+        {
+            return stripped[..end].to_string();
         }
     }
     for q in &['"', '\''] {
-        if s.starts_with(*q) {
-            if let Some(end) = s[1..].find(*q) {
-                return s[1..1 + end].to_string();
-            }
+        if s.starts_with(*q)
+            && let Some(end) = s[1..].find(*q)
+        {
+            return s[1..1 + end].to_string();
         }
     }
     s.to_string()

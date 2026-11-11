@@ -82,13 +82,12 @@ pub fn merge_runtime_env(base: Option<Value>, overlay: Option<Value>) -> Option<
         (None, Some(o)) => Some(o),
         (Some(Value::Object(mut b)), Some(Value::Object(o))) => {
             for (k, v) in o {
-                if k == "env_vars" {
-                    if let Value::Object(overlay_vars) = &v {
-                        if let Some(Value::Object(base_vars)) = b.get_mut(&k) {
-                            base_vars.extend(overlay_vars.clone());
-                            continue;
-                        }
-                    }
+                if k == "env_vars"
+                    && let Value::Object(overlay_vars) = &v
+                    && let Some(Value::Object(base_vars)) = b.get_mut(&k)
+                {
+                    base_vars.extend(overlay_vars.clone());
+                    continue;
                 }
                 b.insert(k, v);
             }

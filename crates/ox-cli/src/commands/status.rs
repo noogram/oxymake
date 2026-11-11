@@ -161,14 +161,14 @@ pub fn cmd_status(args: StatusArgs, theme: &ox_render::Theme) -> Result<()> {
     }
 
     // Validate --group-by early.
-    if let Some(ref g) = args.group_by {
-        if !VALID_GROUP_BY.contains(&g.as_str()) {
-            anyhow::bail!(
-                "unsupported --group-by value '{}'; valid values: {}",
-                g,
-                VALID_GROUP_BY.join(", ")
-            );
-        }
+    if let Some(ref g) = args.group_by
+        && !VALID_GROUP_BY.contains(&g.as_str())
+    {
+        anyhow::bail!(
+            "unsupported --group-by value '{}'; valid values: {}",
+            g,
+            VALID_GROUP_BY.join(", ")
+        );
     }
 
     let db = ox_state::db::StateDb::open(db_path)?;
@@ -587,10 +587,10 @@ pub fn cmd_status(args: StatusArgs, theme: &ox_render::Theme) -> Result<()> {
         && !strict_ray_printed
     {
         // Print run metadata from meta.json if available.
-        if !args.json {
-            if let Some(ref rid) = run_id {
-                print_run_meta(rid, theme);
-            }
+        if !args.json
+            && let Some(ref rid) = run_id
+        {
+            print_run_meta(rid, theme);
         }
         sync_and_print_ray_status(
             addr,
@@ -732,10 +732,10 @@ fn sync_and_print_ray_status(
                                 styled_status,
                                 theme.muted.apply_to(&driver_job_id),
                             );
-                            if let Some(ref msg) = details.message {
-                                if !msg.is_empty() {
-                                    println!("  {}", theme.muted.apply_to(msg));
-                                }
+                            if let Some(ref msg) = details.message
+                                && !msg.is_empty()
+                            {
+                                println!("  {}", theme.muted.apply_to(msg));
                             }
                         }
                         return Ok(());

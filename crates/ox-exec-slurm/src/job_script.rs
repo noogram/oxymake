@@ -130,12 +130,12 @@ fn collect_output_dirs(job: &ConcreteJob) -> Vec<String> {
     use std::collections::BTreeSet;
     let mut dirs = BTreeSet::new();
     for output in &job.outputs {
-        if let ox_core::model::OutputRef::File(path) = &output.reference {
-            if let Some(parent) = path.parent() {
-                let s = parent.to_string_lossy();
-                if !s.is_empty() && s != "." {
-                    dirs.insert(s.into_owned());
-                }
+        if let ox_core::model::OutputRef::File(path) = &output.reference
+            && let Some(parent) = path.parent()
+        {
+            let s = parent.to_string_lossy();
+            if !s.is_empty() && s != "." {
+                dirs.insert(s.into_owned());
             }
         }
     }

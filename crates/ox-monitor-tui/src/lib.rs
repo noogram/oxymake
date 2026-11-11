@@ -107,10 +107,10 @@ fn run_loop_db(terminal: &mut ratatui::DefaultTerminal, app: &mut App, db: &Stat
 
         terminal.draw(|frame| ui::render(frame, app))?;
 
-        if event::poll(Duration::from_millis(100))? {
-            if let Event::Key(key) = event::read()? {
-                handle_key(app, key.code);
-            }
+        if event::poll(Duration::from_millis(100))?
+            && let Event::Key(key) = event::read()?
+        {
+            handle_key(app, key.code);
         }
     }
     Ok(())
@@ -144,10 +144,10 @@ fn run_loop_stdin(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> Res
 
         terminal.draw(|frame| ui::render(frame, app))?;
 
-        if event::poll(Duration::from_millis(100))? {
-            if let Event::Key(key) = event::read()? {
-                handle_key(app, key.code);
-            }
+        if event::poll(Duration::from_millis(100))?
+            && let Event::Key(key) = event::read()?
+        {
+            handle_key(app, key.code);
         }
     }
     Ok(())
@@ -158,10 +158,10 @@ fn run_loop_mock(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> Resu
     while app.running {
         terminal.draw(|frame| ui::render(frame, app))?;
 
-        if event::poll(Duration::from_millis(250))? {
-            if let Event::Key(key) = event::read()? {
-                handle_key(app, key.code);
-            }
+        if event::poll(Duration::from_millis(250))?
+            && let Event::Key(key) = event::read()?
+        {
+            handle_key(app, key.code);
         }
     }
     Ok(())

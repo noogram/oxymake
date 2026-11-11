@@ -835,14 +835,15 @@ impl CacheStore {
             )
             .ok();
 
-        if let Some((hash_str, stored_mtime, stored_size)) = stored {
-            if stored_mtime as u64 == current_mtime && stored_size as u64 == current_size {
-                // A corrupted/forged stored hash falls through to re-hashing
-                // instead of being trusted as-is.
-                if let Ok(h) = ContentHash::from_hex(hash_str as String) {
-                    self.input_memo.insert(path.to_path_buf(), h.clone());
-                    return Ok(h);
-                }
+        if let Some((hash_str, stored_mtime, stored_size)) = stored
+            && stored_mtime as u64 == current_mtime
+            && stored_size as u64 == current_size
+        {
+            // A corrupted/forged stored hash falls through to re-hashing
+            // instead of being trusted as-is.
+            if let Ok(h) = ContentHash::from_hex(hash_str as String) {
+                self.input_memo.insert(path.to_path_buf(), h.clone());
+                return Ok(h);
             }
         }
 

@@ -81,10 +81,10 @@ pub fn cmd_translate(args: TranslateArgs) -> Result<()> {
     // Fail loudly on unsupported constructs unless --lossy opts out.
     // This runs before writing any output: rejected Snakefiles produce no
     // translated TOML on disk.
-    if !args.lossy {
-        if let Some(err) = ir.diagnostics.iter().find(|d| d.level == DiagLevel::Error) {
-            return Err(anyhow!("{}", err.message));
-        }
+    if !args.lossy
+        && let Some(err) = ir.diagnostics.iter().find(|d| d.level == DiagLevel::Error)
+    {
+        return Err(anyhow!("{}", err.message));
     }
 
     let output_path = match args.output {

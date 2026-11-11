@@ -348,10 +348,10 @@ impl<W: Write + Send + 'static> Reporter for JsonReporter<W> {
                     return;
                 }
             };
-            if let Event::JobSkipped { reason, .. } = event {
-                if reason == "cached" {
-                    self.cache_hit_skips.fetch_add(1, Ordering::Relaxed);
-                }
+            if let Event::JobSkipped { reason, .. } = event
+                && reason == "cached"
+            {
+                self.cache_hit_skips.fetch_add(1, Ordering::Relaxed);
             }
             if matches!(event, Event::RunStarted { .. }) {
                 if let Value::Object(object) = &mut payload {

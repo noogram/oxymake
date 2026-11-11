@@ -339,10 +339,10 @@ fn extract_wildcards(names: &[&str], caps: &regex::Captures<'_>) -> Option<Wildc
             .name(&format!("w{i}"))
             .map(|m| m.as_str().to_owned())
             .unwrap_or_default();
-        if let Some(previous) = wildcards.get(*name) {
-            if *previous != value {
-                return None;
-            }
+        if let Some(previous) = wildcards.get(*name)
+            && *previous != value
+        {
+            return None;
         }
         wildcards.insert((*name).to_owned(), value);
     }

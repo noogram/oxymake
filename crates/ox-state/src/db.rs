@@ -224,7 +224,7 @@ const BYTES_PER_MIB: u64 = 1024 * 1024;
 
 /// Convert bytes to whole MiB, rounding upward without overflowing.
 fn bytes_to_mib_rounded_up(bytes: u64) -> u64 {
-    bytes / BYTES_PER_MIB + u64::from(bytes % BYTES_PER_MIB != 0)
+    bytes / BYTES_PER_MIB + u64::from(!bytes.is_multiple_of(BYTES_PER_MIB))
 }
 
 /// Per-rule duration aggregate from a single run's job history.
@@ -1339,10 +1339,10 @@ impl StateDb {
             match entry.7 {
                 None => entry.7 = earliest,
                 Some(existing) => {
-                    if let Some(e) = earliest {
-                        if e < existing {
-                            entry.7 = Some(e);
-                        }
+                    if let Some(e) = earliest
+                        && e < existing
+                    {
+                        entry.7 = Some(e);
                     }
                 }
             }

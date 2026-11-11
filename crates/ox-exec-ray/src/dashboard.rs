@@ -141,12 +141,11 @@ pub fn compute_oxymake_summary(jobs: &[JobSummary]) -> OxymakeClusterSummary {
             "FAILED" => summary.failed += 1,
             _ => {}
         }
-        if let Some(meta) = &job.metadata {
-            if let Some(run_id) = meta.get("oxymake_run_id") {
-                if job.status == "RUNNING" || job.status == "PENDING" {
-                    run_ids.insert(run_id.clone());
-                }
-            }
+        if let Some(meta) = &job.metadata
+            && let Some(run_id) = meta.get("oxymake_run_id")
+            && (job.status == "RUNNING" || job.status == "PENDING")
+        {
+            run_ids.insert(run_id.clone());
         }
     }
 

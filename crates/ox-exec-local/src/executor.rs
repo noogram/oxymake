@@ -831,10 +831,10 @@ impl Executor for LocalExecutor {
                     &ctx.trusted_dirs,
                 )?;
 
-                if let Some(parent) = normalized.parent() {
-                    if !parent.as_os_str().is_empty() {
-                        tokio::fs::create_dir_all(parent).await?;
-                    }
+                if let Some(parent) = normalized.parent()
+                    && !parent.as_os_str().is_empty()
+                {
+                    tokio::fs::create_dir_all(parent).await?;
                 }
 
                 output_files.push(normalized);
@@ -930,15 +930,13 @@ impl Executor for LocalExecutor {
 
                 let file_exists = tokio::fs::metadata(&resolved).await.is_ok();
 
-                if !file_exists {
-                    if let Some(bytes) = bytes {
-                        if let Some(parent) = resolved.parent() {
-                            if !parent.as_os_str().is_empty() {
-                                tokio::fs::create_dir_all(parent).await?;
-                            }
-                        }
-                        tokio::fs::write(&resolved, bytes).await?;
+                if !file_exists && let Some(bytes) = bytes {
+                    if let Some(parent) = resolved.parent()
+                        && !parent.as_os_str().is_empty()
+                    {
+                        tokio::fs::create_dir_all(parent).await?;
                     }
+                    tokio::fs::write(&resolved, bytes).await?;
                 }
             }
         }

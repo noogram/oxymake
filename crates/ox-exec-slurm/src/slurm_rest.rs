@@ -388,15 +388,15 @@ impl SlurmRestClient {
 
         let mut results = Vec::new();
         for job in &jobs_resp.jobs {
-            if let Some(ref task_id) = job.array_task_id {
-                if task_id.set {
-                    let state = job
-                        .job_state
-                        .first()
-                        .cloned()
-                        .unwrap_or_else(|| "UNKNOWN".to_string());
-                    results.push((task_id.number as usize, state));
-                }
+            if let Some(ref task_id) = job.array_task_id
+                && task_id.set
+            {
+                let state = job
+                    .job_state
+                    .first()
+                    .cloned()
+                    .unwrap_or_else(|| "UNKNOWN".to_string());
+                results.push((task_id.number as usize, state));
             }
         }
 

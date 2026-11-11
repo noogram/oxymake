@@ -535,10 +535,10 @@ impl JobGraph {
         while let Some((_, _, Reverse(index))) = ready.pop() {
             let idx = NodeIndex::new(index);
             visited += 1;
-            if let JobNode::Job(job) = &self.graph[idx] {
-                if !self.skipped.contains(&job.id) {
-                    order.push(&job.id);
-                }
+            if let JobNode::Job(job) = &self.graph[idx]
+                && !self.skipped.contains(&job.id)
+            {
+                order.push(&job.id);
             }
             for edge in self.graph.edges_directed(idx, Direction::Outgoing) {
                 let next = edge.target();

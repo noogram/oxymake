@@ -133,18 +133,16 @@ pub fn map_resources(
 
     // If no explicit time resource, derive from job timeout (with 10% buffer).
     let has_time = directives.iter().any(|d| d.flag == "--time");
-    if !has_time {
-        if let Some(t) = timeout {
-            let secs = t.as_secs();
-            let buffered = secs + secs / 10; // +10% buffer
-            let hours = buffered / 3600;
-            let mins = (buffered % 3600) / 60;
-            let secs_rem = buffered % 60;
-            directives.push(SlurmDirective {
-                flag: "--time".into(),
-                value: format!("{hours:02}:{mins:02}:{secs_rem:02}"),
-            });
-        }
+    if !has_time && let Some(t) = timeout {
+        let secs = t.as_secs();
+        let buffered = secs + secs / 10; // +10% buffer
+        let hours = buffered / 3600;
+        let mins = (buffered % 3600) / 60;
+        let secs_rem = buffered % 60;
+        directives.push(SlurmDirective {
+            flag: "--time".into(),
+            value: format!("{hours:02}:{mins:02}:{secs_rem:02}"),
+        });
     }
 
     Ok(directives)
