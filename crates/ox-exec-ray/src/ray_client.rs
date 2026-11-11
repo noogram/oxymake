@@ -129,33 +129,33 @@ impl RayAuth {
         }
 
         let mut sources_consulted = vec!["RAY_AUTH_TOKEN"];
-        if let Some(token) = env_token {
-            if let Some(token) = Self::normalize_token(token, "RAY_AUTH_TOKEN")? {
-                return Ok(Self::Token {
-                    token,
-                    sources_consulted,
-                });
-            }
+        if let Some(token) = env_token
+            && let Some(token) = Self::normalize_token(token, "RAY_AUTH_TOKEN")?
+        {
+            return Ok(Self::Token {
+                token,
+                sources_consulted,
+            });
         }
 
         sources_consulted.push("RAY_AUTH_TOKEN_PATH");
-        if let Some(path) = token_path.as_deref() {
-            if let Some(token) = Self::read_token_file(path, "RAY_AUTH_TOKEN_PATH", false)? {
-                return Ok(Self::Token {
-                    token,
-                    sources_consulted,
-                });
-            }
+        if let Some(path) = token_path.as_deref()
+            && let Some(token) = Self::read_token_file(path, "RAY_AUTH_TOKEN_PATH", false)?
+        {
+            return Ok(Self::Token {
+                token,
+                sources_consulted,
+            });
         }
 
         sources_consulted.push("~/.ray/auth_token");
-        if let Some(path) = home.as_deref().map(|home| home.join(".ray/auth_token")) {
-            if let Some(token) = Self::read_token_file(&path, "~/.ray/auth_token", true)? {
-                return Ok(Self::Token {
-                    token,
-                    sources_consulted,
-                });
-            }
+        if let Some(path) = home.as_deref().map(|home| home.join(".ray/auth_token"))
+            && let Some(token) = Self::read_token_file(&path, "~/.ray/auth_token", true)?
+        {
+            return Ok(Self::Token {
+                token,
+                sources_consulted,
+            });
         }
 
         Err(RayError::AuthTokenMissing)

@@ -979,10 +979,11 @@ fn resolve_file_sources(
             for (col_name, col_idx) in &col_indices {
                 if let Some(val) = fields.get(*col_idx) {
                     let v = val.to_string();
-                    if let Some(vals) = col_values.get_mut(col_name) {
-                        if !v.is_empty() && !vals.contains(&v) {
-                            vals.push(v);
-                        }
+                    if let Some(vals) = col_values.get_mut(col_name)
+                        && !v.is_empty()
+                        && !vals.contains(&v)
+                    {
+                        vals.push(v);
                     }
                 }
             }
@@ -1010,15 +1011,15 @@ fn parse_rule(
     file_path: &Path,
     format_version: &str,
 ) -> Result<Rule, ParseError> {
-    if let Some(value) = &raw.executor {
-        if value != "local" {
-            return Err(ParseError::InvalidField {
-                field: format!("rule.{name}.executor"),
-                reason: format!(
-                    "unsupported value {value:?}; accepted value: \"local\". Choosing a backend is a property of the run (ox run --executor), not of a rule"
-                ),
-            });
-        }
+    if let Some(value) = &raw.executor
+        && value != "local"
+    {
+        return Err(ParseError::InvalidField {
+            field: format!("rule.{name}.executor"),
+            reason: format!(
+                "unsupported value {value:?}; accepted value: \"local\". Choosing a backend is a property of the run (ox run --executor), not of a rule"
+            ),
+        });
     }
     let inputs = parse_inputs(&raw.input);
     let outputs = parse_outputs(&raw.output)?;

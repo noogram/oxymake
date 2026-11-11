@@ -274,12 +274,12 @@ impl Executor for RayExecutor {
         tokio::fs::create_dir_all(&self.config.working_dir).await?;
 
         // Initialize autoscaler state if enabled.
-        if self.config.autoscaler_aware {
-            if let Err(e) = self.refresh_autoscaler().await {
-                tracing_log(&format!(
-                    "Warning: failed to initialize autoscaler state: {e}"
-                ));
-            }
+        if self.config.autoscaler_aware
+            && let Err(e) = self.refresh_autoscaler().await
+        {
+            tracing_log(&format!(
+                "Warning: failed to initialize autoscaler state: {e}"
+            ));
         }
         Ok(())
     }

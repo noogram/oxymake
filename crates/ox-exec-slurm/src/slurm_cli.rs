@@ -157,10 +157,10 @@ pub async fn sacct_array(parent_job_id: u32) -> Result<Vec<(usize, String)>, Slu
         }
 
         // Parse array task ID: "12345_3" → task_index = 3
-        if let Some((_parent, task_str)) = fields[0].split_once('_') {
-            if let Ok(task_index) = task_str.parse::<usize>() {
-                results.push((task_index, fields[1].to_string()));
-            }
+        if let Some((_parent, task_str)) = fields[0].split_once('_')
+            && let Ok(task_index) = task_str.parse::<usize>()
+        {
+            results.push((task_index, fields[1].to_string()));
         }
     }
 

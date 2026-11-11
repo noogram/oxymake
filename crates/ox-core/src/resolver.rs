@@ -453,13 +453,13 @@ impl<'a> ResolveState<'a> {
         // NoProducer error because we've already filtered to the best
         // candidate.  A more sophisticated version would try the next
         // candidate.
-        if let Some(ref guard) = rule.when {
-            if !evaluate_guard(guard, &wildcards, self.config) {
-                self.resolving.remove(target);
-                return Err(DagError::Wildcard(WildcardError::NoProducer {
-                    path: target.to_owned(),
-                }));
-            }
+        if let Some(ref guard) = rule.when
+            && !evaluate_guard(guard, &wildcards, self.config)
+        {
+            self.resolving.remove(target);
+            return Err(DagError::Wildcard(WildcardError::NoProducer {
+                path: target.to_owned(),
+            }));
         }
 
         // Resolve input paths by interpolating wildcards.
@@ -1483,15 +1483,15 @@ fn validate_constraints_compiled(
     compiled: &[CompiledConstraint],
 ) -> Result<(), WildcardError> {
     for cc in compiled {
-        if let Some(value) = wildcards.get(&cc.name) {
-            if !cc.regex.is_match(value) {
-                return Err(WildcardError::ConstraintViolation {
-                    name: cc.name.clone(),
-                    value: value.clone(),
-                    pattern: String::new(),
-                    constraint: cc.regex.as_str().to_owned(),
-                });
-            }
+        if let Some(value) = wildcards.get(&cc.name)
+            && !cc.regex.is_match(value)
+        {
+            return Err(WildcardError::ConstraintViolation {
+                name: cc.name.clone(),
+                value: value.clone(),
+                pattern: String::new(),
+                constraint: cc.regex.as_str().to_owned(),
+            });
         }
     }
     Ok(())

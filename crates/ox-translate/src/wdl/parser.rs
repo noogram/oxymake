@@ -267,16 +267,16 @@ fn parse_section(lines: &[&str], section_name: &str) -> Vec<String> {
 
     let mut i = 0;
     while i < lines.len() {
-        if re.is_match(lines[i]) {
-            if let Some(end) = find_matching_brace(lines, i) {
-                for line in &lines[i + 1..end] {
-                    let trimmed = line.trim();
-                    if !trimmed.is_empty() {
-                        result.push(trimmed.to_string());
-                    }
+        if re.is_match(lines[i])
+            && let Some(end) = find_matching_brace(lines, i)
+        {
+            for line in &lines[i + 1..end] {
+                let trimmed = line.trim();
+                if !trimmed.is_empty() {
+                    result.push(trimmed.to_string());
                 }
-                break;
             }
+            break;
         }
         i += 1;
     }

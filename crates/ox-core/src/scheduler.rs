@@ -531,15 +531,15 @@ pub async fn run_scheduler_with_claims<E: Executor + 'static>(
             continue;
         }
         let job = graph.get_job(id).expect("graph job");
-        if let Some(value) = &job.executor {
-            if value != "local" || executor.executor_name(job) != "local" {
-                return Err(OxError::Exec(ExecError::Executor {
-                    message: format!(
-                        "rule '{}' executor = {value:?} cannot be honoured by this executor; only local is a rule override and requires local routing",
-                        job.rule
-                    ),
-                }));
-            }
+        if let Some(value) = &job.executor
+            && (value != "local" || executor.executor_name(job) != "local")
+        {
+            return Err(OxError::Exec(ExecError::Executor {
+                message: format!(
+                    "rule '{}' executor = {value:?} cannot be honoured by this executor; only local is a rule override and requires local routing",
+                    job.rule
+                ),
+            }));
         }
     }
 
@@ -777,27 +777,26 @@ pub async fn run_scheduler_with_claims<E: Executor + 'static>(
                 // job is not executed here either way. The claim is idempotent
                 // per session, so a job deferred below (budget / semaphore) is
                 // simply claimed again on its next dispatch attempt.
-                if !cached {
-                    if let Some(ref claimer) = claimer {
-                        if let ClaimOutcome::Lost { owner } = claimer.claim(job_id).await {
-                            let parked = {
-                                let mut s = state.lock().await;
-                                if matches!(s.get_status(job_id), Some(JobLifecycle::Ready)) {
-                                    s.set_status(job_id.clone(), JobLifecycle::Pending);
-                                    true
-                                } else {
-                                    false // cancelled meanwhile (H6) — drop it
-                                }
-                            };
-                            if parked {
-                                // The peer may change outputs before we reclaim
-                                // this job, making our earlier reason obsolete.
-                                dispatch_reasons.remove(job_id);
-                                peer_waits.park(job_id.clone(), owner, event_bus);
-                            }
-                            continue;
+                if !cached
+                    && let Some(ref claimer) = claimer
+                    && let ClaimOutcome::Lost { owner } = claimer.claim(job_id).await
+                {
+                    let parked = {
+                        let mut s = state.lock().await;
+                        if matches!(s.get_status(job_id), Some(JobLifecycle::Ready)) {
+                            s.set_status(job_id.clone(), JobLifecycle::Pending);
+                            true
+                        } else {
+                            false // cancelled meanwhile (H6) — drop it
                         }
+                    };
+                    if parked {
+                        // The peer may change outputs before we reclaim
+                        // this job, making our earlier reason obsolete.
+                        dispatch_reasons.remove(job_id);
+                        peer_waits.park(job_id.clone(), owner, event_bus);
                     }
+                    continue;
                 }
 
                 // A shutdown signalled while this job was being checked (cache
@@ -994,24 +993,24 @@ pub async fn run_scheduler_with_claims<E: Executor + 'static>(
                     // based execution, the OS page cache IS the in-memory cache.
                     // Application-level caching only helps for in-process (call-
                     // mode) consumers that can use Arc<[u8]> directly.
-                    if result.exit_code == 0 {
-                        if let Some(ref mem_map) = ctx_clone.memory_map {
-                            for output in &job_clone.outputs {
-                                // Only read Never-policy outputs into memory —
-                                // they have no disk representation and downstream
-                                // jobs need the data from the memory map.
-                                if matches!(output.materialize, MaterializePolicy::Never) {
-                                    let key = output_ref_key(&output.reference);
-                                    // An in-process executor may already have supplied
-                                    // the new bytes; a disk copy can belong to an old run.
-                                    if mem_map.contains(&key) {
-                                        continue;
-                                    }
-                                    if let OutputRef::File(p) = &output.reference {
-                                        if let Ok(data) = tokio::fs::read(p).await {
-                                            mem_map.put(key, Arc::from(data));
-                                        }
-                                    }
+                    if result.exit_code == 0
+                        && let Some(ref mem_map) = ctx_clone.memory_map
+                    {
+                        for output in &job_clone.outputs {
+                            // Only read Never-policy outputs into memory —
+                            // they have no disk representation and downstream
+                            // jobs need the data from the memory map.
+                            if matches!(output.materialize, MaterializePolicy::Never) {
+                                let key = output_ref_key(&output.reference);
+                                // An in-process executor may already have supplied
+                                // the new bytes; a disk copy can belong to an old run.
+                                if mem_map.contains(&key) {
+                                    continue;
+                                }
+                                if let OutputRef::File(p) = &output.reference
+                                    && let Ok(data) = tokio::fs::read(p).await
+                                {
+                                    mem_map.put(key, Arc::from(data));
                                 }
                             }
                         }
@@ -1042,24 +1041,24 @@ pub async fn run_scheduler_with_claims<E: Executor + 'static>(
 
             // 1b. Poll the jobs owned by peer sessions and consume their
             //     terminal states (or re-queue them once unclaimed).
-            if let Some(ref claimer) = claimer {
-                if !peer_waits.is_empty() {
-                    let progressed = poll_peer_waits(
-                        &mut peer_waits,
-                        claimer.as_ref(),
-                        &state,
-                        graph,
-                        config,
-                        event_bus,
-                        ctx,
-                        &mut terminate_requested,
-                        executor.as_ref(),
-                        cache.as_ref(),
-                    )
-                    .await;
-                    if progressed {
-                        skipped_this_iter = true;
-                    }
+            if let Some(ref claimer) = claimer
+                && !peer_waits.is_empty()
+            {
+                let progressed = poll_peer_waits(
+                    &mut peer_waits,
+                    claimer.as_ref(),
+                    &state,
+                    graph,
+                    config,
+                    event_bus,
+                    ctx,
+                    &mut terminate_requested,
+                    executor.as_ref(),
+                    cache.as_ref(),
+                )
+                .await;
+                if progressed {
+                    skipped_this_iter = true;
                 }
             }
         }
@@ -1218,12 +1217,11 @@ pub async fn run_scheduler_with_claims<E: Executor + 'static>(
                                 if let Some(ref cache) = cache {
                                     cache.record_with_hashes(&msg.job, &msg.output_hashes.disk).await;
                                 }
-                                if let Some(ref bench_path) = msg.job.benchmark {
-                                    if let Some(ref sink) = benchmark_sink {
+                                if let Some(ref bench_path) = msg.job.benchmark
+                                    && let Some(ref sink) = benchmark_sink {
                                         sink.write_benchmark(std::path::Path::new(bench_path), &msg.result)
                                             .await;
                                     }
-                                }
                             }
                         }
                         Some(Ok(Err(ox_err))) => {
@@ -1958,39 +1956,39 @@ impl Frontier {
                         // executor's spawned task) instead of re-reading from
                         // disk. This avoids a redundant synchronous I/O call
                         // under the scheduler lock.
-                        if let Some(mem_map) = memory_map {
-                            if let Some(arc_data) = mem_map.remove(&key) {
-                                // Zero-copy: OutputMemoryMap now uses Arc<[u8]>,
-                                // same type as memory_store — no allocation needed.
-                                let size = arc_data.len() as u64;
+                        if let Some(mem_map) = memory_map
+                            && let Some(arc_data) = mem_map.remove(&key)
+                        {
+                            // Zero-copy: OutputMemoryMap now uses Arc<[u8]>,
+                            // same type as memory_store — no allocation needed.
+                            let size = arc_data.len() as u64;
 
-                                // Skip BLAKE3 hashing here — it is expensive on
-                                // large outputs (2-3s for 6.5 GB) and unnecessary
-                                // for the memory data flow. The eviction policy
-                                // only needs size_bytes. The content hash for
-                                // cache provenance is computed separately by
-                                // job_cache_key_with_components at record time,
-                                // just like the mtime-based cache validation
-                                // avoids re-hashing on the disk path.
-                                mat_set.set_size_bytes(size);
+                            // Skip BLAKE3 hashing here — it is expensive on
+                            // large outputs (2-3s for 6.5 GB) and unnecessary
+                            // for the memory data flow. The eviction policy
+                            // only needs size_bytes. The content hash for
+                            // cache provenance is computed separately by
+                            // job_cache_key_with_components at record time,
+                            // just like the mtime-based cache validation
+                            // avoids re-hashing on the disk path.
+                            mat_set.set_size_bytes(size);
 
-                                self.memory_store.insert(key.clone(), arc_data.clone());
-                                mat_set.add(Materialization::InMemory { pinned: false });
-                                self.add_memory_bytes(size);
+                            self.memory_store.insert(key.clone(), arc_data.clone());
+                            mat_set.add(Materialization::InMemory { pinned: false });
+                            self.add_memory_bytes(size);
 
-                                // Enqueue background disk write if the policy
-                                // allows persistence (everything except Never).
-                                if self.disk_writer.is_some()
-                                    && !matches!(output.materialize, MaterializePolicy::Never)
-                                {
-                                    disk_writes.push(DiskWriteRequest {
-                                        job_id: job.id.clone(),
-                                        target_path: path.clone(),
-                                        data: arc_data,
-                                    });
-                                }
-                                continue;
+                            // Enqueue background disk write if the policy
+                            // allows persistence (everything except Never).
+                            if self.disk_writer.is_some()
+                                && !matches!(output.materialize, MaterializePolicy::Never)
+                            {
+                                disk_writes.push(DiskWriteRequest {
+                                    job_id: job.id.clone(),
+                                    target_path: path.clone(),
+                                    data: arc_data,
+                                });
                             }
+                            continue;
                         }
 
                         // Fallback: data not in OutputMemoryMap (e.g., no
@@ -2026,14 +2024,14 @@ impl Frontier {
                     }
                 } else {
                     // Non-file outputs (Virtual, InMemory): check OutputMemoryMap.
-                    if let Some(mem_map) = memory_map {
-                        if let Some(arc_data) = mem_map.remove(&key) {
-                            let size = arc_data.len() as u64;
-                            mat_set.set_size_bytes(size);
-                            self.memory_store.insert(key.clone(), arc_data);
-                            mat_set.add(Materialization::InMemory { pinned: false });
-                            self.add_memory_bytes(size);
-                        }
+                    if let Some(mem_map) = memory_map
+                        && let Some(arc_data) = mem_map.remove(&key)
+                    {
+                        let size = arc_data.len() as u64;
+                        mat_set.set_size_bytes(size);
+                        self.memory_store.insert(key.clone(), arc_data);
+                        mat_set.add(Materialization::InMemory { pinned: false });
+                        self.add_memory_bytes(size);
                     }
                 }
             }
@@ -2076,12 +2074,11 @@ impl Frontier {
         for input in &job.inputs {
             let key = output_ref_key(&input.reference);
             // Check if this input's cheapest materialization is InMemory.
-            if let Some(mat_set) = self.output_mats.get(&key) {
-                if let Some(Materialization::InMemory { .. }) = mat_set.cheapest() {
-                    if let Some(data) = self.memory_store.get(&key) {
-                        input_data.insert(key, Arc::clone(data));
-                    }
-                }
+            if let Some(mat_set) = self.output_mats.get(&key)
+                && let Some(Materialization::InMemory { .. }) = mat_set.cheapest()
+                && let Some(data) = self.memory_store.get(&key)
+            {
+                input_data.insert(key, Arc::clone(data));
             }
         }
         input_data
@@ -2522,10 +2519,11 @@ async fn poll_peer_waits<E: Executor + ?Sized>(
                     executor,
                 )
                 .await;
-                if committed && exit_code == 0 {
-                    if let Some(cache) = cache {
-                        cache.record(&job).await;
-                    }
+                if committed
+                    && exit_code == 0
+                    && let Some(cache) = cache
+                {
+                    cache.record(&job).await;
                 }
                 progressed = true;
             }

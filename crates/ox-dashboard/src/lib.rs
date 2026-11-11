@@ -5,7 +5,7 @@
 //!
 //! ## Architecture
 //!
-//! - **axum** serves HTML (via askama templates) and JSON API endpoints
+//! - **axum** serves a static HTML page and JSON API endpoints
 //! - **htmx** provides dynamic updates without custom JavaScript
 //! - **SSE** (Server-Sent Events) streams live state changes to the browser
 //! - **state.db** is the sole data source (read-only SQLite via WAL mode)

@@ -245,10 +245,10 @@ fn translate_resource_to_snakemake(key: &str, value: &str) -> (String, String) {
         "cpu" => ("threads".to_string(), value.to_string()),
         "mem" => {
             // Convert human-readable sizes to mem_mb
-            if let Some(gb) = value.strip_suffix('G') {
-                if let Ok(n) = gb.parse::<u64>() {
-                    return ("mem_mb".to_string(), (n * 1024).to_string());
-                }
+            if let Some(gb) = value.strip_suffix('G')
+                && let Ok(n) = gb.parse::<u64>()
+            {
+                return ("mem_mb".to_string(), (n * 1024).to_string());
             }
             if let Some(mb) = value.strip_suffix('M') {
                 return ("mem_mb".to_string(), mb.to_string());
@@ -256,10 +256,10 @@ fn translate_resource_to_snakemake(key: &str, value: &str) -> (String, String) {
             ("mem_mb".to_string(), value.to_string())
         }
         "disk" => {
-            if let Some(gb) = value.strip_suffix('G') {
-                if let Ok(n) = gb.parse::<u64>() {
-                    return ("disk_mb".to_string(), (n * 1024).to_string());
-                }
+            if let Some(gb) = value.strip_suffix('G')
+                && let Ok(n) = gb.parse::<u64>()
+            {
+                return ("disk_mb".to_string(), (n * 1024).to_string());
             }
             if let Some(mb) = value.strip_suffix('M') {
                 return ("disk_mb".to_string(), mb.to_string());

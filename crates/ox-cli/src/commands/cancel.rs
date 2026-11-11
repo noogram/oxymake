@@ -86,11 +86,11 @@ pub fn cmd_cancel(args: CancelArgs) -> Result<()> {
     // Send SIGTERM to processes that were running (not just pending).
     let mut signalled = 0usize;
     for detail in &running_before {
-        if cancelled_ids.contains(&detail.id) {
-            if let Some(pid) = find_job_pid(&db, &detail.id)? {
-                send_sigterm(pid);
-                signalled += 1;
-            }
+        if cancelled_ids.contains(&detail.id)
+            && let Some(pid) = find_job_pid(&db, &detail.id)?
+        {
+            send_sigterm(pid);
+            signalled += 1;
         }
     }
 

@@ -178,13 +178,13 @@ impl SlurmExecutor {
             }
         } else {
             // CLI mode: try sacct first.
-            if let Ok(records) = slurm_cli::sacct(&[slurm_job_id]).await {
-                if let Some(record) = records.into_iter().find(|r| r.job_id == slurm_job_id) {
-                    return Ok((
-                        status_parser::slurm_state_to_job_status(&record.state),
-                        Some(record),
-                    ));
-                }
+            if let Ok(records) = slurm_cli::sacct(&[slurm_job_id]).await
+                && let Some(record) = records.into_iter().find(|r| r.job_id == slurm_job_id)
+            {
+                return Ok((
+                    status_parser::slurm_state_to_job_status(&record.state),
+                    Some(record),
+                ));
             }
 
             // Fallback to squeue.
@@ -632,14 +632,14 @@ impl Executor for SlurmExecutor {
                         // between our queries. Wait one more cycle and retry sacct.
                         tokio::time::sleep(Duration::from_secs(2)).await;
                         let retry = slurm_cli::sacct(&[slurm_job_id]).await;
-                        if let Ok(recs) = retry {
-                            if let Some(record) = recs.into_iter().next() {
-                                let mut running = self.running_jobs.lock().await;
-                                running.remove(job.id.as_str());
+                        if let Ok(recs) = retry
+                            && let Some(record) = recs.into_iter().next()
+                        {
+                            let mut running = self.running_jobs.lock().await;
+                            running.remove(job.id.as_str());
 
-                                let log_path = ctx.log_dir.join(format!("{}.log", job.id));
-                                return Ok(record_to_job_result(&job.id, &record, log_path));
-                            }
+                            let log_path = ctx.log_dir.join(format!("{}.log", job.id));
+                            return Ok(record_to_job_result(&job.id, &record, log_path));
                         }
                         // Truly lost — report as failed.
                         let mut running = self.running_jobs.lock().await;

@@ -5,7 +5,7 @@ only features that are tested and working in v0.1.0.
 
 ## Install
 
-Build and install from source (Rust 1.85+ required):
+Build and install from source (Rust 1.89+ required):
 
 ```bash
 git clone https://github.com/noogram/oxymake.git

@@ -200,11 +200,11 @@ fn hash_input_files(
                 continue;
             }
             let file_path = base_dir.join(pattern);
-            if file_path.is_file() {
-                if let Ok(data) = std::fs::read(&file_path) {
-                    let hash = ContentHash::from(blake3::hash(&data));
-                    hashes.insert(pattern.to_string(), hash);
-                }
+            if file_path.is_file()
+                && let Ok(data) = std::fs::read(&file_path)
+            {
+                let hash = ContentHash::from(blake3::hash(&data));
+                hashes.insert(pattern.to_string(), hash);
             }
         }
     }

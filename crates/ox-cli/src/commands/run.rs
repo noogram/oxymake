@@ -898,8 +898,8 @@ impl CacheCheck for SchedulerCache {
                 None => return Err(RunReason::NotCacheable),
             };
             let cache_key = components.cache_key.clone();
-            if let Some(remote) = &self.remote {
-                if remote
+            if let Some(remote) = &self.remote
+                && remote
                     .restore(
                         &mut store,
                         &components,
@@ -908,14 +908,13 @@ impl CacheCheck for SchedulerCache {
                         &std::env::current_dir().unwrap_or_default(),
                     )
                     .await
-                {
-                    let entry = store.get(&cache_key);
-                    let prov =
-                        job_provenance(job, &components, entry.as_ref().map(|e| &e.output_hashes));
-                    drop(store);
-                    self.note_provenance(job, prov).await;
-                    return Ok(());
-                }
+            {
+                let entry = store.get(&cache_key);
+                let prov =
+                    job_provenance(job, &components, entry.as_ref().map(|e| &e.output_hashes));
+                drop(store);
+                self.note_provenance(job, prov).await;
+                return Ok(());
             }
             let hit = match store.check_cached(&cache_key, &output_refs) {
                 Ok(status) => {
@@ -1070,13 +1069,12 @@ impl BenchmarkSink for FsBenchmarkSink {
     ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
         Box::pin(async move {
             // Create parent directories.
-            if let Some(parent) = path.parent() {
-                if !parent.as_os_str().is_empty() {
-                    if let Err(e) = tokio::fs::create_dir_all(parent).await {
-                        eprintln!("benchmark: failed to create dir {}: {e}", parent.display());
-                        return;
-                    }
-                }
+            if let Some(parent) = path.parent()
+                && !parent.as_os_str().is_empty()
+                && let Err(e) = tokio::fs::create_dir_all(parent).await
+            {
+                eprintln!("benchmark: failed to create dir {}: {e}", parent.display());
+                return;
             }
 
             let content = benchmark::format_benchmark_tsv(result);
@@ -1188,50 +1186,50 @@ fn downstream_closure(job_graph: &JobGraph, root: &JobId) -> HashSet<JobId> {
 /// Explicit CLI flags always take precedence over profile settings.
 fn apply_profile_defaults(args: &mut RunArgs, profile: &ox_format::parse::Profile) {
     // jobs: clap default is 1; profile overrides only if still at default
-    if args.jobs == 1 {
-        if let Some(j) = profile.jobs {
-            args.jobs = j;
-        }
+    if args.jobs == 1
+        && let Some(j) = profile.jobs
+    {
+        args.jobs = j;
     }
     // cache_validation: None means not set on CLI
     if args.cache_validation.is_none() {
         args.cache_validation.clone_from(&profile.cache_validation);
     }
     // verbose: 0 means not set on CLI (count action)
-    if args.verbose == 0 {
-        if let Some(v) = profile.verbose {
-            args.verbose = v;
-        }
+    if args.verbose == 0
+        && let Some(v) = profile.verbose
+    {
+        args.verbose = v;
     }
     // executor: clap default is "local"
-    if args.executor == "local" {
-        if let Some(ref e) = profile.executor {
-            args.executor.clone_from(e);
-        }
+    if args.executor == "local"
+        && let Some(ref e) = profile.executor
+    {
+        args.executor.clone_from(e);
     }
     // no_cache: false by default
-    if !args.no_cache {
-        if let Some(true) = profile.no_cache {
-            args.no_cache = true;
-        }
+    if !args.no_cache
+        && let Some(true) = profile.no_cache
+    {
+        args.no_cache = true;
     }
     // keep_going: false by default
-    if !args.keep_going {
-        if let Some(true) = profile.keep_going {
-            args.keep_going = true;
-        }
+    if !args.keep_going
+        && let Some(true) = profile.keep_going
+    {
+        args.keep_going = true;
     }
     // open_dashboard: false by default
-    if !args.open_dashboard {
-        if let Some(true) = profile.open_dashboard {
-            args.open_dashboard = true;
-        }
+    if !args.open_dashboard
+        && let Some(true) = profile.open_dashboard
+    {
+        args.open_dashboard = true;
     }
     // ray_allow_pending: false by default; an explicit true flag wins over false.
-    if !args.ray_allow_pending {
-        if let Some(true) = profile.ray_allow_pending {
-            args.ray_allow_pending = true;
-        }
+    if !args.ray_allow_pending
+        && let Some(true) = profile.ray_allow_pending
+    {
+        args.ray_allow_pending = true;
     }
     // SLURM options: None by default
     if args.partition.is_none() {
@@ -1353,7 +1351,7 @@ fn parse_resource_budget(entries: &[String]) -> Result<BTreeMap<String, u64>> {
 
 fn whole_token_capacity(resource: &str, amount: TokenAmount) -> Result<u64> {
     let scaled = amount.ten_thousandths();
-    if scaled % TOKEN_SCALE != 0 {
+    if !scaled.is_multiple_of(TOKEN_SCALE) {
         return Err(budget_usage_error(format!(
             "resource budget capacity for {resource} must be a whole token"
         )));
@@ -1422,10 +1420,10 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
     let resource_budget = parse_resource_budget(&args.resource_budget)?;
 
     // Apply global config for open_dashboard (lowest precedence).
-    if !args.open_dashboard {
-        if let Some(true) = resolve_global_config_open_dashboard() {
-            args.open_dashboard = true;
-        }
+    if !args.open_dashboard
+        && let Some(true) = resolve_global_config_open_dashboard()
+    {
+        args.open_dashboard = true;
     }
 
     // Build the RuleGraph for structural validation.
@@ -1436,10 +1434,10 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
     let mut config = common::workflow_config(&workflow);
 
     // Apply profile config overrides (before CLI --set, so --set wins).
-    if let Some(ref profile_name) = args.profile {
-        if let Some(profile) = workflow.profiles.get(profile_name) {
-            common::apply_profile_config(&mut config, profile);
-        }
+    if let Some(ref profile_name) = args.profile
+        && let Some(profile) = workflow.profiles.get(profile_name)
+    {
+        common::apply_profile_config(&mut config, profile);
     }
 
     common::apply_overrides(&mut config, &args.overrides);
@@ -1727,10 +1725,10 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
                     // Touch each file output: create parent dirs and update mtime.
                     for output in &job.outputs {
                         if let OutputRef::File(p) = &output.reference {
-                            if let Some(parent) = p.parent() {
-                                if !parent.as_os_str().is_empty() {
-                                    std::fs::create_dir_all(parent).ok();
-                                }
+                            if let Some(parent) = p.parent()
+                                && !parent.as_os_str().is_empty()
+                            {
+                                std::fs::create_dir_all(parent).ok();
                             }
                             if p.exists() {
                                 // Update mtime by opening for append (no content change).
@@ -1748,24 +1746,23 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
                     // Record in cache so the next run skips these jobs.
                     if let Some(ref mut store) = cache_store {
                         let output_paths = output_file_paths(job);
-                        if !output_paths.is_empty() {
-                            if let Some(components) =
+                        if !output_paths.is_empty()
+                            && let Some(components) =
                                 job_cache_key_with_components(job, Some(&mut *store))
-                            {
-                                let provenance = ox_core::model::ArtifactProvenance {
-                                    input_hashes: components.input_hashes,
-                                    job_spec_hash: components.job_spec_hash,
-                                    reproducibility: job.reproducibility,
-                                };
-                                let output_refs: Vec<&Path> =
-                                    output_paths.iter().map(|p| p.as_path()).collect();
-                                let _ = store.record(
-                                    components.cache_key,
-                                    &output_refs,
-                                    Some(&provenance),
-                                    job.platform_scope,
-                                );
-                            }
+                        {
+                            let provenance = ox_core::model::ArtifactProvenance {
+                                input_hashes: components.input_hashes,
+                                job_spec_hash: components.job_spec_hash,
+                                reproducibility: job.reproducibility,
+                            };
+                            let output_refs: Vec<&Path> =
+                                output_paths.iter().map(|p| p.as_path()).collect();
+                            let _ = store.record(
+                                components.cache_key,
+                                &output_refs,
+                                Some(&provenance),
+                                job.platform_scope,
+                            );
                         }
                     }
                     touched += 1;
@@ -1774,10 +1771,10 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
         }
 
         // Save cache manifest.
-        if let Some(ref store) = cache_store {
-            if let Err(e) = store.save() {
-                eprintln!("warning: failed to save cache manifest: {e}");
-            }
+        if let Some(ref store) = cache_store
+            && let Err(e) = store.save()
+        {
+            eprintln!("warning: failed to save cache manifest: {e}");
         }
 
         println!("Touched {} job output(s).", touched);
@@ -2075,13 +2072,13 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
         .filter(|id| !skip_jobs.contains(*id))
         .filter_map(|id| job_graph.get_job(id))
         .find(|job| job.executor.as_deref() == Some("local"));
-    if args.executor == "ray" {
-        if let Some(job) = local_override {
-            bail!(
-                "rule '{}' declares executor = \"local\", which Ray DAG submission cannot honour on the submitting host; run these targets separately with ox run --executor local",
-                job.rule
-            );
-        }
+    if args.executor == "ray"
+        && let Some(job) = local_override
+    {
+        bail!(
+            "rule '{}' declares executor = \"local\", which Ray DAG submission cannot honour on the submitting host; run these targets separately with ox run --executor local",
+            job.rule
+        );
     }
     let mixed_slurm = args.executor == "slurm" && local_override.is_some();
 
@@ -2585,11 +2582,10 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
                 // a peer waiting on one of our jobs reads the failure that
                 // follows as an interrupted session's leftover (re-run it)
                 // rather than a verdict to mirror (ADR-012).
-                if let Some(sid) = &interrupted_session {
-                    if let Ok(db) = ox_state::db::StateDb::open(&db_path) {
+                if let Some(sid) = &interrupted_session
+                    && let Ok(db) = ox_state::db::StateDb::open(&db_path) {
                         let _ = db.interrupt_session(sid);
                     }
-                }
                 // Clear progress bars so the message is visible.
                 if let Some(ref multi) = progress_multi {
                     let _ = multi.clear();
@@ -2615,13 +2611,11 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
                 // Scoped to our own session_id: a live peer's row is never
                 // ours to terminalize (ADR-012). The session keeps the
                 // `interrupted` status written on the first signal.
-                if !remote_following && let Some(sid) = &interrupted_session {
-                    if let Ok(db) = ox_state::db::StateDb::open(&db_path) {
-                        if let Ok(ids) = db.running_job_ids_for_session(sid) {
+                if !remote_following && let Some(sid) = &interrupted_session
+                    && let Ok(db) = ox_state::db::StateDb::open(&db_path)
+                        && let Ok(ids) = db.running_job_ids_for_session(sid) {
                             let _ = db.cancel_job_ids_for_session(&ids, sid);
                         }
-                    }
-                }
                 eprintln!("\nForce exit.");
                 std::process::exit(130);
             });
@@ -3070,8 +3064,8 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
         // result is misleading; the real summary is printed later (ox-x2jm).
         let skip_reporter_finish =
             (args.executor == "ray" || args.executor == "slurm") && !args.follow && !mixed_slurm;
-        if !skip_reporter_finish && remote_stop.is_none() {
-            if let (Some(reporter), Ok(r)) = (&term_reporter, &sched_result) {
+        if !skip_reporter_finish && remote_stop.is_none()
+            && let (Some(reporter), Ok(r)) = (&term_reporter, &sched_result) {
                 use ox_core::traits::reporter::{Reporter, RunSummary};
                 let summary = RunSummary {
                     total_jobs: r.total_jobs,
@@ -3083,7 +3077,6 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
                 };
                 reporter.finish(&summary).await;
             }
-        }
 
         // The scheduler has returned: this session holds no live claims any
         // more, stop heartbeating.
@@ -3138,11 +3131,9 @@ pub fn cmd_run(mut args: RunArgs, theme: &ox_render::Theme) -> Result<()> {
                 if let Ok(ids) = db.running_job_ids_for_session(sid) {
                     let _ = db.cancel_job_ids_for_session(&ids, sid);
                 }
-            } else if had_failures {
-                if let Ok(running) = db.jobs_by_status("running") {
-                    for job_id in &running {
-                        let _ = db.fail_job(job_id.as_str(), sid, 1);
-                    }
+            } else if had_failures && let Ok(running) = db.jobs_by_status("running") {
+                for job_id in &running {
+                    let _ = db.fail_job(job_id.as_str(), sid, 1);
                 }
             }
         }

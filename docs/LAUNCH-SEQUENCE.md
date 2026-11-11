@@ -42,7 +42,7 @@ that's refutable. These land first (separate molecules):
 - cache-key correctness (`task-20260609-cfeb`)
 
 Plus the packaging in this branch: a **downloadable binary** must exist —
-`cargo install` (Rust 1.85+, source build) kills the conda/pip onboarding.
+`cargo install` (Rust 1.89+, source build) kills the conda/pip onboarding.
 GitHub Release tarballs are built by `.github/workflows/release.yml`; the
 Homebrew formula template is in `packaging/homebrew/`; the PyPI launcher is in
 `packaging/pypi/`.

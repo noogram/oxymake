@@ -46,10 +46,10 @@ pub fn discover_existing_files(oxymakefile_path: &Path) -> Vec<PathBuf> {
     let mut guard = CACHE.lock().unwrap_or_else(|e| e.into_inner());
     let map = guard.get_or_insert_with(HashMap::new);
 
-    if let Some(entry) = map.get(&canonical) {
-        if Some(entry.mtime) == current_mtime {
-            return entry.files.clone();
-        }
+    if let Some(entry) = map.get(&canonical)
+        && Some(entry.mtime) == current_mtime
+    {
+        return entry.files.clone();
     }
 
     // Cache miss or stale — perform the walk.
@@ -107,12 +107,12 @@ fn walk_dir(dir: &Path, base: &Path, files: &mut Vec<PathBuf>, depth: usize) {
                 continue;
             }
             walk_dir(&path, base, files, depth - 1);
-        } else if path.is_file() {
-            if let Ok(rel) = path.strip_prefix(base) {
-                let rel_str = rel.to_string_lossy();
-                let clean = rel_str.strip_prefix("./").unwrap_or(&rel_str);
-                files.push(PathBuf::from(clean));
-            }
+        } else if path.is_file()
+            && let Ok(rel) = path.strip_prefix(base)
+        {
+            let rel_str = rel.to_string_lossy();
+            let clean = rel_str.strip_prefix("./").unwrap_or(&rel_str);
+            files.push(PathBuf::from(clean));
         }
     }
 }

@@ -199,14 +199,14 @@ pub fn generate_wrapper(job: &ConcreteJob) -> Result<String, RayError> {
             writeln!(script, "}}").unwrap();
         }
 
-        if out.strategy.write_to_shared_fs {
-            if let (Some(file_path), Some(codec)) = (out.file_path, out.codec) {
-                let write_stmt = codec
-                    .python_write
-                    .replace("{obj}", &result_var)
-                    .replace("{path}", &format!("{:?}", file_path.display()));
-                writeln!(script, "{write_stmt}").unwrap();
-            }
+        if out.strategy.write_to_shared_fs
+            && let (Some(file_path), Some(codec)) = (out.file_path, out.codec)
+        {
+            let write_stmt = codec
+                .python_write
+                .replace("{obj}", &result_var)
+                .replace("{path}", &format!("{:?}", file_path.display()));
+            writeln!(script, "{write_stmt}").unwrap();
         }
         writeln!(script).unwrap();
     }

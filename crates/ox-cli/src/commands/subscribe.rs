@@ -111,13 +111,12 @@ pub fn cmd_subscribe(args: SubscribeArgs) -> Result<()> {
         let n = reader.read_line(&mut line)?;
         if n == 0 {
             // Check for truncation (log rotation).
-            if let Ok(metadata) = reader.get_ref().metadata() {
-                if let Ok(pos) = reader.stream_position() {
-                    if metadata.len() < pos {
-                        reader.seek(SeekFrom::Start(0))?;
-                        continue;
-                    }
-                }
+            if let Ok(metadata) = reader.get_ref().metadata()
+                && let Ok(pos) = reader.stream_position()
+                && metadata.len() < pos
+            {
+                reader.seek(SeekFrom::Start(0))?;
+                continue;
             }
             // Check if the run has ended by looking for a terminal event.
             // We peek at the last event we printed; if it was run_completed
@@ -135,12 +134,11 @@ pub fn cmd_subscribe(args: SubscribeArgs) -> Result<()> {
             print!("{line}");
 
             // Exit after terminal events.
-            if let Ok(v) = serde_json::from_str::<serde_json::Value>(trimmed) {
-                if let Some(et) = v.get("event").and_then(|e| e.as_str()) {
-                    if et == "run_completed" || et == "run_failed" {
-                        return Ok(());
-                    }
-                }
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(trimmed)
+                && let Some(et) = v.get("event").and_then(|e| e.as_str())
+                && (et == "run_completed" || et == "run_failed")
+            {
+                return Ok(());
             }
         }
     }
@@ -217,14 +215,12 @@ fn resolve_event_log(session_id: &Option<String>) -> Result<PathBuf> {
     for entry in fs::read_dir(events_dir).context("cannot read events directory")? {
         let entry = entry?;
         let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) == Some("ndjson") {
-            if let Ok(meta) = entry.metadata() {
-                if let Ok(modified) = meta.modified() {
-                    if newest.as_ref().is_none_or(|(_, t)| modified > *t) {
-                        newest = Some((path, modified));
-                    }
-                }
-            }
+        if path.extension().and_then(|e| e.to_str()) == Some("ndjson")
+            && let Ok(meta) = entry.metadata()
+            && let Ok(modified) = meta.modified()
+            && newest.as_ref().is_none_or(|(_, t)| modified > *t)
+        {
+            newest = Some((path, modified));
         }
     }
 
@@ -239,10 +235,10 @@ fn list_event_logs(dir: &Path) -> Result<String> {
     let mut names = Vec::new();
     for entry in fs::read_dir(dir)? {
         let entry = entry?;
-        if entry.path().extension().and_then(|e| e.to_str()) == Some("ndjson") {
-            if let Some(stem) = entry.path().file_stem() {
-                names.push(format!("  {}", stem.to_string_lossy()));
-            }
+        if entry.path().extension().and_then(|e| e.to_str()) == Some("ndjson")
+            && let Some(stem) = entry.path().file_stem()
+        {
+            names.push(format!("  {}", stem.to_string_lossy()));
         }
     }
     names.sort();

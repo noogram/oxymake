@@ -513,7 +513,7 @@ impl ArtifactMeta {
             return None;
         }
         let mut bytes = [0u8; 32];
-        for (i, chunk) in hex.as_bytes().chunks_exact(2).enumerate() {
+        for (i, chunk) in hex.as_bytes().as_chunks::<2>().0.iter().enumerate() {
             let hi = hex_digit(chunk[0])?;
             let lo = hex_digit(chunk[1])?;
             bytes[i] = (hi << 4) | lo;

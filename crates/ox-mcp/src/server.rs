@@ -75,10 +75,8 @@ pub fn run_stdio(config: ServerConfig) -> Result<()> {
 
         let response = dispatch(&request, &config);
 
-        if !is_notification {
-            if let Some(resp) = response {
-                write_response(&mut writer, &resp, &config)?;
-            }
+        if !is_notification && let Some(resp) = response {
+            write_response(&mut writer, &resp, &config)?;
         }
     }
 

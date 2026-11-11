@@ -416,11 +416,11 @@ async fn confine_target(
                 .filter(|p| p.is_absolute()),
         ) {
             let normalized_root = crate::output_path::lexical_normalize(declared_root);
-            if let Ok(canonical_root) = tokio::fs::canonicalize(normalized_root).await {
-                if canon_parent.starts_with(canonical_root) {
-                    contained = true;
-                    break;
-                }
+            if let Ok(canonical_root) = tokio::fs::canonicalize(normalized_root).await
+                && canon_parent.starts_with(canonical_root)
+            {
+                contained = true;
+                break;
             }
         }
         if !contained {
@@ -513,10 +513,10 @@ async fn write_atomic(target: &std::path::Path, data: &[u8]) -> Result<(), OxErr
     // survives a crash. Unix only: directories cannot be opened as files
     // on Windows. Best-effort — some filesystems reject directory fsync.
     #[cfg(unix)]
-    if let Some(parent) = target.parent() {
-        if let Ok(dir) = tokio::fs::File::open(parent).await {
-            let _ = dir.sync_all().await;
-        }
+    if let Some(parent) = target.parent()
+        && let Ok(dir) = tokio::fs::File::open(parent).await
+    {
+        let _ = dir.sync_all().await;
     }
 
     Ok(())
