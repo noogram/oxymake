@@ -467,11 +467,25 @@ fn reserve_restore_staging_with_counter(
 }
 
 fn next_restore_staging_counter(counter_source: &AtomicU64) -> std::io::Result<u64> {
-    counter_source
-        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| {
-            (n <= u32::MAX as u64).then_some(n + 1)
-        })
-        .map_err(|_| std::io::Error::other("remote restore staging counter exhausted"))
+    // A compare-exchange loop rather than `fetch_update`, which newer
+    // toolchains deprecate while the MSRV (1.89) lacks its replacement.
+    let mut current = counter_source.load(Ordering::Relaxed);
+    loop {
+        if current > u32::MAX as u64 {
+            return Err(std::io::Error::other(
+                "remote restore staging counter exhausted",
+            ));
+        }
+        match counter_source.compare_exchange_weak(
+            current,
+            current + 1,
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+        ) {
+            Ok(previous) => return Ok(previous),
+            Err(actual) => current = actual,
+        }
+    }
 }
 
 fn is_restore_suffix(suffix: &str) -> bool {
