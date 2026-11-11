@@ -34,7 +34,7 @@ exclude = ["crates/ox-metrics"]
 [workspace.package]
 version = "0.8.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.89"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/noogram/oxymake"
 description = "Next-generation workflow orchestration in Rust"
@@ -62,7 +62,9 @@ clap = { version = "4", features = ["derive"] }
 clap_mangen = "0.2"
 
 # State
-rusqlite = { version = "0.32", features = ["bundled"] }
+# `fallible_uint` restores the u64/usize conversions that rusqlite 0.32 enabled
+# by default; an out-of-range value is a conversion error.
+rusqlite = { version = "0.41", features = ["bundled", "fallible_uint"] }
 
 # Reporting
 miette = { version = "7", features = ["fancy"] }

@@ -88,7 +88,7 @@ under [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## Coding conventions
 
-- **Rust edition / version**: `1.85+` (see `Cargo.toml`).
+- **Rust edition / version**: `1.89+` (see `Cargo.toml`).
 - **No `unsafe`** in workspace code except in `#[cfg(test)]` blocks or
   with a `// SAFETY:` comment that explains the invariant.
 - **No `println!`** in library crates — emit through a `Reporter` or

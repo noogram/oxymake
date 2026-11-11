@@ -5,7 +5,7 @@
 
 [![CI](https://github.com/noogram/oxymake/actions/workflows/ci.yml/badge.svg)](https://github.com/noogram/oxymake/actions/workflows/ci.yml)
 [![License: MIT/Apache-2.0](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue.svg)](#license)
-[![Rust](https://img.shields.io/badge/rust-1.85%2B-orange.svg)](https://www.rust-lang.org)
+[![Rust](https://img.shields.io/badge/rust-1.89%2B-orange.svg)](https://www.rust-lang.org)
 
 **You `git checkout` an old branch, re-run your pipeline, and it rebuilds
 everything — hours of work, even though not one input actually changed.**
@@ -68,7 +68,7 @@ nothing.
 
 ### Install
 
-**With Cargo** (requires Rust 1.85+) — the paths that work today:
+**With Cargo** (requires Rust 1.89+) — the paths that work today:
 
 ```bash
 # Straight from git, no source checkout needed (canonical no-clone install)

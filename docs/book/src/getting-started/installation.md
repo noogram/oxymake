@@ -41,7 +41,7 @@ just --list     # all available recipes
 
 ### Required
 
-- **Rust 1.85+** (for installation from source)
+- **Rust 1.89+** (for installation from source)
 
 ### Optional (depending on your workflow)
 

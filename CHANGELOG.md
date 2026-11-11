@@ -16,6 +16,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   refuses to overwrite an existing file now rebuilds instead of failing and
   losing the file (#65). To keep existing outputs available to the command,
   declare `clean_outputs = "on-failure"` or `"never"` on the rule.
+- Building from source now requires Rust 1.89 or later (was 1.85). The
+  patched SQLite bindings (`rusqlite` 0.41) require it. Update the toolchain
+  with `rustup update stable` before `cargo install`. Prebuilt binaries are
+  unaffected.
 
 ### Added
 
@@ -56,6 +60,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   are retained and named in the failure diagnostic, including missing-output
   failures. The unstable library error `ExecLocalError::OutputMissing` now
   includes a `kept` diagnostic field. `never` is unchanged (#65).
+- Update `hyper` to 1.12, which no longer depends on the unmaintained
+  `pin-utils` (RUSTSEC-2026-0441).
+- Remove the unused `askama` dependency from `ox-dashboard`, and with it the
+  unmaintained `basic-toml` (RUSTSEC-2026-0374) and its dated advisory
+  exception.
 
 ### Fixed
 
@@ -77,6 +86,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Ray `--follow` now names the failed dependency for a task that could not
   run, instead of attributing the shared driver's error trace to that task.
   Per-task records take precedence when the driver reaches a terminal state (#65).
+
+### Security
+
+- Update the bundled SQLite from 3.46.0 to 3.54.1 (`rusqlite` 0.32 to 0.41,
+  `libsqlite3-sys` 0.30 to 0.39) for RUSTSEC-2026-0459 (CVE-2026-119375).
+  Existing `state.db` (schema v13) and `cache.db` files open and are read
+  without migration.
 
 ## [0.8.0] - 2026-11-02
 
